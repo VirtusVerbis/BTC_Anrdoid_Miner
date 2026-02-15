@@ -94,6 +94,11 @@ class MiningForegroundService : Service() {
 
     fun getStatus(): MiningStatus = engine.getStatus()
 
+    /** Reset persistent UI counters (accepted/rejected/identified shares, block templates, best difficulty, nonces). */
+    fun resetAllCounters() {
+        engine.resetAllCounters()
+    }
+
     fun getHashrateHistoryCpu(): List<Double> = synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.toList() }
     fun getHashrateHistoryGpu(): List<Double> = synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.toList() }
 
@@ -211,7 +216,12 @@ class MiningForegroundService : Service() {
         } else {
             @Suppress("InlinedApi") 0
         }
-        registerReceiver(constraintReceiver, filter, flags)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            registerReceiver(constraintReceiver, filter, flags)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(constraintReceiver, filter)
+        }
     }
 
     private fun unregisterConstraintReceiver() {

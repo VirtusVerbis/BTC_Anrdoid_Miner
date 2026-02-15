@@ -1,6 +1,8 @@
 package com.btcminer.android.mining
 
+import java.math.BigDecimal
 import java.math.BigInteger
+import java.math.RoundingMode
 import java.security.MessageDigest
 
 /**
@@ -79,14 +81,21 @@ object StratumHeaderBuilder {
     }
 
     /**
-     * Build 32-byte target from difficulty (big-endian). Pool target = max_target / difficulty.
+     * Build 32-byte target from difficulty (big-endian). Pool target = max_target / difficulty,
+     * capped at max_target when difficulty < 1 so low-diff pools (e.g. for small miners) work.
      * Bitcoin max target from nbits 0x1d00ffff: 0x00000000ffff0000...
      */
     fun buildTargetFromDifficulty(difficulty: Double): ByteArray {
-        if (difficulty <= 0.0) return ByteArray(32) { 0xff.toByte() }
         val maxTarget = BigInteger("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
-        val diffBig = difficulty.toBigDecimal().toBigInteger()
-        val target = maxTarget.divide(diffBig)
+        if (difficulty <= 0.0) return bigIntegerToTarget32(maxTarget)
+        val targetValue = maxTarget.toBigDecimal()
+            .divide(difficulty.toBigDecimal(), 0, RoundingMode.DOWN)
+            .toBigInteger()
+        val capped = if (targetValue > maxTarget) maxTarget else targetValue
+        return bigIntegerToTarget32(capped)
+    }
+
+    private fun bigIntegerToTarget32(target: BigInteger): ByteArray {
         val bytes = target.toByteArray()
         return when {
             bytes.size >= 32 -> bytes.takeLast(32).toByteArray()
@@ -105,5 +114,27 @@ object StratumHeaderBuilder {
             (nonce shr 24 and 0xff).toByte(),
         )
         return header76 + nonceBytes
+    }
+
+    /** Bitcoin "difficulty 1" target as double (max_target numeric value). */
+    private const val TRUEDIFFONE = 26959535291011309493156476344723991336010898738574164086137773096960.0
+
+    /**
+     * Compute share difficulty from 80-byte block header (double-SHA256 hash, then truediffone / hash).
+     * Hash is interpreted as little-endian 256-bit value (Bitcoin convention).
+     */
+    fun difficultyFromHeader80(header80: ByteArray): Double {
+        require(header80.size == 80) { "Header must be 80 bytes" }
+        val hash = doubleSha256(header80)
+        val hashValue = le256ToBigInteger(hash)
+        if (hashValue.signum() == 0) return TRUEDIFFONE
+        val diff = BigDecimal(TRUEDIFFONE.toString()).divide(BigDecimal(hashValue), 16, RoundingMode.HALF_UP)
+        return diff.toDouble()
+    }
+
+    /** Interpret 32-byte hash as little-endian 256-bit value. */
+    private fun le256ToBigInteger(hash: ByteArray): BigInteger {
+        require(hash.size == 32)
+        return BigInteger(1, hash.reversedArray())
     }
 }
