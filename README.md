@@ -8,6 +8,8 @@ Cursor AI
 References:
 https://github.com/BitMaker-hub/NerdMiner_v2/releases
 
+https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png
+
 ## Features
 
 - **Stratum v1** pool support (TCP and TLS)
