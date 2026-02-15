@@ -10,6 +10,7 @@ https://github.com/BitMaker-hub/NerdMiner_v2/releases
 
 ![alt text](https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png "Sample Run" ) 
 
+<img src="https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png" width="250" height="500">
 
 
 ## Features
