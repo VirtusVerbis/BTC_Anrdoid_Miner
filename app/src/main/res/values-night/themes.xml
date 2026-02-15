@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BTCMiner" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/white</item>
+        <item name="colorOnPrimary">@color/ic_launcher_background</item>
+        <item name="colorSurface">#FF1C1B1F</item>
+        <item name="colorOnSurface">#FFE6E1E5</item>
+        <item name="colorSurfaceVariant">#FF49454F</item>
+        <item name="colorOnSurfaceVariant">#FFCAC4D0</item>
+        <item name="colorOutline">#FF938F99</item>
+        <item name="android:windowBackground">#FF1C1B1F</item>
+    </style>
+</resources>

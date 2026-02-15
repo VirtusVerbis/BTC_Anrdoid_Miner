@@ -31,6 +31,7 @@ class NativeMiningEngine(
     private val acceptedShares = AtomicLong(0)
     private val rejectedShares = AtomicLong(0)
     private val identifiedShares = AtomicLong(0)
+    private val gpuNoncesScanned = AtomicLong(0)
     private val reconnectTargetRef = AtomicReference<Pair<String, Int>?>(null)
 
     override fun start(config: MiningConfig) {
@@ -73,6 +74,7 @@ class NativeMiningEngine(
         statusRef.set(MiningStatus(
             MiningStatus.State.Mining,
             hashrateHs = 0.0,
+            gpuHashrateHs = 0.0,
             noncesScanned = 0L,
             acceptedShares = acceptedShares.get(),
             rejectedShares = rejectedShares.get(),
@@ -116,6 +118,7 @@ class NativeMiningEngine(
                 statusRef.set(MiningStatus(
                     MiningStatus.State.Mining,
                     hashrateHs = 0.0,
+                    gpuHashrateHs = 0.0,
                     noncesScanned = 0L,
                     acceptedShares = acceptedShares.get(),
                     rejectedShares = rejectedShares.get(),
@@ -133,6 +136,7 @@ class NativeMiningEngine(
             running.set(false)
             statusRef.set(MiningStatus(
                 MiningStatus.State.Idle,
+                gpuHashrateHs = 0.0,
                 acceptedShares = acceptedShares.get(),
                 rejectedShares = rejectedShares.get(),
                 identifiedShares = identifiedShares.get(),
@@ -147,6 +151,7 @@ class NativeMiningEngine(
         minerThreadRef.getAndSet(null)?.interrupt()
         statusRef.set(MiningStatus(
             MiningStatus.State.Idle,
+            gpuHashrateHs = 0.0,
             acceptedShares = acceptedShares.get(),
             rejectedShares = rejectedShares.get(),
             identifiedShares = identifiedShares.get(),
@@ -162,16 +167,18 @@ class NativeMiningEngine(
         val en2Size = client.getExtranonce2Size().coerceAtLeast(4)
         val statsStartTime = System.currentTimeMillis()
         val totalNoncesScanned = AtomicLong(0)
+        gpuNoncesScanned.set(0)
         var lastLogTime = statsStartTime
         val statusUpdateIntervalMs = config.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
         val threadCount = config.maxWorkerThreads.coerceIn(1, Runtime.getRuntime().availableProcessors())
-        AppLog.d(LOG_TAG) { "Using $threadCount worker thread(s)" }
+        val gpuEnabled = config.gpuCores > 0 && NativeMiner.gpuIsAvailable()
+        AppLog.d(LOG_TAG) { "Using $threadCount CPU worker(s), GPU=${gpuEnabled}" }
 
         while (running.get() && client.isRunning()) {
             val throttle = throttleStateRef?.get()
             if (throttle?.stopDueToOverheat == true) {
                 AppLog.d(LOG_TAG) { "Stopping due to battery overheat" }
-                statusRef.set(MiningStatus(MiningStatus.State.Idle))
+                statusRef.set(MiningStatus(MiningStatus.State.Idle, gpuHashrateHs = 0.0))
                 return
             }
             var job = client.getCurrentJob()
@@ -200,43 +207,85 @@ class NativeMiningEngine(
             val ntimeHex = job.ntimeHex
 
             var foundNonce = -1
+            val activeJobId = AtomicReference(job.jobId)
+            val foundRef = AtomicReference<FoundResult?>(null)
+            val nextChunkStart = AtomicLong(0)
             if (threadCount == 1) {
                 var lastStatusUpdateTime = statsStartTime
-                var nonceStart = 0L
-                while (running.get()) {
-                    if (throttleStateRef?.get()?.stopDueToOverheat == true) break
-                    if (client.getCurrentJob()?.jobId != job.jobId || client.consumeCleanJobsInvalidation()) {
-                        AppLog.d(LOG_TAG) { "Job changed, switching to new template" }
-                        break
-                    }
-                    val throttle = throttleStateRef?.get()
-                    val nonceEndL = minOf(nonceStart + CHUNK_SIZE - 1, MAX_NONCE)
-                    val nonceEnd = nonceEndL.toInt()
-                    val n = NativeMiner.nativeScanNonces(header76, nonceStart.toInt(), nonceEnd, target)
-                    val scanned = if (n >= 0) (n.toLong() - nonceStart + 1) else (nonceEndL - nonceStart + 1)
-                    totalNoncesScanned.addAndGet(scanned)
-                    val sleepMs = throttle?.throttleSleepMs ?: 0L
-                    if (sleepMs > 0L) {
-                        Thread.sleep(sleepMs)
-                    } else {
-                        val intensity = throttle?.effectiveIntensityPercent ?: config.maxIntensityPercent
-                        if (intensity < 100) {
-                            Thread.sleep((100 - intensity) * 20L / 100)
+                val cpuWorker = Thread {
+                    val workerJobId = job.jobId
+                    while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
+                        if (throttleStateRef?.get()?.stopDueToOverheat == true) break
+                        if (client.getCurrentJob()?.jobId != job.jobId || client.consumeCleanJobsInvalidation()) break
+                        val throttle = throttleStateRef?.get()
+                        val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
+                        if (start > MAX_NONCE) break
+                        val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
+                        val nonceEnd = nonceEndL.toInt()
+                        val n = NativeMiner.nativeScanNonces(header76, start.toInt(), nonceEnd, target)
+                        val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
+                        totalNoncesScanned.addAndGet(scanned)
+                        val sleepMs = throttle?.throttleSleepMs ?: 0L
+                        if (sleepMs > 0L) {
+                            Thread.sleep(sleepMs)
+                        } else {
+                            val intensity = throttle?.effectiveIntensityPercent ?: config.maxIntensityPercent
+                            if (intensity < 100) {
+                                Thread.sleep((100 - intensity) * 20L / 100)
+                            }
+                        }
+                        if (n >= 0) {
+                            foundRef.compareAndSet(null, FoundResult(job.jobId, n, extranonce2Hex, ntimeHex))
+                            break
                         }
                     }
-                    if (n >= 0) {
-                        foundNonce = n
-                        break
+                }.apply { isDaemon = true }
+                val gpuWorkerSt = if (gpuEnabled) {
+                    Thread {
+                        val workerJobId = job.jobId
+                        while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
+                            if (throttleStateRef?.get()?.stopDueToOverheat == true) break
+                            val throttle = throttleStateRef?.get()
+                            val sleepMs = throttle?.throttleSleepMs ?: 0L
+                            if (sleepMs > 0L) {
+                                Thread.sleep(sleepMs)
+                            } else {
+                                val gpuUtil = config.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
+                                if (gpuUtil < 100) {
+                                    Thread.sleep((100 - gpuUtil) * 20L / 100)
+                                }
+                            }
+                            val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
+                            if (start > MAX_NONCE) break
+                            val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
+                            val nonceEnd = nonceEndL.toInt()
+                            val n = NativeMiner.gpuScanNonces(header76, start.toInt(), nonceEnd, target)
+                            val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
+                            gpuNoncesScanned.addAndGet(scanned)
+                            if (n >= 0) {
+                                foundRef.compareAndSet(null, FoundResult(job.jobId, n, extranonce2Hex, ntimeHex))
+                                break
+                            }
+                        }
+                    }.apply { isDaemon = true }
+                } else null
+                val singleWorkers = listOf(cpuWorker) + listOfNotNull(gpuWorkerSt)
+                singleWorkers.forEach { it.start() }
+                while (singleWorkers.any { it.isAlive }) {
+                    if (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation()) {
+                        AppLog.d(LOG_TAG) { "Job changed, switching to new template" }
+                        activeJobId.set(null)
                     }
-                    if (nonceEndL >= MAX_NONCE) break
-                    nonceStart = nonceEndL + 1
+                    singleWorkers.forEach { it.join(statusUpdateIntervalMs.toLong()) }
                     val now = System.currentTimeMillis()
                     if (now - lastStatusUpdateTime >= statusUpdateIntervalMs) {
                         val elapsedSec = (now - statsStartTime) / 1000.0
                         val hashrateHs = if (elapsedSec > 0) totalNoncesScanned.get() / elapsedSec else 0.0
+                        val gpuHashrateHs = if (elapsedSec > 0) gpuNoncesScanned.get() / elapsedSec else 0.0
                         statusRef.set(MiningStatus(
                             state = MiningStatus.State.Mining,
                             hashrateHs = hashrateHs,
+                            gpuHashrateHs = gpuHashrateHs,
                             noncesScanned = totalNoncesScanned.get(),
                             acceptedShares = acceptedShares.get(),
                             rejectedShares = rejectedShares.get(),
@@ -247,15 +296,15 @@ class NativeMiningEngine(
                     if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
                         val elapsedSec = (now - statsStartTime) / 1000.0
                         val hashrateHs = if (elapsedSec > 0) totalNoncesScanned.get() / elapsedSec else 0.0
-                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
+                        val gpuH = if (elapsedSec > 0) gpuNoncesScanned.get() / elapsedSec else 0.0
+                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, gpuH, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
                         lastLogTime = now
                     }
                 }
+                val found = foundRef.get()
+                if (found != null) foundNonce = found.nonce
             } else {
-                val activeJobId = AtomicReference(job.jobId)
-                val foundRef = AtomicReference<FoundResult?>(null)
-                val nextChunkStart = AtomicLong(0)
-                val workers = (0 until threadCount).map {
+                val cpuWorkers = (0 until threadCount).map {
                     val workerJobId = job.jobId
                     Thread {
                         while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
@@ -284,26 +333,58 @@ class NativeMiningEngine(
                         }
                     }.apply { isDaemon = true }
                 }
-                workers.forEach { it.start() }
-                while (workers.any { it.isAlive }) {
+                val gpuWorker: Thread? = if (gpuEnabled) {
+                    Thread {
+                        val workerJobId = job.jobId
+                        while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
+                            if (throttleStateRef?.get()?.stopDueToOverheat == true) break
+                            val throttle = throttleStateRef?.get()
+                            val sleepMs = throttle?.throttleSleepMs ?: 0L
+                            if (sleepMs > 0L) {
+                                Thread.sleep(sleepMs)
+                            } else {
+                                val gpuUtil = config.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
+                                if (gpuUtil < 100) {
+                                    Thread.sleep((100 - gpuUtil) * 20L / 100)
+                                }
+                            }
+                            val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
+                            if (start > MAX_NONCE) break
+                            val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
+                            val nonceEnd = nonceEndL.toInt()
+                            val n = NativeMiner.gpuScanNonces(header76, start.toInt(), nonceEnd, target)
+                            val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
+                            gpuNoncesScanned.addAndGet(scanned)
+                            if (n >= 0) {
+                                foundRef.compareAndSet(null, FoundResult(job.jobId, n, extranonce2Hex, ntimeHex))
+                                break
+                            }
+                        }
+                    }.apply { isDaemon = true }
+                } else null
+                val allWorkers = cpuWorkers + listOfNotNull(gpuWorker)
+                allWorkers.forEach { it.start() }
+                while (allWorkers.any { it.isAlive }) {
                     if (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation()) {
                         AppLog.d(LOG_TAG) { "Job changed, switching to new template" }
                         activeJobId.set(null)
                     }
-                    workers.forEach { it.join(statusUpdateIntervalMs.toLong()) }
+                    allWorkers.forEach { it.join(statusUpdateIntervalMs.toLong()) }
                     val now = System.currentTimeMillis()
                     val elapsedSec = (now - statsStartTime) / 1000.0
                     val hashrateHs = if (elapsedSec > 0) totalNoncesScanned.get() / elapsedSec else 0.0
+                    val gpuHashrateHs = if (elapsedSec > 0) gpuNoncesScanned.get() / elapsedSec else 0.0
                     statusRef.set(MiningStatus(
                         state = MiningStatus.State.Mining,
                         hashrateHs = hashrateHs,
+                        gpuHashrateHs = gpuHashrateHs,
                         noncesScanned = totalNoncesScanned.get(),
                         acceptedShares = acceptedShares.get(),
                         rejectedShares = rejectedShares.get(),
                         identifiedShares = identifiedShares.get(),
                     ))
                     if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
-                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
+                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, gpuHashrateHs, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
                         lastLogTime = now
                     }
                 }
@@ -331,9 +412,11 @@ class NativeMiningEngine(
             }
             val elapsedSec = (System.currentTimeMillis() - statsStartTime) / 1000.0
             val hashrateHs = if (elapsedSec > 0) totalNoncesScanned.get() / elapsedSec else 0.0
+            val gpuHashrateHs = if (elapsedSec > 0) gpuNoncesScanned.get() / elapsedSec else 0.0
             statusRef.set(MiningStatus(
                 state = MiningStatus.State.Mining,
                 hashrateHs = hashrateHs,
+                gpuHashrateHs = gpuHashrateHs,
                 noncesScanned = totalNoncesScanned.get(),
                 acceptedShares = acceptedShares.get(),
                 rejectedShares = rejectedShares.get(),

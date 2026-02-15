@@ -41,6 +41,10 @@ class MiningConfigRepository(context: Context) {
         ).coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C),
         hashrateTargetHps = storage.getStr(SecureConfigStorage.KEY_HASHRATE_TARGET_HPS).trim()
             .takeIf { it.isNotEmpty() }?.toDoubleOrNull(),
+        gpuCores = storage.getInt(SecureConfigStorage.KEY_GPU_CORES, 0)
+            .coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX),
+        gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
+            .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
     )
 
     fun saveConfig(config: MiningConfig) {
@@ -74,6 +78,14 @@ class MiningConfigRepository(context: Context) {
             edit.putString(
                 SecureConfigStorage.KEY_HASHRATE_TARGET_HPS,
                 config.hashrateTargetHps?.toString() ?: ""
+            )
+            edit.putInt(
+                SecureConfigStorage.KEY_GPU_CORES,
+                config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX)
+            )
+            edit.putInt(
+                SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT,
+                config.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
             )
         }
     }
