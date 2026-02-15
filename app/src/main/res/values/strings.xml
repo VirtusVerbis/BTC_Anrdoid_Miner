@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BTC Miner</string>
+    <string name="dashboard_title">BTC Miner</string>
+
+    <!-- Configuration -->
+    <string name="config_title">Configuration</string>
+    <string name="config_save">Save</string>
+    <string name="config_stratum_url">Pool URL (host)</string>
+    <string name="config_stratum_url_hint">e.g. stratum.example.com</string>
+    <string name="config_stratum_port">Pool port</string>
+    <string name="config_stratum_port_hint">3333</string>
+    <string name="config_stratum_user">Stratum username (wallet.worker)</string>
+    <string name="config_stratum_user_hint">wallet_address.worker_name</string>
+    <string name="config_stratum_pass">Pool password</string>
+    <string name="config_stratum_pass_hint">x or any</string>
+    <string name="config_bitcoin_address">Bitcoin wallet address</string>
+    <string name="config_bitcoin_address_hint">bc1q…</string>
+    <string name="config_lightning_address">Lightning address (optional)</string>
+    <string name="config_lightning_address_hint">user@domain</string>
+    <string name="config_worker_name">Worker name</string>
+    <string name="config_worker_name_hint">android1</string>
+    <string name="config_wifi_only">WiFi only</string>
+    <string name="config_wifi_only_summary">Disable mining over mobile data</string>
+    <string name="config_mine_only_when_charging">Mine only when charging</string>
+    <string name="config_mine_only_when_charging_summary">Reduces battery wear</string>
+    <string name="config_battery_temp_fahrenheit">Show battery temp in Fahrenheit</string>
+    <string name="config_battery_temp_fahrenheit_summary">Otherwise Celsius</string>
+    <string name="config_battery_temp_throttle">Max battery temp (°C)</string>
+    <string name="config_battery_temp_throttle_summary">Throttle mining above this; resume when 10% below. Max 45°C.</string>
+    <string name="config_hashrate_target">Hashrate target (H/s)</string>
+    <string name="config_hashrate_target_hint">e.g. 100. Leave empty for no throttle</string>
+    <string name="battery_too_hot_toast">Battery too hot. Mining stopped.</string>
+    <string name="config_cores_used">Cores used</string>
+    <string name="config_cores_used_summary">Number of CPU cores used for mining (1 = single thread, can throttle with intensity below)</string>
+    <string name="config_max_intensity">Max CPU intensity (%)</string>
+    <string name="config_max_intensity_summary">1–100</string>
+    <string name="config_status_update_interval">Status update interval (ms)</string>
+    <string name="config_status_update_interval_summary">Update hashrate every X ms (dashboard)</string>
+    <string name="config_saved">Configuration saved</string>
+
+    <!-- Mining service -->
+    <string name="mining_notification_channel_name">Mining</string>
+    <string name="mining_notification_title">BTC Miner</string>
+    <string name="mining_notification_text">Mining active. Tap to open.</string>
+    <string name="mining_start">Start mining</string>
+    <string name="mining_stop">Stop mining</string>
+    <string name="mining_start_fail_config">Set pool URL and username in Configuration first.</string>
+    <string name="mining_start_fail_network">No suitable network. Enable WiFi or allow mobile data in Configuration.</string>
+    <string name="mining_start_fail_charging">Mine only when charging is on. Plug in the device to start.</string>
+    <string name="mining_started">Mining started</string>
+    <string name="mining_restarted">Mining restarted with new settings</string>
+    <string name="mining_failed">Mining failed: %s</string>
+
+    <!-- Dashboard stats -->
+    <string name="hash_rate_label">Hash Rate</string>
+    <string name="nonces_label">Nonces</string>
+    <string name="mining_timer_label">Mining Timer</string>
+    <string name="accepted_shares_label">Accepted Shares</string>
+    <string name="rejected_shares_label">Rejected Shares</string>
+    <string name="identified_shares_label">Identified Shares</string>
+    <string name="battery_temp_label">Battery temp</string>
+</resources>

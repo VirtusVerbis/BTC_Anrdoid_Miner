@@ -1,0 +1,80 @@
+package com.btcminer.android.config
+
+import android.content.Context
+import java.lang.Runtime
+
+/**
+ * Single source of truth for mining config. All access goes through this repository.
+ * Credentials and pool settings are stored encrypted; never log or send off-device.
+ */
+class MiningConfigRepository(context: Context) {
+
+    private val storage = SecureConfigStorage(context)
+
+    fun getConfig(): MiningConfig = MiningConfig(
+        stratumUrl = storage.getStr(SecureConfigStorage.KEY_STRATUM_URL),
+        stratumPort = storage.getInt(SecureConfigStorage.KEY_STRATUM_PORT, MiningConfig.DEFAULT_STRATUM_PORT),
+        stratumUser = storage.getStr(SecureConfigStorage.KEY_STRATUM_USER),
+        stratumPass = storage.getStr(SecureConfigStorage.KEY_STRATUM_PASS),
+        bitcoinAddress = storage.getStr(SecureConfigStorage.KEY_BITCOIN_ADDRESS),
+        lightningAddress = storage.getStr(SecureConfigStorage.KEY_LIGHTNING_ADDRESS),
+        workerName = storage.getStr(SecureConfigStorage.KEY_WORKER_NAME),
+        wifiOnly = storage.getBoolean(SecureConfigStorage.KEY_WIFI_ONLY, true),
+        mineOnlyWhenCharging = storage.getBoolean(SecureConfigStorage.KEY_MINE_ONLY_WHEN_CHARGING, false),
+        maxIntensityPercent = storage.getInt(
+            SecureConfigStorage.KEY_MAX_INTENSITY_PERCENT,
+            75
+        ).coerceIn(MiningConfig.MAX_INTENSITY_MIN, MiningConfig.MAX_INTENSITY_MAX),
+        maxWorkerThreads = run {
+            val maxCaps = Runtime.getRuntime().availableProcessors()
+            storage.getInt(SecureConfigStorage.KEY_MAX_WORKER_THREADS, minOf(4, maxCaps))
+                .coerceIn(MiningConfig.MAX_WORKER_THREADS_MIN, maxCaps)
+        },
+        statusUpdateIntervalMs = storage.getInt(
+            SecureConfigStorage.KEY_STATUS_UPDATE_INTERVAL_MS,
+            1000
+        ).coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX),
+        batteryTempFahrenheit = storage.getBoolean(SecureConfigStorage.KEY_BATTERY_TEMP_FAHRENHEIT, false),
+        maxBatteryTempC = storage.getInt(
+            SecureConfigStorage.KEY_MAX_BATTERY_TEMP_C,
+            MiningConfig.BATTERY_TEMP_DEFAULT_C
+        ).coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C),
+        hashrateTargetHps = storage.getStr(SecureConfigStorage.KEY_HASHRATE_TARGET_HPS).trim()
+            .takeIf { it.isNotEmpty() }?.toDoubleOrNull(),
+    )
+
+    fun saveConfig(config: MiningConfig) {
+        storage.commitBatch { edit ->
+            edit.putString(SecureConfigStorage.KEY_STRATUM_URL, config.stratumUrl)
+            edit.putInt(SecureConfigStorage.KEY_STRATUM_PORT, config.stratumPort)
+            edit.putString(SecureConfigStorage.KEY_STRATUM_USER, config.stratumUser)
+            edit.putString(SecureConfigStorage.KEY_STRATUM_PASS, config.stratumPass)
+            edit.putString(SecureConfigStorage.KEY_BITCOIN_ADDRESS, config.bitcoinAddress)
+            edit.putString(SecureConfigStorage.KEY_LIGHTNING_ADDRESS, config.lightningAddress)
+            edit.putString(SecureConfigStorage.KEY_WORKER_NAME, config.workerName)
+            edit.putBoolean(SecureConfigStorage.KEY_WIFI_ONLY, config.wifiOnly)
+            edit.putBoolean(SecureConfigStorage.KEY_MINE_ONLY_WHEN_CHARGING, config.mineOnlyWhenCharging)
+            edit.putInt(
+                SecureConfigStorage.KEY_MAX_INTENSITY_PERCENT,
+                config.maxIntensityPercent.coerceIn(MiningConfig.MAX_INTENSITY_MIN, MiningConfig.MAX_INTENSITY_MAX)
+            )
+            edit.putInt(
+                SecureConfigStorage.KEY_STATUS_UPDATE_INTERVAL_MS,
+                config.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
+            )
+            edit.putInt(
+                SecureConfigStorage.KEY_MAX_WORKER_THREADS,
+                config.maxWorkerThreads.coerceIn(MiningConfig.MAX_WORKER_THREADS_MIN, Runtime.getRuntime().availableProcessors())
+            )
+            edit.putBoolean(SecureConfigStorage.KEY_BATTERY_TEMP_FAHRENHEIT, config.batteryTempFahrenheit)
+            edit.putInt(
+                SecureConfigStorage.KEY_MAX_BATTERY_TEMP_C,
+                config.maxBatteryTempC.coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C)
+            )
+            edit.putString(
+                SecureConfigStorage.KEY_HASHRATE_TARGET_HPS,
+                config.hashrateTargetHps?.toString() ?: ""
+            )
+        }
+    }
+}

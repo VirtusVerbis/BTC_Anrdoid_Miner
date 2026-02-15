@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BTCMiner" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/ic_launcher_background</item>
+        <item name="colorOnPrimary">@color/white</item>
+    </style>
+</resources>
