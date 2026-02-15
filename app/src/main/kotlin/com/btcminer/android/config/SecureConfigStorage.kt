@@ -64,5 +64,7 @@ class SecureConfigStorage(context: Context) {
         const val KEY_BATTERY_TEMP_FAHRENHEIT = "battery_temp_fahrenheit"
         const val KEY_MAX_BATTERY_TEMP_C = "max_battery_temp_c"
         const val KEY_HASHRATE_TARGET_HPS = "hashrate_target_hps"
+        const val KEY_GPU_CORES = "gpu_cores"
+        const val KEY_GPU_UTILIZATION_PERCENT = "gpu_utilization_percent"
     }
 }

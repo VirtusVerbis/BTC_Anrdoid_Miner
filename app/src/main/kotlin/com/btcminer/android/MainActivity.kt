@@ -48,8 +48,9 @@ class MainActivity : AppCompatActivity() {
             val hashrateThrottle = service?.isHashrateThrottleActive() == true
             val batteryThrottle = service?.isBatteryThrottleActive() == true
             val orange = ContextCompat.getColor(this@MainActivity, R.color.bitcoin_orange)
-            binding.hashRateValue.setTextColor(if (hashrateThrottle) if (flashPhase) Color.RED else Color.WHITE else orange)
-            binding.batteryTempValue.setTextColor(if (batteryThrottle) if (flashPhase) Color.RED else Color.WHITE else orange)
+            val throttleSecondary = ContextCompat.getColor(this@MainActivity, R.color.throttle_secondary)
+            binding.hashRateValue.setTextColor(if (hashrateThrottle) if (flashPhase) Color.RED else throttleSecondary else orange)
+            binding.batteryTempValue.setTextColor(if (batteryThrottle) if (flashPhase) Color.RED else throttleSecondary else orange)
             flashPhase = !flashPhase
             handler.postDelayed(this, THROTTLE_FLASH_PERIOD_MS / 2)
         }
@@ -60,9 +61,8 @@ class MainActivity : AppCompatActivity() {
             val service = miningService
             if (service != null) {
                 val status = service.getStatus()
-                val history = service.getHashrateHistory()
                 updateStatsUi(status, service)
-                updateChart(history)
+                updateChart(service.getHashrateHistoryCpu(), service.getHashrateHistoryGpu())
             }
             handler.postDelayed(this, 1000L)
         }
@@ -133,12 +133,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupChart() {
+        val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
         binding.hashRateChart.description.isEnabled = false
         binding.hashRateChart.legend.isEnabled = false
+        binding.hashRateChart.legend.setTextColor(chartTextColor)
         binding.hashRateChart.xAxis.setDrawLabels(true)
-        binding.hashRateChart.xAxis.setTextColor(Color.WHITE)
+        binding.hashRateChart.xAxis.setTextColor(chartTextColor)
         binding.hashRateChart.axisLeft.setDrawLabels(true)
-        binding.hashRateChart.axisLeft.setTextColor(Color.WHITE)
+        binding.hashRateChart.axisLeft.setTextColor(chartTextColor)
         binding.hashRateChart.axisRight.isEnabled = false
     }
 
@@ -149,6 +151,12 @@ class MainActivity : AppCompatActivity() {
             "— H/s"
         }
         binding.hashRateValue.text = hashrateStr
+        val gpuHashrateStr = if (status.state == MiningStatus.State.Mining) {
+            String.format(Locale.US, "%.2f H/s", status.gpuHashrateHs)
+        } else {
+            "—"
+        }
+        binding.gpuHashRateValue.text = gpuHashrateStr
         binding.noncesValue.text = status.noncesScanned.toString()
         binding.acceptedSharesValue.text = status.acceptedShares.toString()
         binding.rejectedSharesValue.text = status.rejectedShares.toString()
@@ -194,6 +202,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun clearStatsUi() {
         binding.hashRateValue.text = "0.00 H/s"
+        binding.gpuHashRateValue.text = "0.00 H/s"
         binding.noncesValue.text = "0"
         binding.acceptedSharesValue.text = "0"
         binding.rejectedSharesValue.text = "0"
@@ -204,17 +213,19 @@ class MainActivity : AppCompatActivity() {
         binding.hashRateChart.invalidate()
     }
 
-    private fun updateChart(history: List<Double>) {
-        if (history.isEmpty()) {
+    private fun updateChart(historyCpu: List<Double>, historyGpu: List<Double>) {
+        val maxSize = maxOf(historyCpu.size, historyGpu.size)
+        if (maxSize == 0) {
             binding.hashRateChart.data = null
             binding.hashRateChart.invalidate()
             return
         }
         val orange = ContextCompat.getColor(this, R.color.bitcoin_orange)
         val gray = Color.GRAY
+        val green = Color.parseColor("#4CAF50")
 
-        val historyEntries = history.mapIndexed { i, v -> Entry(i.toFloat(), v.toFloat()) }
-        val historySet = LineDataSet(historyEntries, "").apply {
+        val cpuEntries = historyCpu.mapIndexed { i, v -> Entry(i.toFloat(), v.toFloat()) }
+        val cpuSet = LineDataSet(cpuEntries, "CPU").apply {
             setColor(gray)
             setCircleColor(gray)
             lineWidth = 2f
@@ -222,9 +233,21 @@ class MainActivity : AppCompatActivity() {
             setDrawValues(false)
         }
 
-        val average = history.average()
-        val avgEntries = history.mapIndexed { i, _ -> Entry(i.toFloat(), average.toFloat()) }
-        val avgSet = LineDataSet(avgEntries, "").apply {
+        val gpuEntries = historyGpu.mapIndexed { i, v -> Entry(i.toFloat(), v.toFloat()) }
+        val gpuSet = LineDataSet(gpuEntries, "GPU").apply {
+            setColor(green)
+            setCircleColor(green)
+            lineWidth = 2f
+            setDrawCircles(false)
+            setDrawValues(false)
+        }
+
+        val totalHistory = (0 until maxSize).map { i ->
+            (historyCpu.getOrNull(i) ?: 0.0) + (historyGpu.getOrNull(i) ?: 0.0)
+        }
+        val avg = if (totalHistory.isNotEmpty()) totalHistory.average() else 0.0
+        val avgEntries = (0 until maxSize).map { i -> Entry(i.toFloat(), avg.toFloat()) }
+        val avgSet = LineDataSet(avgEntries, "Avg").apply {
             setColor(orange)
             setCircleColor(orange)
             lineWidth = 2f
@@ -232,7 +255,9 @@ class MainActivity : AppCompatActivity() {
             setDrawValues(false)
         }
 
-        binding.hashRateChart.data = LineData(historySet, avgSet)
+        binding.hashRateChart.data = LineData(cpuSet, gpuSet, avgSet)
+        binding.hashRateChart.legend.isEnabled = true
+        binding.hashRateChart.legend.setTextColor(ContextCompat.getColor(this, R.color.chart_axis_legend))
         binding.hashRateChart.invalidate()
     }
 
