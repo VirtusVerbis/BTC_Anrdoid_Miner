@@ -24,6 +24,7 @@ interface MiningEngine {
 data class MiningStatus(
     val state: State,
     val hashrateHs: Double = 0.0,
+    val gpuHashrateHs: Double = 0.0,
     val noncesScanned: Long = 0L,
     val acceptedShares: Long = 0L,
     val rejectedShares: Long = 0L,

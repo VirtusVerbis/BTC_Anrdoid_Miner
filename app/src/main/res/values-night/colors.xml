@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="chart_axis_legend">#DEE0E0E0</color>
+    <color name="throttle_secondary">#FFFFFFFF</color>
+</resources>

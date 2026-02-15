@@ -153,7 +153,8 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/config_battery_temp_throttle" />
+            android:text="@string/config_battery_temp_throttle"
+            android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.slider.Slider
             android:id="@+id/config_slider_battery_temp"
@@ -169,7 +170,8 @@
             android:id="@+id/config_battery_temp_value"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="30 °C" />
+            android:text="30 °C"
+            android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/config_hashrate_target"
@@ -191,7 +193,8 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/config_cores_used" />
+            android:text="@string/config_cores_used"
+            android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.slider.Slider
             android:id="@+id/config_slider_cores"
@@ -207,13 +210,15 @@
             android:id="@+id/config_cores_value"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="1" />
+            android:text="1"
+            android:textColor="?attr/colorOnSurface" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/config_max_intensity" />
+            android:text="@string/config_max_intensity"
+            android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.slider.Slider
             android:id="@+id/config_slider_intensity"
@@ -228,13 +233,69 @@
             android:id="@+id/config_max_intensity_value"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="75%" />
+            android:text="75%"
+            android:textColor="?attr/colorOnSurface" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/config_status_update_interval" />
+            android:text="@string/config_gpu_section"
+            android:textColor="?attr/colorOnSurface" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/config_gpu_cores"
+            android:textColor="?attr/colorOnSurface" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/config_slider_gpu_cores"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="0"
+            android:valueTo="8"
+            android:value="0"
+            android:stepSize="1"
+            app:labelBehavior="gone" />
+
+        <TextView
+            android:id="@+id/config_gpu_cores_value"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0"
+            android:textColor="?attr/colorOnSurface" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/config_gpu_utilization"
+            android:textColor="?attr/colorOnSurface" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/config_slider_gpu_utilization"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="1"
+            android:valueTo="100"
+            android:value="75"
+            app:labelBehavior="gone" />
+
+        <TextView
+            android:id="@+id/config_gpu_utilization_value"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="75%"
+            android:textColor="?attr/colorOnSurface" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/config_status_update_interval"
+            android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.slider.Slider
             android:id="@+id/config_slider_status_interval"
@@ -250,7 +311,8 @@
             android:id="@+id/config_status_interval_value"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="1000 ms" />
+            android:text="1000 ms"
+            android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/config_save"

@@ -4,4 +4,6 @@
     <color name="white">#FFFFFFFF</color>
     <color name="ic_launcher_background">#FF1A1A2E</color>
     <color name="bitcoin_orange">#F7931A</color>
+    <color name="chart_axis_legend">#DE000000</color>
+    <color name="throttle_secondary">#DE000000</color>
 </resources>

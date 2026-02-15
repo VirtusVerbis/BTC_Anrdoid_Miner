@@ -3,5 +3,11 @@
     <style name="Theme.BTCMiner" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="colorPrimary">@color/ic_launcher_background</item>
         <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSurface">@color/white</item>
+        <item name="colorOnSurface">@color/black</item>
+        <item name="colorSurfaceVariant">#FFF5F5F5</item>
+        <item name="colorOnSurfaceVariant">#FF49454F</item>
+        <item name="colorOutline">#FF79747E</item>
+        <item name="android:windowBackground">@color/white</item>
     </style>
 </resources>

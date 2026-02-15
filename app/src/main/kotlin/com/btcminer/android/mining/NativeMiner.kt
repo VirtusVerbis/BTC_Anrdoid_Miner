@@ -33,4 +33,15 @@ object NativeMiner {
      * @param target 32-byte pool target (big-endian); hash must be <= target.
      */
     external fun nativeScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray): Int
+
+    /**
+     * Whether Vulkan is available for GPU compute. When true, [gpuScanNonces] can be used.
+     */
+    external fun gpuIsAvailable(): Boolean
+
+    /**
+     * Scan nonce range on GPU path. Same contract as [nativeScanNonces]. Returns winning nonce or -1.
+     * When Vulkan is not available returns -1 without scanning.
+     */
+    external fun gpuScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray): Int
 }
