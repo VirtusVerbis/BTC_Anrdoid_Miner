@@ -8,10 +8,8 @@ Cursor AI
 References:
 https://github.com/BitMaker-hub/NerdMiner_v2/releases
 
-![alt text](https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png "Sample Run" width="400" height="240") 
+![alt text](https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png "Sample Run" ) 
 
-<img src="[https://github.com/VirtusVerbis/SF2_Bitcoin_Bridge/blob/main/readme_src/YouTube_Thumb1.pn](https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png" 
-alt="Click to watch trailer" width="240" height="400" border="10" />
 
 
 ## Features
