@@ -25,6 +25,7 @@ class StratumClient(
     private val password: String,
     private val useTls: Boolean = false,
     private val onReconnectRequest: ((host: String, port: Int) -> Unit)? = null,
+    private val onTemplateReceived: (() -> Unit)? = null,
 ) {
     private val socketRef = AtomicReference<Socket?>(null)
     private val writerRef = AtomicReference<PrintWriter?>(null)
@@ -215,6 +216,7 @@ class StratumClient(
             ntimeHex = params.optString(7),
             cleanJobs = params.optBoolean(8, false),
         ))
+        onTemplateReceived?.invoke()
     }
 
     private fun parseSetExtranonce(params: JSONArray?) {

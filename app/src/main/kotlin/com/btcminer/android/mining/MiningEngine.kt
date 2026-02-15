@@ -19,6 +19,9 @@ interface MiningEngine {
 
     /** Current status for UI (e.g. "Connecting", "Mining", "Stopped"). */
     fun getStatus(): MiningStatus
+
+    /** Reset persistent UI counters (accepted/rejected/identified shares, block templates, best difficulty, nonces). */
+    fun resetAllCounters() {}
 }
 
 data class MiningStatus(
@@ -29,6 +32,8 @@ data class MiningStatus(
     val acceptedShares: Long = 0L,
     val rejectedShares: Long = 0L,
     val identifiedShares: Long = 0L,
+    val bestDifficulty: Double = 0.0,
+    val blockTemplates: Long = 0L,
     val lastError: String? = null,
 ) {
     enum class State { Idle, Connecting, Mining, Error }

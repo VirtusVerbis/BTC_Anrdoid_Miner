@@ -31,15 +31,16 @@ class NativeMiningEngine(
     private val acceptedShares = AtomicLong(0)
     private val rejectedShares = AtomicLong(0)
     private val identifiedShares = AtomicLong(0)
+    private val totalNoncesScanned = AtomicLong(0)
+    private val bestDifficultyRef = AtomicReference(0.0)
+    private val blockTemplatesCount = AtomicLong(0)
     private val gpuNoncesScanned = AtomicLong(0)
     private val reconnectTargetRef = AtomicReference<Pair<String, Int>?>(null)
 
     override fun start(config: MiningConfig) {
         if (running.getAndSet(true)) return
         AppLog.d(LOG_TAG) { "start()" }
-        acceptedShares.set(0)
-        rejectedShares.set(0)
-        identifiedShares.set(0)
+        // Persistent counters (acceptedShares, rejectedShares, identifiedShares, totalNoncesScanned, bestDifficultyRef, blockTemplatesCount) are not reset here
 
         val urlTrimmed = config.stratumUrl.trim()
         val host = urlTrimmed
@@ -61,7 +62,8 @@ class NativeMiningEngine(
 
         // First connect on this thread so the service sees correct isRunning() when start() returns
         val client = StratumClient(host, port, username, password, useTls = useTls,
-            onReconnectRequest = { h, p -> reconnectTargetRef.set(Pair(h, p)) })
+            onReconnectRequest = { h, p -> reconnectTargetRef.set(Pair(h, p)) },
+            onTemplateReceived = { blockTemplatesCount.incrementAndGet() })
         val err = client.connect()
         if (err != null) {
             AppLog.e(LOG_TAG) { "Connect failed: $err" }
@@ -75,10 +77,12 @@ class NativeMiningEngine(
             MiningStatus.State.Mining,
             hashrateHs = 0.0,
             gpuHashrateHs = 0.0,
-            noncesScanned = 0L,
+            noncesScanned = totalNoncesScanned.get(),
             acceptedShares = acceptedShares.get(),
             rejectedShares = rejectedShares.get(),
             identifiedShares = identifiedShares.get(),
+            bestDifficulty = bestDifficultyRef.get(),
+            blockTemplates = blockTemplatesCount.get(),
         ))
 
         var backoff = 5000L
@@ -103,7 +107,8 @@ class NativeMiningEngine(
                     connectTls = connectPort == 443 || useTls
                 }
                 val client2 = StratumClient(connectHost, connectPort, username, password, useTls = connectTls,
-                    onReconnectRequest = { h, p -> reconnectTargetRef.set(Pair(h, p)) })
+                    onReconnectRequest = { h, p -> reconnectTargetRef.set(Pair(h, p)) },
+                    onTemplateReceived = { blockTemplatesCount.incrementAndGet() })
                 val err2 = client2.connect()
                 if (err2 != null) {
                     AppLog.e(LOG_TAG) { "Connect failed: $err2" }
@@ -119,10 +124,12 @@ class NativeMiningEngine(
                     MiningStatus.State.Mining,
                     hashrateHs = 0.0,
                     gpuHashrateHs = 0.0,
-                    noncesScanned = 0L,
+                    noncesScanned = totalNoncesScanned.get(),
                     acceptedShares = acceptedShares.get(),
                     rejectedShares = rejectedShares.get(),
                     identifiedShares = identifiedShares.get(),
+                    bestDifficulty = bestDifficultyRef.get(),
+                    blockTemplates = blockTemplatesCount.get(),
                 ))
                 try {
                     runMiningLoop(client2, config)
@@ -140,6 +147,8 @@ class NativeMiningEngine(
                 acceptedShares = acceptedShares.get(),
                 rejectedShares = rejectedShares.get(),
                 identifiedShares = identifiedShares.get(),
+                bestDifficulty = bestDifficultyRef.get(),
+                blockTemplates = blockTemplatesCount.get(),
             ))
         }.apply { isDaemon = true; start() }
         minerThreadRef.set(minerThread)
@@ -155,7 +164,18 @@ class NativeMiningEngine(
             acceptedShares = acceptedShares.get(),
             rejectedShares = rejectedShares.get(),
             identifiedShares = identifiedShares.get(),
+            bestDifficulty = bestDifficultyRef.get(),
+            blockTemplates = blockTemplatesCount.get(),
         ))
+    }
+
+    override fun resetAllCounters() {
+        acceptedShares.set(0)
+        rejectedShares.set(0)
+        identifiedShares.set(0)
+        totalNoncesScanned.set(0)
+        bestDifficultyRef.set(0.0)
+        blockTemplatesCount.set(0)
     }
 
     override fun isRunning(): Boolean = running.get() && clientRef.get()?.isRunning() == true
@@ -166,7 +186,6 @@ class NativeMiningEngine(
         val en1Hex = client.getExtranonce1Hex() ?: return
         val en2Size = client.getExtranonce2Size().coerceAtLeast(4)
         val statsStartTime = System.currentTimeMillis()
-        val totalNoncesScanned = AtomicLong(0)
         gpuNoncesScanned.set(0)
         var lastLogTime = statsStartTime
         val statusUpdateIntervalMs = config.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
@@ -178,7 +197,10 @@ class NativeMiningEngine(
             val throttle = throttleStateRef?.get()
             if (throttle?.stopDueToOverheat == true) {
                 AppLog.d(LOG_TAG) { "Stopping due to battery overheat" }
-                statusRef.set(MiningStatus(MiningStatus.State.Idle, gpuHashrateHs = 0.0))
+                statusRef.set(MiningStatus(MiningStatus.State.Idle, gpuHashrateHs = 0.0,
+                    acceptedShares = acceptedShares.get(), rejectedShares = rejectedShares.get(),
+                    identifiedShares = identifiedShares.get(), bestDifficulty = bestDifficultyRef.get(),
+                    blockTemplates = blockTemplatesCount.get(), noncesScanned = totalNoncesScanned.get()))
                 return
             }
             var job = client.getCurrentJob()
@@ -290,6 +312,8 @@ class NativeMiningEngine(
                             acceptedShares = acceptedShares.get(),
                             rejectedShares = rejectedShares.get(),
                             identifiedShares = identifiedShares.get(),
+                            bestDifficulty = bestDifficultyRef.get(),
+                            blockTemplates = blockTemplatesCount.get(),
                         ))
                         lastStatusUpdateTime = now
                     }
@@ -382,6 +406,8 @@ class NativeMiningEngine(
                         acceptedShares = acceptedShares.get(),
                         rejectedShares = rejectedShares.get(),
                         identifiedShares = identifiedShares.get(),
+                        bestDifficulty = bestDifficultyRef.get(),
+                        blockTemplates = blockTemplatesCount.get(),
                     ))
                     if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
                         AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, gpuHashrateHs, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
@@ -394,6 +420,9 @@ class NativeMiningEngine(
             if (!running.get()) break
             if (foundNonce < 0) continue
 
+            val header80 = StratumHeaderBuilder.header76WithNonce(header76, foundNonce)
+            val diff = StratumHeaderBuilder.difficultyFromHeader80(header80)
+            bestDifficultyRef.updateAndGet { maxOf(it, diff) }
             identifiedShares.incrementAndGet()
             if (client.getCurrentJob()?.jobId != job.jobId) {
                 AppLog.d(LOG_TAG) { "Stale job, discarding share" }
@@ -421,6 +450,8 @@ class NativeMiningEngine(
                 acceptedShares = acceptedShares.get(),
                 rejectedShares = rejectedShares.get(),
                 identifiedShares = identifiedShares.get(),
+                bestDifficulty = bestDifficultyRef.get(),
+                blockTemplates = blockTemplatesCount.get(),
             ))
         }
     }

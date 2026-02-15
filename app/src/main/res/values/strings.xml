@@ -66,4 +66,13 @@
     <string name="rejected_shares_label">Rejected Shares</string>
     <string name="identified_shares_label">Identified Shares</string>
     <string name="battery_temp_label">Battery temp</string>
+    <string name="best_difficulty_label">Best difficulty</string>
+    <string name="block_template_label">Block template</string>
+
+    <!-- Reset counters (Config) -->
+    <string name="reset_all_ui_counters">Reset All UI Counters</string>
+    <string name="reset_counters_dialog_title">Reset counters?</string>
+    <string name="reset_counters_dialog_message">Do you want to reset all counters? (Accepted, Rejected, Identified shares, Block templates, Best difficulty, Nonces)</string>
+    <string name="reset_counters_yes">Yes</string>
+    <string name="reset_counters_no">No</string>
 </resources>

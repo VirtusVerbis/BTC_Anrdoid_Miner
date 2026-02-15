@@ -27,13 +27,21 @@ import com.btcminer.android.mining.NativeMiner
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
+import org.json.JSONArray
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.util.Locale
+import java.util.Scanner
 
 class MainActivity : AppCompatActivity() {
 
     companion object {
         /** Full cycle period (ms) for throttle flash (red/white). Low frequency for safety. */
         private const val THROTTLE_FLASH_PERIOD_MS = 1000L
+        /** How often to fetch wallet balance from Mempool.space (ms). */
+        private const val MEMPOOL_BALANCE_FETCH_INTERVAL_MS = 60_000L
+        private const val MEMPOOL_UTXO_URL = "https://mempool.space/api/address"
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -68,6 +76,50 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val mempoolFetchRunnable: Runnable = object : Runnable {
+        override fun run() {
+            val self = this
+            val address = configRepository.getConfig().bitcoinAddress.trim()
+            if (address.isEmpty()) {
+                binding.walletBalanceValue.text = "—"
+                handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
+                return
+            }
+            Thread {
+                var result: String? = null
+                try {
+                    val encoded = URLEncoder.encode(address, "UTF-8")
+                    val url = URL("$MEMPOOL_UTXO_URL/$encoded/utxo")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.connectTimeout = 15_000
+                    conn.readTimeout = 15_000
+                    val code = conn.responseCode
+                    if (code !in 200..299) {
+                        result = "INVALID"
+                    } else {
+                        val text = conn.inputStream.use { Scanner(it).useDelimiter("\\A").next() }
+                        val arr = JSONArray(text)
+                        var sumSat = 0L
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.optJSONObject(i) ?: continue
+                            sumSat += obj.optLong("value", 0L)
+                        }
+                        val btc = sumSat / 100_000_000.0
+                        result = String.format(Locale.US, "₿ %.8f", btc)
+                    }
+                } catch (_: Exception) {
+                    result = "INVALID"
+                }
+                val toShow = result
+                runOnUiThread {
+                    binding.walletBalanceValue.text = toShow
+                    handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
+                }
+            }.start()
+        }
+    }
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             miningService = (binder as? MiningForegroundService.LocalBinder)?.getService()
@@ -92,11 +144,11 @@ class MainActivity : AppCompatActivity() {
 
         // Phase 1: verify native miner loads and responds
         Toast.makeText(this, "Native miner: ${NativeMiner.nativeVersion()}", Toast.LENGTH_SHORT).show()
-        // Phase 2: verify SHA-256 implementation
+        // Validate: SHA-256 implementation
         val phase2Ok = NativeMiner.nativeTestSha256()
         Toast.makeText(
             this,
-            if (phase2Ok) "Phase 2: SHA-256 OK" else "Phase 2: SHA-256 FAIL",
+            if (phase2Ok) "Validate: SHA-256 OK" else "Validate: SHA-256 FAIL",
             Toast.LENGTH_SHORT
         ).show()
 
@@ -113,6 +165,7 @@ class MainActivity : AppCompatActivity() {
         super.onStart()
         handler.post(pollRunnable)
         handler.post(flashRunnable)
+        handler.post(mempoolFetchRunnable)
         bindService(
             Intent(this, MiningForegroundService::class.java),
             connection,
@@ -128,6 +181,7 @@ class MainActivity : AppCompatActivity() {
         miningService = null
         handler.removeCallbacks(pollRunnable)
         handler.removeCallbacks(flashRunnable)
+        handler.removeCallbacks(mempoolFetchRunnable)
         binding.hashRateValue.setTextColor(ContextCompat.getColor(this, R.color.bitcoin_orange))
         binding.batteryTempValue.setTextColor(ContextCompat.getColor(this, R.color.bitcoin_orange))
     }
@@ -161,6 +215,8 @@ class MainActivity : AppCompatActivity() {
         binding.acceptedSharesValue.text = status.acceptedShares.toString()
         binding.rejectedSharesValue.text = status.rejectedShares.toString()
         binding.root.findViewById<TextView>(R.id.identified_shares_value).text = status.identifiedShares.toString()
+        binding.bestDifficultyValue.text = if (status.bestDifficulty > 0.0) String.format(Locale.US, "%.6f", status.bestDifficulty) else "—"
+        binding.blockTemplateValue.text = status.blockTemplates.toString()
         val startMs = service?.getMiningStartTimeMillis()
         val timerStr = if (status.state == MiningStatus.State.Mining && startMs != null) {
             formatElapsed(System.currentTimeMillis() - startMs)
@@ -203,14 +259,14 @@ class MainActivity : AppCompatActivity() {
     private fun clearStatsUi() {
         binding.hashRateValue.text = "0.00 H/s"
         binding.gpuHashRateValue.text = "0.00 H/s"
-        binding.noncesValue.text = "0"
-        binding.acceptedSharesValue.text = "0"
-        binding.rejectedSharesValue.text = "0"
-        binding.root.findViewById<TextView>(R.id.identified_shares_value).text = "0"
         binding.miningTimerValue.text = "00:00:00:00"
         binding.batteryTempValue.text = "—"
+        binding.bestDifficultyValue.text = "—"
+        binding.blockTemplateValue.text = "—"
+        binding.walletBalanceValue.text = "—"
         binding.hashRateChart.data = null
         binding.hashRateChart.invalidate()
+        // Persistent counters (nonces, accepted/rejected/identified shares, block template, best difficulty) are not zeroed here; they reset only via Config "Reset All UI Counters"
     }
 
     private fun updateChart(historyCpu: List<Double>, historyGpu: List<Double>) {

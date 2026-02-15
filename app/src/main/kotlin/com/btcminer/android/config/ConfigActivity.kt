@@ -1,10 +1,15 @@
 package com.btcminer.android.config
 
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.IBinder
 import android.view.View
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.btcminer.android.R
 import com.btcminer.android.databinding.ActivityConfigBinding
@@ -48,6 +53,7 @@ class ConfigActivity : AppCompatActivity() {
         })
         binding.configSave.setOnClickListener { saveConfig() }
         binding.configSaveFloating.setOnClickListener { saveConfig() }
+        binding.configResetCounters.setOnClickListener { showResetCountersDialog() }
         updateFloatingButtonVisibility()
         binding.configScroll.viewTreeObserver.addOnGlobalLayoutListener {
             updateFloatingButtonVisibility()
@@ -66,6 +72,28 @@ class ConfigActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean {
         onBackPressedDispatcher.onBackPressed()
         return true
+    }
+
+    private fun showResetCountersDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.reset_counters_dialog_title)
+            .setMessage(R.string.reset_counters_dialog_message)
+            .setPositiveButton(R.string.reset_counters_yes) { _, _ ->
+                val conn = object : ServiceConnection {
+                    override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                        (binder as? MiningForegroundService.LocalBinder)?.getService()?.resetAllCounters()
+                        try { unbindService(this) } catch (_: Exception) { }
+                    }
+                    override fun onServiceDisconnected(name: ComponentName?) {}
+                }
+                bindService(
+                    Intent(this, MiningForegroundService::class.java),
+                    conn,
+                    Context.BIND_AUTO_CREATE
+                )
+            }
+            .setNegativeButton(R.string.reset_counters_no) { dialog, _ -> dialog.dismiss() }
+            .show()
     }
 
     private fun loadConfig() {
