@@ -2,6 +2,12 @@
 
 Android app for CPU-based Bitcoin mining via Stratum pools. Uses **in-app native code** (C, built with NDK/CMake) for SHA-256 and nonce scanning—no external miner binary required. Open-source; build with Android Studio or Gradle (sideload; not on Play Store).
 
+Created using:
+Cursor AI
+
+References:
+https://github.com/BitMaker-hub/NerdMiner_v2/releases
+
 ## Features
 
 - **Stratum v1** pool support (TCP and TLS)
