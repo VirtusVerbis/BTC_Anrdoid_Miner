@@ -34,23 +34,28 @@ class MiningForegroundService : Service() {
     private var miningStartTimeMillis: Long? = null
 
     private val handler = Handler(Looper.getMainLooper())
-    private val hashrateHistory = mutableListOf<Double>()
+    private val hashrateHistoryCpu = mutableListOf<Double>()
+    private val hashrateHistoryGpu = mutableListOf<Double>()
     private val maxHistorySize = 120
     private val sampleRunnable = object : Runnable {
         override fun run() {
             if (engine.isRunning()) {
                 val status = engine.getStatus()
                 if (status.state == MiningStatus.State.Mining) {
-                    synchronized(hashrateHistory) {
-                        hashrateHistory.add(status.hashrateHs)
-                        while (hashrateHistory.size > maxHistorySize) hashrateHistory.removeAt(0)
+                    synchronized(hashrateHistoryCpu) {
+                        hashrateHistoryCpu.add(status.hashrateHs)
+                        while (hashrateHistoryCpu.size > maxHistorySize) hashrateHistoryCpu.removeAt(0)
+                    }
+                    synchronized(hashrateHistoryGpu) {
+                        hashrateHistoryGpu.add(status.gpuHashrateHs)
+                        while (hashrateHistoryGpu.size > maxHistorySize) hashrateHistoryGpu.removeAt(0)
                     }
                 }
                 val config = configRepository.getConfig()
                 val tempTenthsC = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
                     ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
                 val tempC = tempTenthsC / 10.0
-                val hashrateHs = status.hashrateHs
+                val totalHs = status.hashrateHs + status.gpuHashrateHs
 
                 val stopDueToOverheat = tempTenthsC != 0 && tempC >= MiningConfig.BATTERY_TEMP_HARD_STOP_C
                 val resumeTempC = config.maxBatteryTempC * 0.9
@@ -63,8 +68,8 @@ class MiningForegroundService : Service() {
                 val hashrateTarget = config.hashrateTargetHps
                 lastHashrateThrottleActive = when {
                     hashrateTarget == null -> false
-                    hashrateHs > hashrateTarget -> true
-                    hashrateHs <= hashrateTarget * 0.9 -> false
+                    totalHs > hashrateTarget -> true
+                    totalHs <= hashrateTarget * 0.9 -> false
                     else -> lastHashrateThrottleActive
                 }
                 if (stopDueToOverheat) {
@@ -89,7 +94,8 @@ class MiningForegroundService : Service() {
 
     fun getStatus(): MiningStatus = engine.getStatus()
 
-    fun getHashrateHistory(): List<Double> = synchronized(hashrateHistory) { hashrateHistory.toList() }
+    fun getHashrateHistoryCpu(): List<Double> = synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.toList() }
+    fun getHashrateHistoryGpu(): List<Double> = synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.toList() }
 
     fun isBatteryThrottleActive(): Boolean = lastBatteryThrottleActive
     fun isHashrateThrottleActive(): Boolean = lastHashrateThrottleActive
@@ -158,7 +164,8 @@ class MiningForegroundService : Service() {
         AppLog.d(LOG_TAG) { "restartMining()" }
         if (!engine.isRunning()) return
         handler.removeCallbacks(sampleRunnable)
-        synchronized(hashrateHistory) { hashrateHistory.clear() }
+        synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
+        synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
         unregisterConstraintReceiver()
         engine.stop()
         Thread {
@@ -218,7 +225,8 @@ class MiningForegroundService : Service() {
         AppLog.d(LOG_TAG) { "stopMining()" }
         miningStartTimeMillis = null
         handler.removeCallbacks(sampleRunnable)
-        synchronized(hashrateHistory) { hashrateHistory.clear() }
+        synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
+        synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
         unregisterConstraintReceiver()
         engine.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)

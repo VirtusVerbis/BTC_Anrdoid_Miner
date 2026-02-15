@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BTC Miner</string>
-    <string name="dashboard_title">BTC Miner</string>
+    <string name="dashboard_title">Bitcoin Android Miner</string>
 
     <!-- Configuration -->
     <string name="config_title">Configuration</string>
@@ -35,6 +35,11 @@
     <string name="config_cores_used_summary">Number of CPU cores used for mining (1 = single thread, can throttle with intensity below)</string>
     <string name="config_max_intensity">Max CPU intensity (%)</string>
     <string name="config_max_intensity_summary">1–100</string>
+    <string name="config_gpu_section">GPU</string>
+    <string name="config_gpu_cores">GPU Cores</string>
+    <string name="config_gpu_cores_summary">Parallelism level (0 = GPU off)</string>
+    <string name="config_gpu_utilization">GPU Utilization (%)</string>
+    <string name="config_gpu_utilization_summary">1–100, like CPU intensity</string>
     <string name="config_status_update_interval">Status update interval (ms)</string>
     <string name="config_status_update_interval_summary">Update hashrate every X ms (dashboard)</string>
     <string name="config_saved">Configuration saved</string>
@@ -53,7 +58,8 @@
     <string name="mining_failed">Mining failed: %s</string>
 
     <!-- Dashboard stats -->
-    <string name="hash_rate_label">Hash Rate</string>
+    <string name="hash_rate_label">Hash Rate (CPU)</string>
+    <string name="hash_rate_gpu_label">Hash Rate (GPU)</string>
     <string name="nonces_label">Nonces</string>
     <string name="mining_timer_label">Mining Timer</string>
     <string name="accepted_shares_label">Accepted Shares</string>

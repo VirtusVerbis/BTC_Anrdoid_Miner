@@ -20,6 +20,8 @@ data class MiningConfig(
     val batteryTempFahrenheit: Boolean = false,
     val maxBatteryTempC: Int = 30,
     val hashrateTargetHps: Double? = null,
+    val gpuCores: Int = 0,
+    val gpuUtilizationPercent: Int = 75,
 ) {
     fun isValidForMining(): Boolean =
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()
@@ -34,5 +36,9 @@ data class MiningConfig(
         const val MAX_BATTERY_TEMP_C = 45
         const val BATTERY_TEMP_DEFAULT_C = 30
         const val BATTERY_TEMP_HARD_STOP_C = 50
+        const val GPU_CORES_MIN = 0
+        const val GPU_CORES_MAX = 8
+        const val GPU_UTILIZATION_MIN = 1
+        const val GPU_UTILIZATION_MAX = 100
     }
 }

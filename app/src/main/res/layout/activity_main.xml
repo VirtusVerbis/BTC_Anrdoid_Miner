@@ -18,6 +18,7 @@
             android:text="@string/dashboard_title"
             android:textSize="24sp"
             android:textStyle="bold"
+            android:textColor="?attr/colorOnSurface"
             android:gravity="center_horizontal" />
 
         <com.google.android.material.button.MaterialButton
@@ -25,21 +26,34 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:text="@string/config_title" />
+            android:text="@string/config_title"
+            android:textColor="@color/black"
+            app:backgroundTint="@color/bitcoin_orange" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/button_start_mining"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/mining_start" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/button_stop_mining"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/mining_stop" />
+            android:orientation="horizontal"
+            android:layout_marginTop="16dp">
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_start_mining"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"
+                android:text="@string/mining_start"
+                android:textColor="@color/black"
+                app:backgroundTint="@color/bitcoin_orange" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_stop_mining"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:text="@string/mining_stop"
+                android:textColor="@color/black"
+                app:backgroundTint="@color/bitcoin_orange" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/hash_rate_value"
@@ -57,6 +71,26 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
             android:text="@string/hash_rate_label"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/gpu_hash_rate_value"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:layout_gravity="center_horizontal"
+            android:text="0.00 H/s"
+            android:textColor="@color/bitcoin_orange"
+            android:textSize="22sp" />
+
+        <TextView
+            android:id="@+id/gpu_hash_rate_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:text="@string/hash_rate_gpu_label"
+            android:textColor="?attr/colorOnSurface"
             android:textSize="14sp" />
 
         <LinearLayout
@@ -84,6 +118,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/nonces_label"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="12sp" />
             </LinearLayout>
 
@@ -105,6 +140,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/mining_timer_label"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="12sp" />
             </LinearLayout>
         </LinearLayout>
@@ -134,6 +170,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/accepted_shares_label"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="12sp" />
             </LinearLayout>
             <LinearLayout
@@ -154,6 +191,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/rejected_shares_label"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="12sp" />
             </LinearLayout>
             <LinearLayout
@@ -174,6 +212,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/identified_shares_label"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="12sp" />
             </LinearLayout>
         </LinearLayout>
@@ -197,6 +236,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/battery_temp_label"
+                android:textColor="?attr/colorOnSurface"
                 android:textSize="12sp" />
         </LinearLayout>
 

@@ -40,6 +40,12 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderBatteryTemp.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configBatteryTempValue.text = "${value.toInt()} °C"
         })
+        binding.configSliderGpuCores.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
+            binding.configGpuCoresValue.text = "${value.toInt()}"
+        })
+        binding.configSliderGpuUtilization.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
+            binding.configGpuUtilizationValue.text = "${value.toInt()}%"
+        })
         binding.configSave.setOnClickListener { saveConfig() }
         binding.configSaveFloating.setOnClickListener { saveConfig() }
         updateFloatingButtonVisibility()
@@ -85,6 +91,11 @@ class ConfigActivity : AppCompatActivity() {
         binding.configCoresValue.text = "$cores"
         binding.configSliderIntensity.value = c.maxIntensityPercent.toFloat()
         binding.configMaxIntensityValue.text = "${c.maxIntensityPercent}%"
+        val gpuCores = c.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX)
+        binding.configSliderGpuCores.value = gpuCores.toFloat()
+        binding.configGpuCoresValue.text = "$gpuCores"
+        binding.configSliderGpuUtilization.value = c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX).toFloat()
+        binding.configGpuUtilizationValue.text = "${c.gpuUtilizationPercent}%"
         val statusMs = c.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
         binding.configSliderStatusInterval.value = statusMs.toFloat()
         binding.configStatusIntervalValue.text = "$statusMs ms"
@@ -117,6 +128,11 @@ class ConfigActivity : AppCompatActivity() {
             statusUpdateIntervalMs = binding.configSliderStatusInterval.value.toInt().coerceIn(
                 MiningConfig.STATUS_UPDATE_INTERVAL_MIN,
                 MiningConfig.STATUS_UPDATE_INTERVAL_MAX
+            ),
+            gpuCores = binding.configSliderGpuCores.value.toInt().coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX),
+            gpuUtilizationPercent = binding.configSliderGpuUtilization.value.toInt().coerceIn(
+                MiningConfig.GPU_UTILIZATION_MIN,
+                MiningConfig.GPU_UTILIZATION_MAX
             ),
         )
         if (config == loadedConfig) {
