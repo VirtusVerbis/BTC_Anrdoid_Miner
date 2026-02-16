@@ -31,14 +31,14 @@
     <string name="config_hashrate_target">Hashrate target (H/s)</string>
     <string name="config_hashrate_target_hint">e.g. 100. Leave empty for no throttle</string>
     <string name="battery_too_hot_toast">Battery too hot. Mining stopped.</string>
-    <string name="config_cores_used">Cores used</string>
+    <string name="config_cores_used">CPU Cores</string>
     <string name="config_cores_used_summary">Number of CPU cores used for mining (1 = single thread, can throttle with intensity below)</string>
     <string name="config_max_intensity">Max CPU intensity (%)</string>
     <string name="config_max_intensity_summary">1–100</string>
     <string name="config_gpu_section">GPU</string>
     <string name="config_gpu_cores">GPU Workgroups</string>
     <string name="config_gpu_cores_summary">Parallelism level (0 = GPU off)</string>
-    <string name="config_gpu_utilization">GPU Utilization (%)</string>
+    <string name="config_gpu_utilization">Max GPU Intensity (%)</string>
     <string name="config_gpu_utilization_summary">1–100, like CPU intensity</string>
     <string name="config_status_update_interval">Status update interval (ms)</string>
     <string name="config_status_update_interval_summary">Update hashrate every X ms (dashboard)</string>
