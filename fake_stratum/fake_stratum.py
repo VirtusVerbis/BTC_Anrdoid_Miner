@@ -60,6 +60,7 @@ def handle_client(
     notify_interval: int,
     accept_nonce: Optional[int],
     notify_on_share_only: bool,
+    force_response: Optional[str],
 ) -> None:
     log = logging.getLogger(__name__)
     prefix = f"[{addr[0]}:{addr[1]}]"
@@ -130,7 +131,11 @@ def handle_client(
                     en2 = params[2] if len(params) > 2 else "?"
                     ntime = params[3] if len(params) > 3 else "?"
                     nonce_hex = params[4] if len(params) > 4 else "?"
-                    if accept_nonce is not None:
+                    if force_response == "accepted":
+                        accepted = True
+                    elif force_response == "rejected":
+                        accepted = False
+                    elif accept_nonce is not None:
                         want = f"{accept_nonce:08x}"
                         accepted = nonce_hex.lower() == want.lower()
                     else:
@@ -190,7 +195,7 @@ def main() -> int:
         "--difficulty",
         type=float,
         default=1.0,
-        help="Pool difficulty sent in mining.set_difficulty (default: 1)",
+        help="Pool difficulty in (0, 1] for mining.set_difficulty (default: 1)",
     )
     parser.add_argument(
         "--accept-nonce",
@@ -204,7 +209,24 @@ def main() -> int:
         action="store_true",
         help="Send new mining.notify only after each share submit (no timer); miner keeps same job until it submits",
     )
+    parser.add_argument(
+        "--response",
+        choices=["accepted", "rejected"],
+        default=None,
+        help="Force all share submits to be Accepted or Rejected; if not set, use --accept-nonce or random.",
+    )
     args = parser.parse_args()
+
+    if args.difficulty <= 0 or args.difficulty > 1:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(message)s",
+            datefmt="%H:%M:%S",
+            stream=sys.stderr,
+            force=True,
+        )
+        logging.getLogger(__name__).error("difficulty must be in (0, 1]")
+        return 1
 
     logging.basicConfig(
         level=logging.INFO,
@@ -234,7 +256,7 @@ def main() -> int:
         log.info("Client connected: %s:%s", addr[0], addr[1])
         t = threading.Thread(
             target=handle_client,
-            args=(conn, addr, args.difficulty, args.notify_interval, args.accept_nonce, args.notify_on_share_only),
+            args=(conn, addr, args.difficulty, args.notify_interval, args.accept_nonce, args.notify_on_share_only, args.response),
             daemon=True,
         )
         t.start()
