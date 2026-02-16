@@ -40,7 +40,7 @@ class MainActivity : AppCompatActivity() {
         /** Full cycle period (ms) for throttle flash (red/white). Low frequency for safety. */
         private const val THROTTLE_FLASH_PERIOD_MS = 1000L
         /** How often to fetch wallet balance from Mempool.space (ms). */
-        private const val MEMPOOL_BALANCE_FETCH_INTERVAL_MS = 60_000L
+        private const val MEMPOOL_BALANCE_FETCH_INTERVAL_MS = 3_600_000L  // 1 hour
         private const val MEMPOOL_UTXO_URL = "https://mempool.space/api/address"
     }
 
@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var configRepository: MiningConfigRepository
 
     private var miningService: MiningForegroundService? = null
+    private var lastBitcoinAddress: String = ""
     private val handler = Handler(Looper.getMainLooper())
     private var flashPhase = false
     private val flashRunnable = object : Runnable {
@@ -159,6 +160,19 @@ class MainActivity : AppCompatActivity() {
         binding.buttonStopMining.setOnClickListener { onStopMiningClicked() }
 
         setupChart()
+        // Initialize lastBitcoinAddress to detect changes when returning from Config
+        lastBitcoinAddress = configRepository.getConfig().bitcoinAddress.trim()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Check if Bitcoin address changed in Config and trigger immediate fetch
+        val currentAddress = configRepository.getConfig().bitcoinAddress.trim()
+        if (currentAddress != lastBitcoinAddress) {
+            lastBitcoinAddress = currentAddress
+            // Trigger immediate balance check when address changes
+            handler.post(mempoolFetchRunnable)
+        }
     }
 
     override fun onStart() {
@@ -331,6 +345,8 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.mining_start_fail_charging, Toast.LENGTH_SHORT).show()
             return
         }
+        // Refresh Bitcoin balance when starting mining
+        handler.post(mempoolFetchRunnable)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestNotificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         } else {
