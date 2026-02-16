@@ -41,7 +41,8 @@ object NativeMiner {
 
     /**
      * Scan nonce range on GPU path. Same contract as [nativeScanNonces]. Returns winning nonce or -1.
-     * When Vulkan is not available returns -1 without scanning.
+     * When Vulkan is not available or compute shader fails, falls back to CPU. [gpuCores] (1-8) sets
+     * local workgroup size (32 * gpuCores, capped by device) for parallelism.
      */
-    external fun gpuScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray): Int
+    external fun gpuScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray, gpuCores: Int): Int
 }

@@ -36,7 +36,7 @@
     <string name="config_max_intensity">Max CPU intensity (%)</string>
     <string name="config_max_intensity_summary">1–100</string>
     <string name="config_gpu_section">GPU</string>
-    <string name="config_gpu_cores">GPU Cores</string>
+    <string name="config_gpu_cores">GPU Workgroups</string>
     <string name="config_gpu_cores_summary">Parallelism level (0 = GPU off)</string>
     <string name="config_gpu_utilization">GPU Utilization (%)</string>
     <string name="config_gpu_utilization_summary">1–100, like CPU intensity</string>
