@@ -281,7 +281,7 @@ class NativeMiningEngine(
                             if (start > MAX_NONCE) break
                             val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                             val nonceEnd = nonceEndL.toInt()
-                            val n = NativeMiner.gpuScanNonces(header76, start.toInt(), nonceEnd, target)
+                            val n = NativeMiner.gpuScanNonces(header76, start.toInt(), nonceEnd, target, config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX))
                             val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
                             gpuNoncesScanned.addAndGet(scanned)
                             if (n >= 0) {
@@ -376,7 +376,7 @@ class NativeMiningEngine(
                             if (start > MAX_NONCE) break
                             val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                             val nonceEnd = nonceEndL.toInt()
-                            val n = NativeMiner.gpuScanNonces(header76, start.toInt(), nonceEnd, target)
+                            val n = NativeMiner.gpuScanNonces(header76, start.toInt(), nonceEnd, target, config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX))
                             val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
                             gpuNoncesScanned.addAndGet(scanned)
                             if (n >= 0) {

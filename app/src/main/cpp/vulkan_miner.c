@@ -1,22 +1,24 @@
 /*
  * Vulkan GPU miner JNI.
  * gpuIsAvailable(): initializes Vulkan (instance, device, compute queue). Returns true if Vulkan is present.
- * gpuScanNonces(): scans nonce range. When Vulkan is available uses CPU hashing (same as nativeScanNonces)
- * until a Vulkan compute shader is added; when Vulkan is not available returns -1.
+ * gpuScanNonces(): scans nonce range via compute shader when SPIR-V is available; else CPU fallback.
  */
 #include "sha256.h"
 #include <jni.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <android/log.h>
 
 #ifdef __ANDROID__
 #include <vulkan/vulkan.h>
+#include "miner_spv.h"
 #endif
 
 #define HEADER_PREFIX_SIZE 76
 #define BLOCK_HEADER_SIZE 80
 #define HASH_SIZE 32
+#define UBO_SIZE 128
 #define LOG_TAG "VulkanMiner"
 
 static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
@@ -28,7 +30,289 @@ static VkInstance g_instance = VK_NULL_HANDLE;
 static VkDevice g_device = VK_NULL_HANDLE;
 static VkPhysicalDevice g_physicalDevice = VK_NULL_HANDLE;
 static VkQueue g_queue = VK_NULL_HANDLE;
-static int g_vulkan_available = -1; /* -1 = not tried, 0 = no, 1 = yes */
+static uint32_t g_computeQueueFamily = 0;
+static uint32_t g_maxWorkGroupSize = 256;
+static uint32_t g_maxWorkGroupCount = 65535;
+static int g_vulkan_available = -1;
+
+static VkDescriptorSetLayout g_descriptorSetLayout = VK_NULL_HANDLE;
+static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
+static VkPipeline g_pipelines[9] = { VK_NULL_HANDLE }; /* index 0 unused, 1..8 = gpuCores */
+static VkDescriptorPool g_descriptorPool = VK_NULL_HANDLE;
+static VkDescriptorSet g_descriptorSet = VK_NULL_HANDLE;
+static VkBuffer g_uboBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_uboMemory = VK_NULL_HANDLE;
+static VkBuffer g_resultBuffer = VK_NULL_HANDLE;
+static VkDeviceMemory g_resultMemory = VK_NULL_HANDLE;
+static VkCommandPool g_commandPool = VK_NULL_HANDLE;
+static VkCommandBuffer g_commandBuffer = VK_NULL_HANDLE;
+static VkFence g_fence = VK_NULL_HANDLE;
+
+static int create_compute_pipeline(uint32_t gpuCores) {
+    if (gpuCores < 1 || gpuCores > 8 || g_pipelines[gpuCores] != VK_NULL_HANDLE)
+        return (g_pipelines[gpuCores] != VK_NULL_HANDLE);
+    uint32_t localSize = 32 * gpuCores;
+    if (localSize > g_maxWorkGroupSize)
+        localSize = g_maxWorkGroupSize;
+    if (localSize < 1)
+        localSize = 1;
+
+    VkShaderModuleCreateInfo modInfo = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = g_miner_spv_len,
+        .pCode = (const uint32_t *)g_miner_spv,
+    };
+    if (g_miner_spv_len == 0 || (g_miner_spv_len % 4) != 0) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "No SPIR-V; using CPU fallback");
+        return 0;
+    }
+    VkShaderModule shaderModule;
+    if (vkCreateShaderModule(g_device, &modInfo, NULL, &shaderModule) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vkCreateShaderModule failed");
+        return 0;
+    }
+    VkSpecializationMapEntry specEntry = { .constantID = 0, .offset = 0, .size = sizeof(uint32_t) };
+    VkSpecializationInfo specInfo = {
+        .mapEntryCount = 1,
+        .pMapEntries = &specEntry,
+        .dataSize = sizeof(uint32_t),
+        .pData = &localSize,
+    };
+    VkPipelineShaderStageCreateInfo stageInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = shaderModule,
+        .pName = "main",
+        .pSpecializationInfo = &specInfo,
+    };
+    VkComputePipelineCreateInfo pipeInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = stageInfo,
+        .layout = g_pipelineLayout,
+    };
+    VkResult res = vkCreateComputePipelines(g_device, VK_NULL_HANDLE, 1, &pipeInfo, NULL, &g_pipelines[gpuCores]);
+    vkDestroyShaderModule(g_device, shaderModule, NULL);
+    if (res != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vkCreateComputePipelines failed");
+        return 0;
+    }
+    return 1;
+}
+
+static int ensure_compute_resources(void) {
+    if (g_descriptorSetLayout != VK_NULL_HANDLE)
+        return 1;
+    if (g_miner_spv_len == 0)
+        return 0;
+    VkDescriptorSetLayoutBinding bindings[2] = {
+        { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+        { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+    };
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 2,
+        .pBindings = bindings,
+    };
+    if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, NULL, &g_descriptorSetLayout) != VK_SUCCESS)
+        return 0;
+    VkPipelineLayoutCreateInfo pipeLayoutInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &g_descriptorSetLayout,
+    };
+    if (vkCreatePipelineLayout(g_device, &pipeLayoutInfo, NULL, &g_pipelineLayout) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(g_device, g_descriptorSetLayout, NULL);
+        g_descriptorSetLayout = VK_NULL_HANDLE;
+        return 0;
+    }
+    VkDescriptorPoolSize poolSizes[2] = {
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
+    };
+    VkDescriptorPoolCreateInfo poolInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1,
+        .poolSizeCount = 2,
+        .pPoolSizes = poolSizes,
+    };
+    if (vkCreateDescriptorPool(g_device, &poolInfo, NULL, &g_descriptorPool) != VK_SUCCESS) {
+        vkDestroyPipelineLayout(g_device, g_pipelineLayout, NULL);
+        vkDestroyDescriptorSetLayout(g_device, g_descriptorSetLayout, NULL);
+        g_pipelineLayout = VK_NULL_HANDLE;
+        g_descriptorSetLayout = VK_NULL_HANDLE;
+        return 0;
+    }
+    VkDescriptorSetAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = g_descriptorPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &g_descriptorSetLayout,
+    };
+    if (vkAllocateDescriptorSets(g_device, &allocInfo, &g_descriptorSet) != VK_SUCCESS) {
+        vkDestroyDescriptorPool(g_device, g_descriptorPool, NULL);
+        vkDestroyPipelineLayout(g_device, g_pipelineLayout, NULL);
+        vkDestroyDescriptorSetLayout(g_device, g_descriptorSetLayout, NULL);
+        g_descriptorPool = VK_NULL_HANDLE;
+        g_pipelineLayout = VK_NULL_HANDLE;
+        g_descriptorSetLayout = VK_NULL_HANDLE;
+        return 0;
+    }
+    VkMemoryRequirements memReq;
+    VkBufferCreateInfo bufInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = UBO_SIZE,
+        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    };
+    if (vkCreateBuffer(g_device, &bufInfo, NULL, &g_uboBuffer) != VK_SUCCESS)
+        goto fail_buffers;
+    vkGetBufferMemoryRequirements(g_device, g_uboBuffer, &memReq);
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(g_physicalDevice, &memProps);
+    uint32_t memTypeIndex = (uint32_t)-1;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((memReq.memoryTypeBits & (1u << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            memTypeIndex = i;
+            break;
+        }
+    }
+    if (memTypeIndex == (uint32_t)-1) {
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+            if ((memReq.memoryTypeBits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+                memTypeIndex = i;
+                break;
+            }
+        }
+    }
+    if (memTypeIndex == (uint32_t)-1)
+        goto fail_buffers;
+    VkMemoryAllocateInfo allocMem = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memReq.size,
+        .memoryTypeIndex = memTypeIndex,
+    };
+    if (vkAllocateMemory(g_device, &allocMem, NULL, &g_uboMemory) != VK_SUCCESS)
+        goto fail_buffers;
+    vkBindBufferMemory(g_device, g_uboBuffer, g_uboMemory, 0);
+
+    bufInfo.size = sizeof(uint32_t);
+    bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (vkCreateBuffer(g_device, &bufInfo, NULL, &g_resultBuffer) != VK_SUCCESS)
+        goto fail_ubo;
+    vkGetBufferMemoryRequirements(g_device, g_resultBuffer, &memReq);
+    allocMem.allocationSize = memReq.size;
+    allocMem.memoryTypeIndex = memTypeIndex;
+    if (vkAllocateMemory(g_device, &allocMem, NULL, &g_resultMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(g_device, g_resultBuffer, NULL);
+        g_resultBuffer = VK_NULL_HANDLE;
+        goto fail_ubo;
+    }
+    vkBindBufferMemory(g_device, g_resultBuffer, g_resultMemory, 0);
+
+    VkDescriptorBufferInfo uboInfo = { g_uboBuffer, 0, UBO_SIZE };
+    VkDescriptorBufferInfo resultInfo = { g_resultBuffer, 0, sizeof(uint32_t) };
+    VkWriteDescriptorSet writes[2] = {
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_descriptorSet, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &uboInfo },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_descriptorSet, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &resultInfo },
+    };
+    vkUpdateDescriptorSets(g_device, 2, writes, 0, NULL);
+
+    VkCommandPoolCreateInfo cmdPoolInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex = g_computeQueueFamily,
+    };
+    if (vkCreateCommandPool(g_device, &cmdPoolInfo, NULL, &g_commandPool) != VK_SUCCESS)
+        goto fail_result;
+    VkCommandBufferAllocateInfo cmdAlloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = g_commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    if (vkAllocateCommandBuffers(g_device, &cmdAlloc, &g_commandBuffer) != VK_SUCCESS) {
+        vkDestroyCommandPool(g_device, g_commandPool, NULL);
+        g_commandPool = VK_NULL_HANDLE;
+        goto fail_result;
+    }
+    VkFenceCreateInfo fenceInfo = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    if (vkCreateFence(g_device, &fenceInfo, NULL, &g_fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(g_device, g_commandPool, 1, &g_commandBuffer);
+        vkDestroyCommandPool(g_device, g_commandPool, NULL);
+        g_commandBuffer = VK_NULL_HANDLE;
+        g_commandPool = VK_NULL_HANDLE;
+        goto fail_result;
+    }
+    return 1;
+fail_result:
+    vkFreeMemory(g_device, g_resultMemory, NULL);
+    vkDestroyBuffer(g_device, g_resultBuffer, NULL);
+    g_resultMemory = VK_NULL_HANDLE;
+    g_resultBuffer = VK_NULL_HANDLE;
+fail_ubo:
+    vkFreeMemory(g_device, g_uboMemory, NULL);
+    vkDestroyBuffer(g_device, g_uboBuffer, NULL);
+    g_uboMemory = VK_NULL_HANDLE;
+    g_uboBuffer = VK_NULL_HANDLE;
+fail_buffers:
+    vkFreeDescriptorSets(g_device, g_descriptorPool, 1, &g_descriptorSet);
+    vkDestroyDescriptorPool(g_device, g_descriptorPool, NULL);
+    vkDestroyPipelineLayout(g_device, g_pipelineLayout, NULL);
+    vkDestroyDescriptorSetLayout(g_device, g_descriptorSetLayout, NULL);
+    g_descriptorSet = VK_NULL_HANDLE;
+    g_descriptorPool = VK_NULL_HANDLE;
+    g_pipelineLayout = VK_NULL_HANDLE;
+    g_descriptorSetLayout = VK_NULL_HANDLE;
+    return 0;
+}
+
+static void destroy_compute_resources(void) {
+    if (g_fence != VK_NULL_HANDLE) {
+        vkDestroyFence(g_device, g_fence, NULL);
+        g_fence = VK_NULL_HANDLE;
+    }
+    if (g_commandPool != VK_NULL_HANDLE) {
+        if (g_commandBuffer != VK_NULL_HANDLE)
+            vkFreeCommandBuffers(g_device, g_commandPool, 1, &g_commandBuffer);
+        g_commandBuffer = VK_NULL_HANDLE;
+        vkDestroyCommandPool(g_device, g_commandPool, NULL);
+        g_commandPool = VK_NULL_HANDLE;
+    }
+    if (g_resultBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_resultBuffer, NULL);
+        g_resultBuffer = VK_NULL_HANDLE;
+    }
+    if (g_resultMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_resultMemory, NULL);
+        g_resultMemory = VK_NULL_HANDLE;
+    }
+    if (g_uboBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_uboBuffer, NULL);
+        g_uboBuffer = VK_NULL_HANDLE;
+    }
+    if (g_uboMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_uboMemory, NULL);
+        g_uboMemory = VK_NULL_HANDLE;
+    }
+    for (int i = 1; i <= 8; i++) {
+        if (g_pipelines[i] != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_device, g_pipelines[i], NULL);
+            g_pipelines[i] = VK_NULL_HANDLE;
+        }
+    }
+    if (g_descriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(g_device, g_descriptorPool, NULL);
+        g_descriptorPool = VK_NULL_HANDLE;
+    }
+    g_descriptorSet = VK_NULL_HANDLE;
+    if (g_pipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(g_device, g_pipelineLayout, NULL);
+        g_pipelineLayout = VK_NULL_HANDLE;
+    }
+    if (g_descriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(g_device, g_descriptorSetLayout, NULL);
+        g_descriptorSetLayout = VK_NULL_HANDLE;
+    }
+}
 
 static int try_init_vulkan(void) {
     if (g_vulkan_available >= 0)
@@ -76,6 +360,13 @@ static int try_init_vulkan(void) {
     g_physicalDevice = devices[0];
     free(devices);
 
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(g_physicalDevice, &props);
+    g_maxWorkGroupSize = props.limits.maxComputeWorkGroupSize[0];
+    if (g_maxWorkGroupSize > 256)
+        g_maxWorkGroupSize = 256;
+    g_maxWorkGroupCount = props.limits.maxComputeWorkGroupCount[0];
+
     uint32_t queueCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_physicalDevice, &queueCount, NULL);
     if (queueCount == 0) {
@@ -85,25 +376,25 @@ static int try_init_vulkan(void) {
         return 0;
     }
 
-    VkQueueFamilyProperties *props = (VkQueueFamilyProperties *)malloc(queueCount * sizeof(VkQueueFamilyProperties));
-    if (!props) {
+    VkQueueFamilyProperties *qprops = (VkQueueFamilyProperties *)malloc(queueCount * sizeof(VkQueueFamilyProperties));
+    if (!qprops) {
         vkDestroyInstance(g_instance, NULL);
         g_instance = VK_NULL_HANDLE;
         g_physicalDevice = VK_NULL_HANDLE;
         return 0;
     }
-    vkGetPhysicalDeviceQueueFamilyProperties(g_physicalDevice, &queueCount, props);
+    vkGetPhysicalDeviceQueueFamilyProperties(g_physicalDevice, &queueCount, qprops);
 
-    uint32_t computeQueueFamily = UINT32_MAX;
+    g_computeQueueFamily = UINT32_MAX;
     for (uint32_t i = 0; i < queueCount; i++) {
-        if (props[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
-            computeQueueFamily = i;
+        if (qprops[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+            g_computeQueueFamily = i;
             break;
         }
     }
-    free(props);
+    free(qprops);
 
-    if (computeQueueFamily == UINT32_MAX) {
+    if (g_computeQueueFamily == UINT32_MAX) {
         vkDestroyInstance(g_instance, NULL);
         g_instance = VK_NULL_HANDLE;
         g_physicalDevice = VK_NULL_HANDLE;
@@ -113,7 +404,7 @@ static int try_init_vulkan(void) {
     float priority = 1.0f;
     VkDeviceQueueCreateInfo queueInfo = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueFamilyIndex = computeQueueFamily,
+        .queueFamilyIndex = g_computeQueueFamily,
         .queueCount = 1,
         .pQueuePriorities = &priority,
     };
@@ -131,15 +422,16 @@ static int try_init_vulkan(void) {
         return 0;
     }
 
-    vkGetDeviceQueue(g_device, computeQueueFamily, 0, &g_queue);
+    vkGetDeviceQueue(g_device, g_computeQueueFamily, 0, &g_queue);
     g_vulkan_available = 1;
-    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan init OK (GPU path uses CPU hashing until compute shader is added)");
+    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan init OK");
     return 1;
 }
 
 static void cleanup_vulkan(void) {
     if (g_device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(g_device);
+        destroy_compute_resources();
         vkDestroyDevice(g_device, NULL);
         g_device = VK_NULL_HANDLE;
         g_queue = VK_NULL_HANDLE;
@@ -150,6 +442,88 @@ static void cleanup_vulkan(void) {
         g_physicalDevice = VK_NULL_HANDLE;
     }
     g_vulkan_available = -1;
+}
+
+/* Write 4 bytes to dst as little-endian so GPU (LE) reads the same uint value as C (BE word) */
+static void write_le32(uint8_t *dst, uint32_t val) {
+    dst[0] = (uint8_t)(val);
+    dst[1] = (uint8_t)(val >> 8);
+    dst[2] = (uint8_t)(val >> 16);
+    dst[3] = (uint8_t)(val >> 24);
+}
+
+/* Run compute dispatch; returns winning nonce or (uint32_t)-1 */
+static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
+                        const uint8_t *target, int gpuCores) {
+    if (gpuCores < 1) gpuCores = 1;
+    if (gpuCores > 8) gpuCores = 8;
+    if (!ensure_compute_resources())
+        return -1;
+    if (!create_compute_pipeline((uint32_t)gpuCores))
+        return -1;
+
+    uint32_t localSize = 32 * (uint32_t)gpuCores;
+    if (localSize > g_maxWorkGroupSize)
+        localSize = g_maxWorkGroupSize;
+    if (localSize < 1)
+        localSize = 1;
+
+    uint32_t totalInv = nonceEnd - nonceStart + 1;
+    uint32_t groupCountX = (totalInv + localSize - 1) / localSize;
+    if (groupCountX > g_maxWorkGroupCount)
+        groupCountX = g_maxWorkGroupCount;
+    if (groupCountX == 0)
+        return -1;
+
+    /* Fill UBO: 76 bytes header (as 19 big-endian uints for shader), 4 nonceStart, 4 nonceEnd, 32 target */
+    uint8_t ubo[UBO_SIZE];
+    memset(ubo, 0, sizeof(ubo));
+    for (int i = 0; i < 19; i++) {
+        uint32_t w = (uint32_t)header76[i*4] << 24 | (uint32_t)header76[i*4+1] << 16 |
+                     (uint32_t)header76[i*4+2] << 8 | (uint32_t)header76[i*4+3];
+        write_le32(ubo + i * 4, w);
+    }
+    write_le32(ubo + 76, nonceStart);
+    write_le32(ubo + 80, nonceEnd);
+    memcpy(ubo + 84, target, 32);
+
+    void *ptr;
+    if (vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr) != VK_SUCCESS)
+        return -1;
+    memcpy(ptr, ubo, UBO_SIZE);
+    vkUnmapMemory(g_device, g_uboMemory);
+
+    uint32_t noWin = 0xFFFFFFFFu;
+    if (vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr) != VK_SUCCESS)
+        return -1;
+    memcpy(ptr, &noWin, sizeof(noWin));
+    vkUnmapMemory(g_device, g_resultMemory);
+
+    vkResetFences(g_device, 1, &g_fence);
+    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    if (vkBeginCommandBuffer(g_commandBuffer, &beginInfo) != VK_SUCCESS)
+        return -1;
+    vkCmdBindPipeline(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelines[gpuCores]);
+    vkCmdBindDescriptorSets(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelineLayout, 0, 1, &g_descriptorSet, 0, NULL);
+    vkCmdDispatch(g_commandBuffer, groupCountX, 1, 1);
+    if (vkEndCommandBuffer(g_commandBuffer) != VK_SUCCESS)
+        return -1;
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &g_commandBuffer,
+    };
+    if (vkQueueSubmit(g_queue, 1, &submitInfo, g_fence) != VK_SUCCESS)
+        return -1;
+    if (vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 5000000000ull) != VK_SUCCESS)
+        return -1;
+    if (vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr) != VK_SUCCESS)
+        return -1;
+    memcpy(&noWin, ptr, sizeof(noWin));
+    vkUnmapMemory(g_device, g_resultMemory);
+    if (noWin == 0xFFFFFFFFu)
+        return -1;
+    return (int)(int32_t)noWin;
 }
 #endif
 
@@ -168,7 +542,8 @@ JNIEXPORT jint JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuScanNonces(JNIEnv *env, jclass clazz,
                                                            jbyteArray header76Java,
                                                            jint nonceStart, jint nonceEnd,
-                                                           jbyteArray targetJava) {
+                                                           jbyteArray targetJava,
+                                                           jint gpuCores) {
     (void)env;
     (void)clazz;
     if (!header76Java || !targetJava ||
@@ -177,17 +552,22 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNonces(JNIEnv *env, jclass c
         return (jint)-1;
     }
 
+    uint8_t header76[HEADER_PREFIX_SIZE];
+    uint8_t header80[BLOCK_HEADER_SIZE];
+    uint8_t target[HASH_SIZE];
+    uint8_t hash[HASH_SIZE];
+
 #ifdef __ANDROID__
     if (!try_init_vulkan()) {
         return (jint)-1;
     }
-#else
-    return (jint)-1;
+    (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
+    (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
+    int result = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuCores);
+    if (result >= 0)
+        return (jint)result;
+    /* CPU fallback when no SPIR-V or dispatch fails */
 #endif
-
-    uint8_t header80[BLOCK_HEADER_SIZE];
-    uint8_t target[HASH_SIZE];
-    uint8_t hash[HASH_SIZE];
     (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header80);
     (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
 
