@@ -26,8 +26,13 @@ import com.btcminer.android.config.MiningConfigRepository
 class MiningForegroundService : Service() {
 
     private lateinit var configRepository: MiningConfigRepository
+    private lateinit var statsRepository: MiningStatsRepository
     private val throttleStateRef = AtomicReference(ThrottleState(100, false))
-    private val engine: MiningEngine by lazy { NativeMiningEngine(throttleStateRef) }
+    private val engine: MiningEngine by lazy {
+        val e = NativeMiningEngine(throttleStateRef)
+        e.loadPersistedStats(statsRepository.get())
+        e
+    }
     private var constraintReceiver: BroadcastReceiver? = null
     private var lastBatteryThrottleActive = false
     private var lastHashrateThrottleActive = false
@@ -88,6 +93,13 @@ class MiningForegroundService : Service() {
         }
     }
 
+    private val saveStatsRunnable = object : Runnable {
+        override fun run() {
+            statsRepository.save(engine.getStatus())
+            handler.postDelayed(this, STATS_SAVE_INTERVAL_MS)
+        }
+    }
+
     inner class LocalBinder : android.os.Binder() {
         fun getService(): MiningForegroundService = this@MiningForegroundService
     }
@@ -97,6 +109,7 @@ class MiningForegroundService : Service() {
     /** Reset persistent UI counters (accepted/rejected/identified shares, block templates, best difficulty, nonces). */
     fun resetAllCounters() {
         engine.resetAllCounters()
+        statsRepository.saveZeros()
     }
 
     fun getHashrateHistoryCpu(): List<Double> = synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.toList() }
@@ -109,6 +122,7 @@ class MiningForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         configRepository = MiningConfigRepository(applicationContext)
+        statsRepository = MiningStatsRepository(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -123,6 +137,8 @@ class MiningForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = LocalBinder()
 
     override fun onDestroy() {
+        handler.removeCallbacks(saveStatsRunnable)
+        statsRepository.save(engine.getStatus())
         unregisterConstraintReceiver()
         engine.stop()
         super.onDestroy()
@@ -161,6 +177,7 @@ class MiningForegroundService : Service() {
                 Toast.makeText(applicationContext, getString(R.string.mining_started), Toast.LENGTH_SHORT).show()
                 registerConstraintReceiver()
                 handler.post(sampleRunnable)
+                handler.postDelayed(saveStatsRunnable, STATS_SAVE_INTERVAL_MS)
             }
         }.start()
     }
@@ -169,6 +186,7 @@ class MiningForegroundService : Service() {
         AppLog.d(LOG_TAG) { "restartMining()" }
         if (!engine.isRunning()) return
         handler.removeCallbacks(sampleRunnable)
+        handler.removeCallbacks(saveStatsRunnable)
         synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
         synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
         unregisterConstraintReceiver()
@@ -192,6 +210,7 @@ class MiningForegroundService : Service() {
                 Toast.makeText(applicationContext, getString(R.string.mining_restarted), Toast.LENGTH_SHORT).show()
                 registerConstraintReceiver()
                 handler.post(sampleRunnable)
+                handler.postDelayed(saveStatsRunnable, STATS_SAVE_INTERVAL_MS)
             }
         }.start()
     }
@@ -235,6 +254,8 @@ class MiningForegroundService : Service() {
         AppLog.d(LOG_TAG) { "stopMining()" }
         miningStartTimeMillis = null
         handler.removeCallbacks(sampleRunnable)
+        handler.removeCallbacks(saveStatsRunnable)
+        statsRepository.save(engine.getStatus())
         synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
         synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
         unregisterConstraintReceiver()
@@ -274,6 +295,7 @@ class MiningForegroundService : Service() {
     companion object {
         /** Sleep duration (ms) after each chunk when battery or hashrate throttle is active. Adjust for testing. */
         const val THROTTLE_SLEEP_MS = 60_000L //5000L
+        private const val STATS_SAVE_INTERVAL_MS = 60_000L
         private const val LOG_TAG = "Mining"
         const val ACTION_START = "com.btcminer.android.mining.START"
         const val ACTION_STOP = "com.btcminer.android.mining.STOP"

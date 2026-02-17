@@ -22,6 +22,7 @@ import com.btcminer.android.config.MiningConfigRepository
 import com.btcminer.android.databinding.ActivityMainBinding
 import com.btcminer.android.mining.MiningConstraints
 import com.btcminer.android.mining.MiningForegroundService
+import com.btcminer.android.mining.MiningStatsRepository
 import com.btcminer.android.mining.MiningStatus
 import com.btcminer.android.mining.NativeMiner
 import com.github.mikephil.charting.data.Entry
@@ -72,6 +73,9 @@ class MainActivity : AppCompatActivity() {
                 val status = service.getStatus()
                 updateStatsUi(status, service)
                 updateChart(service.getHashrateHistoryCpu(), service.getHashrateHistoryGpu())
+            } else {
+                val status = MiningStatsRepository(applicationContext).get()
+                updateStatsUi(status, null)
             }
             handler.postDelayed(this, 1000L)
         }
@@ -128,8 +132,12 @@ class MainActivity : AppCompatActivity() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             miningService = null
-            handler.removeCallbacks(pollRunnable)
-            clearStatsUi()
+            // Keep poll running so dashboard shows persisted counters; show persisted stats and clear chart only
+            handler.post {
+                updateStatsUi(MiningStatsRepository(applicationContext).get(), null)
+                binding.hashRateChart.data = null
+                binding.hashRateChart.invalidate()
+            }
         }
     }
 
