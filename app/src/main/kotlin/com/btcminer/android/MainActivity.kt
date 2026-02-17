@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.view.View
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,6 +88,7 @@ class MainActivity : AppCompatActivity() {
             val address = configRepository.getConfig().bitcoinAddress.trim()
             if (address.isEmpty()) {
                 binding.walletBalanceValue.text = "—"
+                binding.walletBalanceNote.visibility = View.GONE
                 handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
                 return
             }
@@ -119,6 +121,7 @@ class MainActivity : AppCompatActivity() {
                 val toShow = result
                 runOnUiThread {
                     binding.walletBalanceValue.text = toShow
+                    binding.walletBalanceNote.visibility = if (toShow == "INVALID") View.VISIBLE else View.GONE
                     handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
                 }
             }.start()
@@ -286,6 +289,7 @@ class MainActivity : AppCompatActivity() {
         binding.bestDifficultyValue.text = "—"
         binding.blockTemplateValue.text = "—"
         binding.walletBalanceValue.text = "—"
+        binding.walletBalanceNote.visibility = View.GONE
         binding.hashRateChart.data = null
         binding.hashRateChart.invalidate()
         // Persistent counters (nonces, accepted/rejected/identified shares, block template, best difficulty) are not zeroed here; they reset only via Config "Reset All UI Counters"

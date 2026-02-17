@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">BTC Miner</string>
     <string name="dashboard_title">Bitcoin Android Miner</string>
+    <string name="wallet_balance_tor_note">Not available when using TOR.</string>
 
     <!-- Configuration -->
     <string name="config_title">Configuration</string>
