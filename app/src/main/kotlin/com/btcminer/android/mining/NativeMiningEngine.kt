@@ -19,6 +19,8 @@ class NativeMiningEngine(
         private const val LOG_TAG = "Mining"
         private const val CHUNK_SIZE = 2L * 1024 * 1024
         private const val MAX_NONCE = 0xFFFFFFFFL
+        /** Minimum elapsed time (seconds) used as divisor for hashrate. Avoids a huge spike when "Start Mining" is clicked: dividing by a tiny elapsed time would show an inflated rate until the denominator grows. */
+        private const val MIN_ELAPSED_SEC_FOR_HASHRATE = 1.0
     }
 
     private data class FoundResult(val jobId: String, val nonce: Int, val extranonce2Hex: String, val ntimeHex: String)
@@ -40,7 +42,8 @@ class NativeMiningEngine(
     override fun start(config: MiningConfig) {
         if (running.getAndSet(true)) return
         AppLog.d(LOG_TAG) { "start()" }
-        // Persistent counters (acceptedShares, rejectedShares, identifiedShares, totalNoncesScanned, bestDifficultyRef, blockTemplatesCount) are not reset here
+        totalNoncesScanned.set(0)
+        // Persistent counters (acceptedShares, rejectedShares, identifiedShares, bestDifficultyRef, blockTemplatesCount) are not reset here; nonces are per-round only
 
         val urlTrimmed = config.stratumUrl.trim()
         val host = urlTrimmed
@@ -178,6 +181,19 @@ class NativeMiningEngine(
         blockTemplatesCount.set(0)
     }
 
+    /**
+     * Loads persisted counter values from disk (used by [MiningForegroundService] on first engine use).
+     */
+    fun loadPersistedStats(status: MiningStatus) {
+        totalNoncesScanned.set(status.noncesScanned)
+        acceptedShares.set(status.acceptedShares)
+        rejectedShares.set(status.rejectedShares)
+        identifiedShares.set(status.identifiedShares)
+        bestDifficultyRef.set(status.bestDifficulty)
+        blockTemplatesCount.set(status.blockTemplates)
+        statusRef.set(status)
+    }
+
     override fun isRunning(): Boolean = running.get() && clientRef.get()?.isRunning() == true
 
     override fun getStatus(): MiningStatus = statusRef.get()
@@ -302,8 +318,10 @@ class NativeMiningEngine(
                     val now = System.currentTimeMillis()
                     if (now - lastStatusUpdateTime >= statusUpdateIntervalMs) {
                         val elapsedSec = (now - statsStartTime) / 1000.0
-                        val hashrateHs = if (elapsedSec > 0) totalNoncesScanned.get() / elapsedSec else 0.0
-                        val gpuHashrateHs = if (elapsedSec > 0) gpuNoncesScanned.get() / elapsedSec else 0.0
+                        // Use effectiveElapsed (min 1s) so we don't divide by a tiny number and show a spike right after "Start Mining"
+                        val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
+                        val hashrateHs = totalNoncesScanned.get() / effectiveElapsed
+                        val gpuHashrateHs = gpuNoncesScanned.get() / effectiveElapsed
                         statusRef.set(MiningStatus(
                             state = MiningStatus.State.Mining,
                             hashrateHs = hashrateHs,
@@ -319,8 +337,9 @@ class NativeMiningEngine(
                     }
                     if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
                         val elapsedSec = (now - statsStartTime) / 1000.0
-                        val hashrateHs = if (elapsedSec > 0) totalNoncesScanned.get() / elapsedSec else 0.0
-                        val gpuH = if (elapsedSec > 0) gpuNoncesScanned.get() / elapsedSec else 0.0
+                        val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
+                        val hashrateHs = totalNoncesScanned.get() / effectiveElapsed
+                        val gpuH = gpuNoncesScanned.get() / effectiveElapsed
                         AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, gpuH, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
                         lastLogTime = now
                     }
@@ -396,8 +415,9 @@ class NativeMiningEngine(
                     allWorkers.forEach { it.join(statusUpdateIntervalMs.toLong()) }
                     val now = System.currentTimeMillis()
                     val elapsedSec = (now - statsStartTime) / 1000.0
-                    val hashrateHs = if (elapsedSec > 0) totalNoncesScanned.get() / elapsedSec else 0.0
-                    val gpuHashrateHs = if (elapsedSec > 0) gpuNoncesScanned.get() / elapsedSec else 0.0
+                    val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
+                    val hashrateHs = totalNoncesScanned.get() / effectiveElapsed
+                    val gpuHashrateHs = gpuNoncesScanned.get() / effectiveElapsed
                     statusRef.set(MiningStatus(
                         state = MiningStatus.State.Mining,
                         hashrateHs = hashrateHs,
@@ -424,10 +444,7 @@ class NativeMiningEngine(
             val diff = StratumHeaderBuilder.difficultyFromHeader80(header80)
             bestDifficultyRef.updateAndGet { maxOf(it, diff) }
             identifiedShares.incrementAndGet()
-            if (client.getCurrentJob()?.jobId != job.jobId) {
-                AppLog.d(LOG_TAG) { "Stale job, discarding share" }
-                continue
-            }
+            if (client.getCurrentJob()?.jobId != job.jobId) AppLog.d(LOG_TAG) { "Stale job, submitting anyway so pool sees we are alive" }
             val nonceHex = String.format("%08x", (foundNonce.toLong() and 0xFFFFFFFFL))
             AppLog.d(LOG_TAG) { String.format(Locale.US, "Share submitted (jobId=%s, nonce 0x%s)", job.jobId, nonceHex) }
             client.sendSubmit(job.jobId, extranonce2Hex, ntimeHex, nonceHex) { accepted, errorMessage ->
@@ -440,8 +457,9 @@ class NativeMiningEngine(
                 }
             }
             val elapsedSec = (System.currentTimeMillis() - statsStartTime) / 1000.0
-            val hashrateHs = if (elapsedSec > 0) totalNoncesScanned.get() / elapsedSec else 0.0
-            val gpuHashrateHs = if (elapsedSec > 0) gpuNoncesScanned.get() / elapsedSec else 0.0
+            val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
+            val hashrateHs = totalNoncesScanned.get() / effectiveElapsed
+            val gpuHashrateHs = gpuNoncesScanned.get() / effectiveElapsed
             statusRef.set(MiningStatus(
                 state = MiningStatus.State.Mining,
                 hashrateHs = hashrateHs,
