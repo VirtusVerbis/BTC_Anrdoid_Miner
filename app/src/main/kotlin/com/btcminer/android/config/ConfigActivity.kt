@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.btcminer.android.R
 import com.btcminer.android.databinding.ActivityConfigBinding
 import com.btcminer.android.mining.MiningForegroundService
+import com.btcminer.android.mining.NativeMiner
 import com.google.android.material.slider.Slider
 import java.lang.Runtime
 
@@ -119,7 +120,10 @@ class ConfigActivity : AppCompatActivity() {
         binding.configCoresValue.text = "$cores"
         binding.configSliderIntensity.value = c.maxIntensityPercent.toFloat()
         binding.configMaxIntensityValue.text = "${c.maxIntensityPercent}%"
-        val gpuCores = c.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX)
+        val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize()
+        val gpuMaxSteps = if (maxWorkGroupSize == 0) 8 else (maxWorkGroupSize / 32).coerceAtLeast(1).coerceAtMost(MiningConfig.GPU_CORES_MAX)
+        binding.configSliderGpuCores.valueTo = gpuMaxSteps.toFloat()
+        val gpuCores = c.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, gpuMaxSteps)
         binding.configSliderGpuCores.value = gpuCores.toFloat()
         binding.configGpuCoresValue.text = "$gpuCores"
         binding.configSliderGpuUtilization.value = c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX).toFloat()
@@ -157,7 +161,7 @@ class ConfigActivity : AppCompatActivity() {
                 MiningConfig.STATUS_UPDATE_INTERVAL_MIN,
                 MiningConfig.STATUS_UPDATE_INTERVAL_MAX
             ),
-            gpuCores = binding.configSliderGpuCores.value.toInt().coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX),
+            gpuCores = binding.configSliderGpuCores.value.toInt().coerceIn(MiningConfig.GPU_CORES_MIN, binding.configSliderGpuCores.valueTo.toInt()),
             gpuUtilizationPercent = binding.configSliderGpuUtilization.value.toInt().coerceIn(
                 MiningConfig.GPU_UTILIZATION_MIN,
                 MiningConfig.GPU_UTILIZATION_MAX

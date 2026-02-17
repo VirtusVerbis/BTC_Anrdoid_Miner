@@ -20,6 +20,7 @@
 #define HASH_SIZE 32
 #define UBO_SIZE 128
 #define LOG_TAG "VulkanMiner"
+#define MAX_GPU_WORKGROUP_STEPS 64
 
 static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
     return memcmp(hash, target, HASH_SIZE) <= 0;
@@ -37,7 +38,7 @@ static int g_vulkan_available = -1;
 
 static VkDescriptorSetLayout g_descriptorSetLayout = VK_NULL_HANDLE;
 static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
-static VkPipeline g_pipelines[9] = { VK_NULL_HANDLE }; /* index 0 unused, 1..8 = gpuCores */
+static VkPipeline g_pipelines[MAX_GPU_WORKGROUP_STEPS + 1] = { VK_NULL_HANDLE }; /* index 0 unused, 1..maxSteps = gpuCores */
 static VkDescriptorPool g_descriptorPool = VK_NULL_HANDLE;
 static VkDescriptorSet g_descriptorSet = VK_NULL_HANDLE;
 static VkBuffer g_uboBuffer = VK_NULL_HANDLE;
@@ -49,7 +50,10 @@ static VkCommandBuffer g_commandBuffer = VK_NULL_HANDLE;
 static VkFence g_fence = VK_NULL_HANDLE;
 
 static int create_compute_pipeline(uint32_t gpuCores) {
-    if (gpuCores < 1 || gpuCores > 8 || g_pipelines[gpuCores] != VK_NULL_HANDLE)
+    uint32_t maxSteps = g_maxWorkGroupSize / 32;
+    if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
+        maxSteps = MAX_GPU_WORKGROUP_STEPS;
+    if (gpuCores < 1 || gpuCores > maxSteps || (unsigned)gpuCores > MAX_GPU_WORKGROUP_STEPS || g_pipelines[gpuCores] != VK_NULL_HANDLE)
         return (g_pipelines[gpuCores] != VK_NULL_HANDLE);
     uint32_t localSize = 32 * gpuCores;
     if (localSize > g_maxWorkGroupSize)
@@ -293,7 +297,7 @@ static void destroy_compute_resources(void) {
         vkFreeMemory(g_device, g_uboMemory, NULL);
         g_uboMemory = VK_NULL_HANDLE;
     }
-    for (int i = 1; i <= 8; i++) {
+    for (int i = 1; i <= MAX_GPU_WORKGROUP_STEPS; i++) {
         if (g_pipelines[i] != VK_NULL_HANDLE) {
             vkDestroyPipeline(g_device, g_pipelines[i], NULL);
             g_pipelines[i] = VK_NULL_HANDLE;
@@ -363,8 +367,7 @@ static int try_init_vulkan(void) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g_physicalDevice, &props);
     g_maxWorkGroupSize = props.limits.maxComputeWorkGroupSize[0];
-    if (g_maxWorkGroupSize > 256)
-        g_maxWorkGroupSize = 256;
+    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan maxComputeWorkGroupSize[0]=%u", (unsigned)g_maxWorkGroupSize);
     g_maxWorkGroupCount = props.limits.maxComputeWorkGroupCount[0];
 
     uint32_t queueCount = 0;
@@ -456,7 +459,11 @@ static void write_le32(uint8_t *dst, uint32_t val) {
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
                         const uint8_t *target, int gpuCores) {
     if (gpuCores < 1) gpuCores = 1;
-    if (gpuCores > 8) gpuCores = 8;
+    uint32_t maxSteps = g_maxWorkGroupSize / 32;
+    if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
+        maxSteps = MAX_GPU_WORKGROUP_STEPS;
+    if ((unsigned)gpuCores > maxSteps)
+        gpuCores = (int)maxSteps;
     if (!ensure_compute_resources())
         return -1;
     if (!create_compute_pipeline((uint32_t)gpuCores))
@@ -535,6 +542,19 @@ Java_com_btcminer_android_mining_NativeMiner_gpuIsAvailable(JNIEnv *env, jclass 
     return try_init_vulkan() ? JNI_TRUE : JNI_FALSE;
 #else
     return JNI_FALSE;
+#endif
+}
+
+JNIEXPORT jint JNICALL
+Java_com_btcminer_android_mining_NativeMiner_getMaxComputeWorkGroupSize(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+#ifdef __ANDROID__
+    if (!try_init_vulkan())
+        return 0;
+    return (jint)g_maxWorkGroupSize;
+#else
+    return 0;
 #endif
 }
 

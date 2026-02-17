@@ -37,7 +37,8 @@ data class MiningConfig(
         const val BATTERY_TEMP_DEFAULT_C = 30
         const val BATTERY_TEMP_HARD_STOP_C = 50
         const val GPU_CORES_MIN = 0
-        const val GPU_CORES_MAX = 8
+        /** Max workgroup steps (32 * this = local size). Capped by device maxComputeWorkGroupSize/32. */
+        const val GPU_CORES_MAX = 64
         const val GPU_UTILIZATION_MIN = 1
         const val GPU_UTILIZATION_MAX = 100
     }

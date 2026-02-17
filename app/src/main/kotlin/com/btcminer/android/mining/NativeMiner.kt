@@ -40,9 +40,15 @@ object NativeMiner {
     external fun gpuIsAvailable(): Boolean
 
     /**
+     * Maximum compute workgroup size for the device (maxComputeWorkGroupSize[0]).
+     * Returns 0 when Vulkan is not available or not yet initialized.
+     */
+    external fun getMaxComputeWorkGroupSize(): Int
+
+    /**
      * Scan nonce range on GPU path. Same contract as [nativeScanNonces]. Returns winning nonce or -1.
-     * When Vulkan is not available or compute shader fails, falls back to CPU. [gpuCores] (1-8) sets
-     * local workgroup size (32 * gpuCores, capped by device) for parallelism.
+     * When Vulkan is not available or compute shader fails, falls back to CPU. [gpuCores] (1..N) sets
+     * local workgroup size (32 * gpuCores, capped by device max) for parallelism; N = min(64, device max/32).
      */
     external fun gpuScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray, gpuCores: Int): Int
 }

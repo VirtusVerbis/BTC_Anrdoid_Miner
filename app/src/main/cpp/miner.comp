@@ -2,9 +2,8 @@
 // Unique work: nonce = nonceStart + gl_GlobalInvocationID.x; early-out if nonce > nonceEnd.
 #version 450
 
-// Fixed literal required by glslangValidator (no spec constant in layout).
-// Host uses one pipeline; GPU Cores slider still selects pipeline index but local size is 256.
-layout(local_size_x = 256) in;
+// Host sets workgroup size via specialization constant ID 0 at pipeline creation (LocalSizeId).
+layout(local_size_x_id = 0) in;
 
 // UBO: 76 bytes header, 4 nonceStart, 4 nonceEnd, 32 target (pad to 128)
 layout(set = 0, binding = 0) uniform Uniforms {
