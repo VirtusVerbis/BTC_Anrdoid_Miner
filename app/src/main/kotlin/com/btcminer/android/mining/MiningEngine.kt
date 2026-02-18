@@ -4,7 +4,7 @@ import com.btcminer.android.config.MiningConfig
 
 /**
  * Abstraction for the mining core (Stratum client + hashing).
- * Implementations: [StubMiningEngine] for now; cgminer-based engine later.
+ * Implementations: [NativeMiningEngine].
  */
 interface MiningEngine {
 

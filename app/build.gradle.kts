@@ -28,7 +28,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -44,6 +44,7 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 
@@ -57,4 +58,5 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

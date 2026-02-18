@@ -11,10 +11,12 @@ import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.btcminer.android.AppLog
 import com.btcminer.android.R
 import com.btcminer.android.databinding.ActivityConfigBinding
 import com.btcminer.android.mining.MiningForegroundService
 import com.btcminer.android.mining.NativeMiner
+import com.btcminer.android.network.StratumPinCapture
 import com.google.android.material.slider.Slider
 import java.lang.Runtime
 
@@ -135,15 +137,20 @@ class ConfigActivity : AppCompatActivity() {
     }
 
     private fun saveConfig() {
+        val stratumUrlRaw = binding.configStratumUrl.editText?.text?.toString()?.trim() ?: ""
         val port = binding.configStratumPort.editText?.text?.toString()?.toIntOrNull() ?: MiningConfig.DEFAULT_STRATUM_PORT
+        val portCoerced = port.coerceIn(1, 65535)
+        val useTls = stratumUrlRaw.lowercase().contains("ssl") || portCoerced == 443
+        val pinThisPoolChecked = binding.configPinThisPool.isChecked
+
         val config = MiningConfig(
-            stratumUrl = binding.configStratumUrl.editText?.text?.toString()?.trim() ?: "",
-            stratumPort = port.coerceIn(1, 65535),
-            stratumUser = binding.configStratumUser.editText?.text?.toString()?.trim() ?: "",
-            stratumPass = binding.configStratumPass.editText?.text?.toString() ?: "",
-            bitcoinAddress = binding.configBitcoinAddress.editText?.text?.toString()?.trim() ?: "",
-            lightningAddress = binding.configLightningAddress.editText?.text?.toString()?.trim() ?: "",
-            workerName = binding.configWorkerName.editText?.text?.toString()?.trim() ?: "",
+            stratumUrl = MiningConfig.sanitize(stratumUrlRaw, MiningConfig.MAX_STRATUM_URL_LEN),
+            stratumPort = portCoerced,
+            stratumUser = MiningConfig.sanitize(binding.configStratumUser.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_STRATUM_USER_LEN),
+            stratumPass = MiningConfig.sanitize(binding.configStratumPass.editText?.text?.toString() ?: "", MiningConfig.MAX_STRATUM_PASS_LEN),
+            bitcoinAddress = MiningConfig.sanitize(binding.configBitcoinAddress.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_BITCOIN_ADDRESS_LEN),
+            lightningAddress = MiningConfig.sanitize(binding.configLightningAddress.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_LIGHTNING_ADDRESS_LEN),
+            workerName = MiningConfig.sanitize(binding.configWorkerName.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_WORKER_NAME_LEN),
             wifiOnly = binding.configWifiOnly.isChecked,
             mineOnlyWhenCharging = binding.configMineOnlyWhenCharging.isChecked,
             batteryTempFahrenheit = binding.configBatteryTempFahrenheit.isChecked,
@@ -167,6 +174,44 @@ class ConfigActivity : AppCompatActivity() {
                 MiningConfig.GPU_UTILIZATION_MAX
             ),
         )
+
+        if (pinThisPoolChecked && config.stratumUrl.isNotBlank() && useTls) {
+            val host = StratumPinCapture.normalizeHost(config.stratumUrl)
+            if (host.isBlank()) {
+                Toast.makeText(this, R.string.config_could_not_pin_certificate, Toast.LENGTH_LONG).show()
+                return
+            }
+            val progressDialog = AlertDialog.Builder(this)
+                .setMessage(R.string.config_pinning_pool_certificate)
+                .setCancelable(false)
+                .show()
+            Thread {
+                try {
+                    val pin = StratumPinCapture.capturePin(host, config.stratumPort)
+                    runOnUiThread {
+                        progressDialog.dismiss()
+                        repository.saveStratumPin(host, pin)
+                        binding.configPinThisPool.isChecked = false
+                        repository.saveConfig(config)
+                        startService(Intent(this@ConfigActivity, MiningForegroundService::class.java).apply {
+                            action = MiningForegroundService.ACTION_RESTART
+                        })
+                        Toast.makeText(this@ConfigActivity, R.string.config_saved, Toast.LENGTH_SHORT).show()
+                        finish()
+                    }
+                } catch (e: Exception) {
+                    val errMsg = e.message
+                    AppLog.e("Config") { "Pin certificate failed: $errMsg" }
+                    runOnUiThread {
+                        progressDialog.dismiss()
+                        val toastText = getString(R.string.config_could_not_pin_certificate) + "\n" + (errMsg ?: "Unknown error")
+                        Toast.makeText(this@ConfigActivity, toastText, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.start()
+            return
+        }
+
         if (config == loadedConfig) {
             finish()
             return

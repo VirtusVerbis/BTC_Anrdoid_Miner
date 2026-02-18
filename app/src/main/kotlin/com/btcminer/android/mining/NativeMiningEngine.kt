@@ -10,9 +10,13 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Mining engine using native hashing (Phase 2) and Kotlin Stratum client (Phase 3).
  * Implements [MiningEngine]; used when Option A1 is active.
+ * Pool redirect (client.reconnect) is disabled: when the pool sends it, [onPoolRedirectRequested] is invoked for notification only; the app does not reconnect.
  */
 class NativeMiningEngine(
     private val throttleStateRef: AtomicReference<ThrottleState>? = null,
+    private val onPoolRedirectRequested: ((host: String, port: Int) -> Unit)? = null,
+    private val getStratumPin: (String) -> String? = { null },
+    private val onPinVerified: (() -> Unit)? = null,
 ) : MiningEngine {
 
     private companion object {
@@ -37,7 +41,6 @@ class NativeMiningEngine(
     private val bestDifficultyRef = AtomicReference(0.0)
     private val blockTemplatesCount = AtomicLong(0)
     private val gpuNoncesScanned = AtomicLong(0)
-    private val reconnectTargetRef = AtomicReference<Pair<String, Int>?>(null)
 
     override fun start(config: MiningConfig) {
         if (running.getAndSet(true)) return
@@ -62,10 +65,12 @@ class NativeMiningEngine(
 
         statusRef.set(MiningStatus(MiningStatus.State.Connecting))
         val useTls = config.stratumUrl.trim().lowercase().contains("ssl") || config.stratumPort == 443
+        val stratumPin = getStratumPin(host)
 
-        // First connect on this thread so the service sees correct isRunning() when start() returns
-        val client = StratumClient(host, port, username, password, useTls = useTls,
-            onReconnectRequest = { h, p -> reconnectTargetRef.set(Pair(h, p)) },
+        // First connect on this thread so the service sees correct isRunning() when start() returns.
+        // Pool redirect (client.reconnect) is disabled: we only notify via onPoolRedirectRequested, do not reconnect.
+        val client = StratumClient(host, port, username, password, useTls = useTls, stratumPin = stratumPin,
+            onReconnectRequest = { h, p -> onPoolRedirectRequested?.invoke(h, p) },
             onTemplateReceived = { blockTemplatesCount.incrementAndGet() })
         val err = client.connect()
         if (err != null) {
@@ -73,6 +78,9 @@ class NativeMiningEngine(
             statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = err))
             running.set(false)
             return
+        }
+        if (stratumPin != null) {
+            onPinVerified?.invoke()
         }
         AppLog.d(LOG_TAG) { "Connected, starting mining" }
         clientRef.set(client)
@@ -88,8 +96,6 @@ class NativeMiningEngine(
             blockTemplates = blockTemplatesCount.get(),
         ))
 
-        var backoff = 5000L
-        val maxBackoff = 300_000L
         val minerThread = Thread {
             try {
                 runMiningLoop(client, config)
@@ -98,51 +104,7 @@ class NativeMiningEngine(
                 client.disconnect()
                 clientRef.set(null)
             }
-            // Reconnect loop (only after first connection drops)
-            var connectHost = host
-            var connectPort = port
-            var connectTls = useTls
-            while (running.get()) {
-                val target = reconnectTargetRef.getAndSet(null)
-                if (target != null) {
-                    connectHost = target.first
-                    connectPort = target.second
-                    connectTls = connectPort == 443 || useTls
-                }
-                val client2 = StratumClient(connectHost, connectPort, username, password, useTls = connectTls,
-                    onReconnectRequest = { h, p -> reconnectTargetRef.set(Pair(h, p)) },
-                    onTemplateReceived = { blockTemplatesCount.incrementAndGet() })
-                val err2 = client2.connect()
-                if (err2 != null) {
-                    AppLog.e(LOG_TAG) { "Connect failed: $err2" }
-                    statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = err2))
-                    AppLog.d(LOG_TAG) { "Reconnecting in ${backoff / 1000}s" }
-                    Thread.sleep(backoff)
-                    backoff = minOf(backoff * 2, maxBackoff)
-                    continue
-                }
-                AppLog.d(LOG_TAG) { "Reconnected, starting mining" }
-                clientRef.set(client2)
-                statusRef.set(MiningStatus(
-                    MiningStatus.State.Mining,
-                    hashrateHs = 0.0,
-                    gpuHashrateHs = 0.0,
-                    noncesScanned = totalNoncesScanned.get(),
-                    acceptedShares = acceptedShares.get(),
-                    rejectedShares = rejectedShares.get(),
-                    identifiedShares = identifiedShares.get(),
-                    bestDifficulty = bestDifficultyRef.get(),
-                    blockTemplates = blockTemplatesCount.get(),
-                ))
-                try {
-                    runMiningLoop(client2, config)
-                } catch (_: InterruptedException) { }
-                finally {
-                    client2.disconnect()
-                    clientRef.set(null)
-                }
-                backoff = 5000L
-            }
+            // Pool redirect is disabled: we do not reconnect to a new host when the pool sends client.reconnect.
             running.set(false)
             statusRef.set(MiningStatus(
                 MiningStatus.State.Idle,

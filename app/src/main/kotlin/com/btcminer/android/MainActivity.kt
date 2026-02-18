@@ -29,12 +29,16 @@ import com.btcminer.android.mining.NativeMiner
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
+import com.btcminer.android.network.CertPins
+import com.btcminer.android.util.BitcoinAddressValidator
+import okhttp3.CertificatePinner
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.Scanner
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -48,6 +52,18 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var configRepository: MiningConfigRepository
+
+    private val mempoolOkHttpClient: OkHttpClient by lazy {
+        val builder = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+        if (CertPins.hasMempoolSpacePins()) {
+            val pinnerBuilder = CertificatePinner.Builder()
+            CertPins.MEMPOOL_SPACE_PINS.forEach { pin -> pinnerBuilder.add("mempool.space", pin) }
+            builder.certificatePinner(pinnerBuilder.build())
+        }
+        builder.build()
+    }
 
     private var miningService: MiningForegroundService? = null
     private var lastBitcoinAddress: String = ""
@@ -92,20 +108,24 @@ class MainActivity : AppCompatActivity() {
                 handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
                 return
             }
+            if (!BitcoinAddressValidator.isValidFormat(address)) {
+                binding.walletBalanceValue.text = "—"
+                binding.walletBalanceNote.visibility = View.VISIBLE
+                handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
+                return
+            }
             Thread {
                 var result: String? = null
+                var certFailure = false
                 try {
                     val encoded = URLEncoder.encode(address, "UTF-8")
-                    val url = URL("$MEMPOOL_UTXO_URL/$encoded/utxo")
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "GET"
-                    conn.connectTimeout = 15_000
-                    conn.readTimeout = 15_000
-                    val code = conn.responseCode
-                    if (code !in 200..299) {
+                    val url = "$MEMPOOL_UTXO_URL/$encoded/utxo"
+                    val request = Request.Builder().url(url).get().build()
+                    val response = mempoolOkHttpClient.newCall(request).execute()
+                    if (!response.isSuccessful) {
                         result = "INVALID"
                     } else {
-                        val text = conn.inputStream.use { Scanner(it).useDelimiter("\\A").next() }
+                        val text = response.body?.string() ?: ""
                         val arr = JSONArray(text)
                         var sumSat = 0L
                         for (i in 0 until arr.length()) {
@@ -115,11 +135,18 @@ class MainActivity : AppCompatActivity() {
                         val btc = sumSat / 100_000_000.0
                         result = String.format(Locale.US, "₿ %.8f", btc)
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     result = "INVALID"
+                    certFailure = e is javax.net.ssl.SSLPeerUnverifiedException || e is javax.net.ssl.SSLException
                 }
                 val toShow = result
+                val showCertInvalid = certFailure
+                val showCertValidated = result != null && result != "INVALID" && CertPins.hasMempoolSpacePins()
                 runOnUiThread {
+                    if (CertPins.hasMempoolSpacePins()) {
+                        if (showCertValidated) Toast.makeText(this@MainActivity, R.string.mempool_cert_validated, Toast.LENGTH_SHORT).show()
+                        if (showCertInvalid) Toast.makeText(this@MainActivity, R.string.mempool_cert_invalid, Toast.LENGTH_SHORT).show()
+                    }
                     binding.walletBalanceValue.text = toShow
                     binding.walletBalanceNote.visibility = if (toShow == "INVALID") View.VISIBLE else View.GONE
                     handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
