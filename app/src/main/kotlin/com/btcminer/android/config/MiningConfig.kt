@@ -27,6 +27,17 @@ data class MiningConfig(
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()
 
     companion object {
+        /** Max lengths for config strings to avoid abuse and storage bloat. */
+        const val MAX_STRATUM_URL_LEN = 256
+        const val MAX_STRATUM_USER_LEN = 256
+        const val MAX_STRATUM_PASS_LEN = 256
+        const val MAX_BITCOIN_ADDRESS_LEN = 74
+        const val MAX_LIGHTNING_ADDRESS_LEN = 256
+        const val MAX_WORKER_NAME_LEN = 64
+
+        /** Remove control characters (ASCII 0–31, 127) and truncate to maxLen. */
+        fun sanitize(str: String, maxLen: Int): String =
+            str.filter { c -> c.code in 32..126 }.take(maxLen)
         const val MAX_INTENSITY_MIN = 1
         const val MAX_INTENSITY_MAX = 100
         const val MAX_WORKER_THREADS_MIN = 1

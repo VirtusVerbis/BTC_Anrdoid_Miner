@@ -49,10 +49,11 @@ class SecureConfigStorage(context: Context) {
     companion object {
         private const val PREFS_NAME = "btc_miner_encrypted_config"
 
+        const val KEY_STRATUM_PIN_PREFIX = "stratum_pin_"
         const val KEY_STRATUM_URL = "stratum_url"
         const val KEY_STRATUM_PORT = "stratum_port"
         const val KEY_STRATUM_USER = "stratum_user"
-        const val KEY_STRATUM_PASS = "stratumpass"
+        const val KEY_STRATUM_PASS = "stratum_pass"
         const val KEY_BITCOIN_ADDRESS = "bitcoin_address"
         const val KEY_LIGHTNING_ADDRESS = "lightning_address"
         const val KEY_WORKER_NAME = "worker_name"

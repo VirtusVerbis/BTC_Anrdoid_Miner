@@ -32,6 +32,13 @@
                 android:maxLines="1" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <CheckBox
+            android:id="@+id/config_pin_this_pool"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/config_pin_mining_pool_certificate" />
+
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/config_stratum_port"
             style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"

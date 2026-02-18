@@ -47,6 +47,15 @@ class MiningConfigRepository(context: Context) {
             .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
     )
 
+    /** Returns the stored stratum cert pin for the given host, or null if none. Host should be normalized (no scheme, first segment). */
+    fun getStratumPin(host: String): String? =
+        storage.getStr(SecureConfigStorage.KEY_STRATUM_PIN_PREFIX + host, "").takeIf { it.isNotBlank() }
+
+    /** Saves the stratum cert pin for the given host in the secure vault (encrypted). */
+    fun saveStratumPin(host: String, pin: String) {
+        storage.putStr(SecureConfigStorage.KEY_STRATUM_PIN_PREFIX + host, pin)
+    }
+
     fun saveConfig(config: MiningConfig) {
         storage.commitBatch { edit ->
             edit.putString(SecureConfigStorage.KEY_STRATUM_URL, config.stratumUrl)

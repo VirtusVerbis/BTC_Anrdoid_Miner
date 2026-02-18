@@ -17,11 +17,12 @@ import android.os.BatteryManager
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.btcminer.android.AppLog
-import java.util.concurrent.atomic.AtomicReference
 import com.btcminer.android.MainActivity
 import com.btcminer.android.R
 import com.btcminer.android.config.MiningConfig
 import com.btcminer.android.config.MiningConfigRepository
+import com.btcminer.android.network.StratumPinCapture
+import java.util.concurrent.atomic.AtomicReference
 
 class MiningForegroundService : Service() {
 
@@ -29,7 +30,12 @@ class MiningForegroundService : Service() {
     private lateinit var statsRepository: MiningStatsRepository
     private val throttleStateRef = AtomicReference(ThrottleState(100, false))
     private val engine: MiningEngine by lazy {
-        val e = NativeMiningEngine(throttleStateRef)
+        val e = NativeMiningEngine(
+            throttleStateRef,
+            onPoolRedirectRequested = { host, port -> handler.post { showPoolRedirectNotification(host, port) } },
+            getStratumPin = configRepository::getStratumPin,
+            onPinVerified = { handler.post { Toast.makeText(applicationContext, R.string.security_confirmed_pool_cert_verified, Toast.LENGTH_SHORT).show() } }
+        )
         e.loadPersistedStats(statsRepository.get())
         e
     }
@@ -158,6 +164,13 @@ class MiningForegroundService : Service() {
         startForeground(NOTIFICATION_ID, createNotification())
         AppLog.d(LOG_TAG) { "startForeground done, starting engine on background thread" }
         Thread {
+            val host = StratumPinCapture.normalizeHost(config.stratumUrl)
+            val useTls = config.stratumUrl.trim().lowercase().contains("ssl") || config.stratumPort == 443
+            if (useTls && configRepository.getStratumPin(host) == null) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(applicationContext, R.string.security_reminder_defaulting_to_trust, Toast.LENGTH_SHORT).show()
+                }
+            }
             engine.start(config)
             if (!engine.isRunning()) {
                 val err = engine.getStatus().lastError ?: "Mining failed"
@@ -196,6 +209,13 @@ class MiningForegroundService : Service() {
             if (!config.isValidForMining() || !MiningConstraints.canStartMining(this@MiningForegroundService, config)) {
                 Handler(Looper.getMainLooper()).post { stopMining() }
                 return@Thread
+            }
+            val host = StratumPinCapture.normalizeHost(config.stratumUrl)
+            val useTls = config.stratumUrl.trim().lowercase().contains("ssl") || config.stratumPort == 443
+            if (useTls && configRepository.getStratumPin(host) == null) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(applicationContext, R.string.security_reminder_defaulting_to_trust, Toast.LENGTH_SHORT).show()
+                }
             }
             engine.start(config)
             if (!engine.isRunning()) {
@@ -289,7 +309,34 @@ class MiningForegroundService : Service() {
                 NotificationManager.IMPORTANCE_LOW
             ).apply { setShowBadge(false) }
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+            val redirectChannel = NotificationChannel(
+                REDIRECT_CHANNEL_ID,
+                getString(R.string.pool_redirect_notification_title),
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply { setShowBadge(false) }
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(redirectChannel)
         }
+    }
+
+    /** Shows a persistent, user-dismissible notification when the pool sends client.reconnect (redirect not applied). */
+    private fun showPoolRedirectNotification(host: String, port: Int) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            createNotificationChannel()
+        }
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, REDIRECT_CHANNEL_ID)
+            .setContentTitle(getString(R.string.pool_redirect_notification_title))
+            .setContentText(getString(R.string.pool_redirect_notification_text, host, port))
+            .setSmallIcon(R.drawable.ic_mining_notification)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(REDIRECT_NOTIFICATION_ID, notification)
     }
 
     companion object {
@@ -302,5 +349,7 @@ class MiningForegroundService : Service() {
         const val ACTION_RESTART = "com.btcminer.android.mining.RESTART"
         private const val CHANNEL_ID = "mining"
         private const val NOTIFICATION_ID = 1
+        private const val REDIRECT_CHANNEL_ID = "pool_redirect"
+        private const val REDIRECT_NOTIFICATION_ID = 2
     }
 }

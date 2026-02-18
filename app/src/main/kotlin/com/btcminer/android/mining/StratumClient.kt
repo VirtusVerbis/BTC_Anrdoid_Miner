@@ -1,5 +1,6 @@
 package com.btcminer.android.mining
 
+import android.util.Base64
 import com.btcminer.android.AppLog
 import org.json.JSONArray
 import org.json.JSONObject
@@ -7,7 +8,12 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.Socket
+import java.security.MessageDigest
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -24,6 +30,7 @@ class StratumClient(
     private val username: String,
     private val password: String,
     private val useTls: Boolean = false,
+    private val stratumPin: String? = null,
     private val onReconnectRequest: ((host: String, port: Int) -> Unit)? = null,
     private val onTemplateReceived: (() -> Unit)? = null,
 ) {
@@ -45,6 +52,23 @@ class StratumClient(
 
     private companion object {
         private const val LOG_TAG = "Stratum"
+
+        private fun stratumPinningTrustManager(expectedPin: String): X509TrustManager =
+            object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) { }
+                override fun getAcceptedIssuers(): Array<X509Certificate>? = null
+                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+                    if (chain.isNullOrEmpty()) throw javax.net.ssl.SSLPeerUnverifiedException("No server certificates")
+                    val leaf = chain[0]
+                    val spkiDer = leaf.publicKey.encoded
+                    val hash = MessageDigest.getInstance("SHA-256").digest(spkiDer)
+                    val base64 = Base64.encodeToString(hash, Base64.NO_WRAP)
+                    val actualPin = "sha256/$base64"
+                    if (actualPin != expectedPin) {
+                        throw javax.net.ssl.SSLPeerUnverifiedException("Certificate pin mismatch")
+                    }
+                }
+            }
     }
 
     fun getCurrentJob(): StratumJob? = currentJob.get()
@@ -66,7 +90,14 @@ class StratumClient(
                 if (useTls) "Connecting (TLS) $host:$port" else "Connecting (plain) $host:$port"
             }
             val socket = if (useTls) {
-                SSLSocketFactory.getDefault().createSocket(host, port) as Socket
+                val factory = if (stratumPin != null) {
+                    val ctx = SSLContext.getInstance("TLS")
+                    ctx.init(null, arrayOf<TrustManager>(stratumPinningTrustManager(stratumPin)), null)
+                    ctx.socketFactory
+                } else {
+                    SSLSocketFactory.getDefault()
+                }
+                factory.createSocket(host, port) as Socket
             } else {
                 Socket(host, port)
             }
