@@ -44,6 +44,14 @@ class MiningForegroundService : Service() {
     private var lastHashrateThrottleActive = false
     private var miningStartTimeMillis: Long? = null
 
+    /** Current throttle sleep (ms) when auto-tuning is ON. 0–60_000. */
+    private var autoTuningThrottleSleepMs: Long = 0L
+    /** Last adjustment direction for dashboard: 0 = NONE, 1 = DECREASING, 2 = INCREASING */
+    @Volatile
+    private var autoTuningDirection: Int = 0
+    /** Consecutive samples in band for Option C (stable in-band) persistence */
+    private var autoTuningInBandConsecutiveCount: Int = 0
+
     private val handler = Handler(Looper.getMainLooper())
     private val hashrateHistoryCpu = mutableListOf<Double>()
     private val hashrateHistoryGpu = mutableListOf<Double>()
@@ -94,7 +102,54 @@ class MiningForegroundService : Service() {
                     }
                     return
                 }
-                val throttleSleepMs = if (lastBatteryThrottleActive || lastHashrateThrottleActive) THROTTLE_SLEEP_MS else 0L
+                val throttleSleepMs = if (config.autoTuningByBatteryTemp) {
+                    val targetLo = config.maxBatteryTempC * AUTO_TUNING_TARGET_LO_RATIO
+                    val targetHi = config.maxBatteryTempC * AUTO_TUNING_TARGET_HI_RATIO
+                    if (tempTenthsC != 0) {
+                        when {
+                            tempC >= config.maxBatteryTempC -> {
+                                autoTuningThrottleSleepMs = 60_000L
+                                autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
+                                configRepository.setAutoTuningLastSleepMs(60_000L)
+                                lastBatteryThrottleActive = true
+                                autoTuningInBandConsecutiveCount = 0
+                            }
+                            tempC < targetLo -> {
+                                autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs - AUTO_TUNING_STEP_MS).coerceAtLeast(0L)
+                                autoTuningDirection = AUTO_TUNING_DIRECTION_DECREASING
+                                configRepository.setAutoTuningLastSleepMs(autoTuningThrottleSleepMs)
+                                lastBatteryThrottleActive = false
+                                autoTuningInBandConsecutiveCount = 0
+                            }
+                            tempC in targetLo..targetHi -> {
+                                autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
+                                lastBatteryThrottleActive = false
+                                autoTuningInBandConsecutiveCount++
+                                if (autoTuningInBandConsecutiveCount >= AUTO_TUNING_IN_BAND_SAMPLES_FOR_LEARNED) {
+                                    configRepository.setAutoTuningLearnedSleepMs(autoTuningThrottleSleepMs)
+                                }
+                                configRepository.setAutoTuningLastSleepMs(autoTuningThrottleSleepMs)
+                            }
+                            else -> {
+                                autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs + AUTO_TUNING_STEP_MS).coerceIn(0L, AUTO_TUNING_SLEEP_MAX)
+                                autoTuningDirection = AUTO_TUNING_DIRECTION_INCREASING
+                                configRepository.setAutoTuningLastSleepMs(autoTuningThrottleSleepMs)
+                                lastBatteryThrottleActive = true
+                                autoTuningInBandConsecutiveCount = 0
+                            }
+                        }
+                    }
+                    val batterySleep = if (tempTenthsC != 0 && tempC >= config.maxBatteryTempC) 60_000L else autoTuningThrottleSleepMs
+                    if (lastHashrateThrottleActive) maxOf(THROTTLE_SLEEP_MS, batterySleep) else batterySleep
+                } else {
+                    lastBatteryThrottleActive = when {
+                        tempTenthsC == 0 -> lastBatteryThrottleActive
+                        tempC >= config.maxBatteryTempC -> true
+                        tempC <= config.maxBatteryTempC * 0.9 -> false
+                        else -> lastBatteryThrottleActive
+                    }
+                    if (lastBatteryThrottleActive || lastHashrateThrottleActive) THROTTLE_SLEEP_MS else 0L
+                }
                 throttleStateRef.set(ThrottleState(config.maxIntensityPercent, false, throttleSleepMs, config.gpuUtilizationPercent))
             }
             handler.postDelayed(this, 1000L)
@@ -126,6 +181,12 @@ class MiningForegroundService : Service() {
     fun isBatteryThrottleActive(): Boolean = lastBatteryThrottleActive
     fun isHashrateThrottleActive(): Boolean = lastHashrateThrottleActive
     fun getMiningStartTimeMillis(): Long? = miningStartTimeMillis
+
+    /** Current auto-tuning throttle sleep (ms). Only meaningful when auto-tuning is enabled in config. */
+    fun getAutoTuningThrottleSleepMs(): Long = autoTuningThrottleSleepMs
+
+    /** 0 = NONE, 1 = DECREASING, 2 = INCREASING. For dashboard color. */
+    fun getAutoTuningDirection(): Int = autoTuningDirection
 
     override fun onCreate() {
         super.onCreate()
@@ -187,6 +248,12 @@ class MiningForegroundService : Service() {
             Handler(Looper.getMainLooper()).post {
                 miningStartTimeMillis = System.currentTimeMillis()
                 val c = configRepository.getConfig()
+                if (c.autoTuningByBatteryTemp) {
+                    autoTuningThrottleSleepMs = configRepository.getAutoTuningLearnedSleepMs()
+                        ?: configRepository.getAutoTuningLastSleepMs()
+                    autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
+                    autoTuningInBandConsecutiveCount = 0
+                }
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
@@ -228,6 +295,12 @@ class MiningForegroundService : Service() {
             Handler(Looper.getMainLooper()).post {
                 miningStartTimeMillis = System.currentTimeMillis()
                 val c = configRepository.getConfig()
+                if (c.autoTuningByBatteryTemp) {
+                    autoTuningThrottleSleepMs = configRepository.getAutoTuningLearnedSleepMs()
+                        ?: configRepository.getAutoTuningLastSleepMs()
+                    autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
+                    autoTuningInBandConsecutiveCount = 0
+                }
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
@@ -377,6 +450,16 @@ class MiningForegroundService : Service() {
     companion object {
         /** Sleep duration (ms) after each chunk when battery or hashrate throttle is active. Adjust for testing. */
         const val THROTTLE_SLEEP_MS = 60_000L //5000L
+        const val AUTO_TUNING_STEP_MS = 5_000L
+        const val AUTO_TUNING_SLEEP_MAX = 60_000L
+        /** Fraction of max battery temp for auto-tune band low bound (below this → decrease delay). */
+        const val AUTO_TUNING_TARGET_LO_RATIO: Double = 0.85 //0.70
+        /** Fraction of max battery temp for auto-tune band high bound (above this up to 100% → increase delay). */
+        const val AUTO_TUNING_TARGET_HI_RATIO: Double = 0.90
+        const val AUTO_TUNING_IN_BAND_SAMPLES_FOR_LEARNED = 5
+        const val AUTO_TUNING_DIRECTION_NONE = 0
+        const val AUTO_TUNING_DIRECTION_DECREASING = 1
+        const val AUTO_TUNING_DIRECTION_INCREASING = 2
         private const val STATS_SAVE_INTERVAL_MS = 60_000L
         private const val LOG_TAG = "Mining"
         const val ACTION_START = "com.btcminer.android.mining.START"

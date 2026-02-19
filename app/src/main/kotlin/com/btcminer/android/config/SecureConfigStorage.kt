@@ -42,6 +42,13 @@ class SecureConfigStorage(context: Context) {
         prefs.edit().putBoolean(key, value).apply()
     }
 
+    fun getLong(key: String, default: Long): Long =
+        prefs.getLong(key, default)
+
+    fun putLong(key: String, value: Long) {
+        prefs.edit().putLong(key, value).apply()
+    }
+
     /** Run multiple edits and commit synchronously. Returns true if commit succeeded. */
     fun commitBatch(block: (SharedPreferences.Editor) -> Unit): Boolean =
         prefs.edit().also(block).commit()
@@ -64,6 +71,9 @@ class SecureConfigStorage(context: Context) {
         const val KEY_MAX_WORKER_THREADS = "max_worker_threads"
         const val KEY_BATTERY_TEMP_FAHRENHEIT = "battery_temp_fahrenheit"
         const val KEY_MAX_BATTERY_TEMP_C = "max_battery_temp_c"
+        const val KEY_AUTO_TUNING_BY_BATTERY_TEMP = "auto_tuning_by_battery_temp"
+        const val KEY_AUTO_TUNING_LAST_SLEEP_MS = "auto_tuning_last_sleep_ms"
+        const val KEY_AUTO_TUNING_LEARNED_SLEEP_MS = "auto_tuning_learned_sleep_ms"
         const val KEY_HASHRATE_TARGET_HPS = "hashrate_target_hps"
         const val KEY_GPU_CORES = "gpu_cores"
         const val KEY_GPU_UTILIZATION_PERCENT = "gpu_utilization_percent"

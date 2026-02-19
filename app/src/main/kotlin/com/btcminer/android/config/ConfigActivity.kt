@@ -114,6 +114,7 @@ class ConfigActivity : AppCompatActivity() {
         val batteryTempC = c.maxBatteryTempC.coerceIn(20, MiningConfig.MAX_BATTERY_TEMP_C)
         binding.configSliderBatteryTemp.value = batteryTempC.toFloat()
         binding.configBatteryTempValue.text = "$batteryTempC °C"
+        binding.configAutoTuningBatteryTemp.isChecked = c.autoTuningByBatteryTemp
         binding.configHashrateTarget.editText?.setText(c.hashrateTargetHps?.toString() ?: "")
         val maxCores = Runtime.getRuntime().availableProcessors()
         binding.configSliderCores.valueTo = maxCores.toFloat()
@@ -155,6 +156,7 @@ class ConfigActivity : AppCompatActivity() {
             mineOnlyWhenCharging = binding.configMineOnlyWhenCharging.isChecked,
             batteryTempFahrenheit = binding.configBatteryTempFahrenheit.isChecked,
             maxBatteryTempC = binding.configSliderBatteryTemp.value.toInt().coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C),
+            autoTuningByBatteryTemp = binding.configAutoTuningBatteryTemp.isChecked,
             hashrateTargetHps = binding.configHashrateTarget.editText?.text?.toString()?.trim()?.toDoubleOrNull(),
             maxIntensityPercent = binding.configSliderIntensity.value.toInt().coerceIn(
                 MiningConfig.MAX_INTENSITY_MIN,

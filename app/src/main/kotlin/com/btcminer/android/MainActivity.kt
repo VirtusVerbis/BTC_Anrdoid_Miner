@@ -95,6 +95,20 @@ class MainActivity : AppCompatActivity() {
                 val status = MiningStatsRepository(applicationContext).get()
                 updateStatsUi(status, null)
             }
+            val config = configRepository.getConfig()
+            if (config.autoTuningByBatteryTemp && service != null) {
+                binding.autoTuneBlock.visibility = View.VISIBLE
+                binding.autoTuneValue.text = "${service.getAutoTuningThrottleSleepMs() / 1000}"
+                val dir = service.getAutoTuningDirection()
+                val color = when (dir) {
+                    MiningForegroundService.AUTO_TUNING_DIRECTION_DECREASING -> ContextCompat.getColor(this@MainActivity, R.color.auto_tune_decreasing)
+                    MiningForegroundService.AUTO_TUNING_DIRECTION_INCREASING -> ContextCompat.getColor(this@MainActivity, R.color.bitcoin_orange)
+                    else -> ContextCompat.getColor(this@MainActivity, R.color.white)
+                }
+                binding.autoTuneValue.setTextColor(color)
+            } else {
+                binding.autoTuneBlock.visibility = View.GONE
+            }
             handler.postDelayed(this, 1000L)
         }
     }

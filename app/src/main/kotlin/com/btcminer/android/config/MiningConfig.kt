@@ -19,6 +19,7 @@ data class MiningConfig(
     val statusUpdateIntervalMs: Int = 1000,
     val batteryTempFahrenheit: Boolean = false,
     val maxBatteryTempC: Int = 30,
+    val autoTuningByBatteryTemp: Boolean = false,
     val hashrateTargetHps: Double? = null,
     val gpuCores: Int = 0,
     val gpuUtilizationPercent: Int = 75,

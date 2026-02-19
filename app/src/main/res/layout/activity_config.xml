@@ -181,6 +181,14 @@
             android:text="30 °C"
             android:textColor="?attr/colorOnSurface" />
 
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/config_auto_tuning_battery_temp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:checked="false"
+            android:text="@string/config_auto_tuning_battery_temp" />
+
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/config_hashrate_target"
             style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
