@@ -46,7 +46,7 @@ data class MiningConfig(
         const val STATUS_UPDATE_INTERVAL_MAX = 30_000
         const val MAX_BATTERY_TEMP_C = 45
         const val BATTERY_TEMP_DEFAULT_C = 30
-        const val BATTERY_TEMP_HARD_STOP_C = 50
+        const val BATTERY_TEMP_HARD_STOP_C = 43  //anything equal to or over 43C is dangerous
         const val GPU_CORES_MIN = 0
         /** Max workgroup steps (32 * this = local size). Capped by device maxComputeWorkGroupSize/32. */
         const val GPU_CORES_MAX = 64

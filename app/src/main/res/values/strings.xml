@@ -32,7 +32,11 @@
     <string name="config_battery_temp_throttle_summary">Throttle mining above this; resume when 10% below. Max 45°C.</string>
     <string name="config_hashrate_target">Hashrate target (H/s)</string>
     <string name="config_hashrate_target_hint">e.g. 100. Leave empty for no throttle</string>
-    <string name="battery_too_hot_toast">Battery too hot. Mining stopped.</string>
+    <string name="battery_too_hot_toast">Overheat Detected: Mining Stopped !</string>
+    <string name="overheat_notification_title">Mining stopped</string>
+    <string name="overheat_notification_body">Overheat detected. Battery reached %1$d°C.</string>
+    <string name="overheat_banner_message">Mining was stopped due to overheat</string>
+    <string name="overheat_banner_dismiss">Dismiss</string>
     <string name="config_cores_used">CPU Cores</string>
     <string name="config_cores_used_summary">Number of CPU cores used for mining (1 = single thread, can throttle with intensity below)</string>
     <string name="config_max_intensity">Max CPU intensity (%)</string>
