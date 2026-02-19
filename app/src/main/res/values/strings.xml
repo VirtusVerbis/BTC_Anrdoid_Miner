@@ -30,6 +30,8 @@
     <string name="config_battery_temp_fahrenheit_summary">Otherwise Celsius</string>
     <string name="config_battery_temp_throttle">Max battery temp (°C)</string>
     <string name="config_battery_temp_throttle_summary">Throttle mining above this; resume when 10% below. Max 45°C.</string>
+    <string name="config_auto_tuning_battery_temp">Auto-Tuning by Battery Temp</string>
+    <string name="config_auto_tuning_battery_temp_summary">Adjust throttle sleep to keep temp in target band (Max −10% to Max). Steps of 5 s; resets to 60 s if over Max.</string>
     <string name="config_hashrate_target">Hashrate target (H/s)</string>
     <string name="config_hashrate_target_hint">e.g. 100. Leave empty for no throttle</string>
     <string name="battery_too_hot_toast">Overheat Detected: Mining Stopped !</string>
@@ -73,6 +75,7 @@
     <string name="accepted_shares_label">Accepted Shares</string>
     <string name="rejected_shares_label">Rejected Shares</string>
     <string name="identified_shares_label">Identified Shares</string>
+    <string name="auto_tune_on">Auto-Tune ON</string>
     <string name="battery_temp_label">Battery temp</string>
     <string name="best_difficulty_label">Best difficulty</string>
     <string name="block_template_label">Block template</string>

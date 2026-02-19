@@ -6,4 +6,5 @@
     <color name="bitcoin_orange">#F7931A</color>
     <color name="chart_axis_legend">#DE000000</color>
     <color name="throttle_secondary">#DE000000</color>
+    <color name="auto_tune_decreasing">#5EB8E6</color>
 </resources>

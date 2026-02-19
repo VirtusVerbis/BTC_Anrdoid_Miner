@@ -39,6 +39,7 @@ class MiningConfigRepository(context: Context) {
             SecureConfigStorage.KEY_MAX_BATTERY_TEMP_C,
             MiningConfig.BATTERY_TEMP_DEFAULT_C
         ).coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C),
+        autoTuningByBatteryTemp = storage.getBoolean(SecureConfigStorage.KEY_AUTO_TUNING_BY_BATTERY_TEMP, false),
         hashrateTargetHps = storage.getStr(SecureConfigStorage.KEY_HASHRATE_TARGET_HPS).trim()
             .takeIf { it.isNotEmpty() }?.toDoubleOrNull(),
         gpuCores = storage.getInt(SecureConfigStorage.KEY_GPU_CORES, 0)
@@ -46,6 +47,24 @@ class MiningConfigRepository(context: Context) {
         gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
             .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
     )
+
+    /** Last throttle sleep (ms) written by auto-tuning (Option B). Clamped when read. */
+    fun getAutoTuningLastSleepMs(): Long =
+        storage.getLong(SecureConfigStorage.KEY_AUTO_TUNING_LAST_SLEEP_MS, 0L).coerceIn(0L, 60_000L)
+
+    fun setAutoTuningLastSleepMs(ms: Long) {
+        storage.putLong(SecureConfigStorage.KEY_AUTO_TUNING_LAST_SLEEP_MS, ms.coerceIn(0L, 60_000L))
+    }
+
+    /** Stable in-band learned sleep (ms) for Option C. Clamped when read. */
+    fun getAutoTuningLearnedSleepMs(): Long? {
+        val v = storage.getLong(SecureConfigStorage.KEY_AUTO_TUNING_LEARNED_SLEEP_MS, -1L)
+        return if (v < 0) null else v.coerceIn(0L, 60_000L)
+    }
+
+    fun setAutoTuningLearnedSleepMs(ms: Long) {
+        storage.putLong(SecureConfigStorage.KEY_AUTO_TUNING_LEARNED_SLEEP_MS, ms.coerceIn(0L, 60_000L))
+    }
 
     /** Returns the stored stratum cert pin for the given host, or null if none. Host should be normalized (no scheme, first segment). */
     fun getStratumPin(host: String): String? =
@@ -84,6 +103,7 @@ class MiningConfigRepository(context: Context) {
                 SecureConfigStorage.KEY_MAX_BATTERY_TEMP_C,
                 config.maxBatteryTempC.coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C)
             )
+            edit.putBoolean(SecureConfigStorage.KEY_AUTO_TUNING_BY_BATTERY_TEMP, config.autoTuningByBatteryTemp)
             edit.putString(
                 SecureConfigStorage.KEY_HASHRATE_TARGET_HPS,
                 config.hashrateTargetHps?.toString() ?: ""
