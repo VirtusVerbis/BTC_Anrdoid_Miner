@@ -1,18 +1,24 @@
 package com.btcminer.android
 
+import android.app.PictureInPictureParams
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
-import android.os.BatteryManager
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Rect
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -53,6 +59,10 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var configRepository: MiningConfigRepository
+
+    /** Full-screen dimensions saved before entering PIP; used to scale root to fit in PIP. */
+    private var pipFullWidth = 0
+    private var pipFullHeight = 0
 
     private val mempoolOkHttpClient: OkHttpClient by lazy {
         val builder = OkHttpClient.Builder()
@@ -260,6 +270,85 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(mempoolFetchRunnable)
         binding.hashRateValue.setTextColor(ContextCompat.getColor(this, R.color.bitcoin_orange))
         binding.batteryTempValue.setTextColor(ContextCompat.getColor(this, R.color.bitcoin_orange))
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            enterPictureInPictureModeIfSupported()
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val root = binding.root
+        if (isInPictureInPictureMode) {
+            // Keep root at full size and scale it down so entire screen fits in PIP (no reflow/crop).
+            if (pipFullWidth > 0 && pipFullHeight > 0) {
+                root.layoutParams = (root.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                    width = pipFullWidth
+                    height = pipFullHeight
+                } ?: FrameLayout.LayoutParams(pipFullWidth, pipFullHeight)
+                root.post {
+                    val parent = root.parent as? View ?: return@post
+                    val pw = parent.width
+                    val ph = parent.height
+                    if (pw > 0 && ph > 0 && pipFullWidth > 0 && pipFullHeight > 0) {
+                        val scale = minOf(pw.toFloat() / pipFullWidth, ph.toFloat() / pipFullHeight)
+                        root.pivotX = 0f
+                        root.pivotY = 0f
+                        root.scaleX = scale
+                        root.scaleY = scale
+                    }
+                }
+            }
+        } else {
+            // Restore normal layout and scale when leaving PIP.
+            root.layoutParams = (root.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                width = ViewGroup.LayoutParams.MATCH_PARENT
+                height = ViewGroup.LayoutParams.MATCH_PARENT
+            } ?: FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            root.scaleX = 1f
+            root.scaleY = 1f
+            root.requestLayout()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun enterPictureInPictureModeIfSupported() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val root = binding.root
+        val w = root.width
+        val h = root.height
+        val dm = resources.displayMetrics
+        val width = if (w > 0 && h > 0) w else dm.widthPixels
+        val height = if (w > 0 && h > 0) h else dm.heightPixels
+        if (w > 0 && h > 0) {
+            pipFullWidth = w
+            pipFullHeight = h
+        }
+        // Portrait: height >= width. Ensure portrait Rational so PIP window is always tall.
+        val portraitW = minOf(width, height)
+        val portraitH = maxOf(width, height)
+        val rational = Rational(portraitW, portraitH)
+        // Source rect in window coordinates.
+        val sourceRect = if (w > 0 && h > 0) {
+            val loc = IntArray(2)
+            root.getLocationInWindow(loc)
+            Rect(loc[0], loc[1], loc[0] + w, loc[1] + h)
+        } else {
+            Rect(0, 0, dm.widthPixels, dm.heightPixels)
+        }
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(rational)
+            .setSourceRectHint(sourceRect)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setSeamlessResizeEnabled(false)
+        }
+        if (!enterPictureInPictureMode(builder.build())) {
+            // PIP not entered (e.g. not allowed by device or policy)
+        }
     }
 
     private fun setupChart() {
