@@ -108,6 +108,7 @@ class ConfigActivity : AppCompatActivity() {
         binding.configBitcoinAddress.editText?.setText(c.bitcoinAddress)
         binding.configLightningAddress.editText?.setText(c.lightningAddress)
         binding.configWorkerName.editText?.setText(c.workerName)
+        binding.configPartialWakeLock.isChecked = c.usePartialWakeLock
         binding.configWifiOnly.isChecked = c.wifiOnly
         binding.configMineOnlyWhenCharging.isChecked = c.mineOnlyWhenCharging
         binding.configBatteryTempFahrenheit.isChecked = c.batteryTempFahrenheit
@@ -152,6 +153,7 @@ class ConfigActivity : AppCompatActivity() {
             bitcoinAddress = MiningConfig.sanitize(binding.configBitcoinAddress.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_BITCOIN_ADDRESS_LEN),
             lightningAddress = MiningConfig.sanitize(binding.configLightningAddress.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_LIGHTNING_ADDRESS_LEN),
             workerName = MiningConfig.sanitize(binding.configWorkerName.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_WORKER_NAME_LEN),
+            usePartialWakeLock = binding.configPartialWakeLock.isChecked,
             wifiOnly = binding.configWifiOnly.isChecked,
             mineOnlyWhenCharging = binding.configMineOnlyWhenCharging.isChecked,
             batteryTempFahrenheit = binding.configBatteryTempFahrenheit.isChecked,

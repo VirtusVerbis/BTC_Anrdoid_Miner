@@ -46,6 +46,7 @@ class MiningConfigRepository(context: Context) {
             .coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX),
         gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
             .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
+        usePartialWakeLock = storage.getBoolean(SecureConfigStorage.KEY_USE_PARTIAL_WAKE_LOCK, false),
     )
 
     /** Last throttle sleep (ms) written by auto-tuning (Option B). Clamped when read. */
@@ -116,6 +117,7 @@ class MiningConfigRepository(context: Context) {
                 SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT,
                 config.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
             )
+            edit.putBoolean(SecureConfigStorage.KEY_USE_PARTIAL_WAKE_LOCK, config.usePartialWakeLock)
         }
     }
 }

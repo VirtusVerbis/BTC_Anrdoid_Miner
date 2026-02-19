@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.BatteryManager
+import android.os.PowerManager
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.btcminer.android.AppLog
@@ -28,13 +29,17 @@ class MiningForegroundService : Service() {
 
     private lateinit var configRepository: MiningConfigRepository
     private lateinit var statsRepository: MiningStatsRepository
+    private lateinit var pendingSharesRepository: PendingSharesRepository
+    private var wakeLock: PowerManager.WakeLock? = null
     private val throttleStateRef = AtomicReference(ThrottleState(100, false))
     private val engine: MiningEngine by lazy {
         val e = NativeMiningEngine(
             throttleStateRef,
             onPoolRedirectRequested = { host, port -> handler.post { showPoolRedirectNotification(host, port) } },
             getStratumPin = configRepository::getStratumPin,
-            onPinVerified = { handler.post { Toast.makeText(applicationContext, R.string.security_confirmed_pool_cert_verified, Toast.LENGTH_SHORT).show() } }
+            onPinVerified = { handler.post { Toast.makeText(applicationContext, R.string.security_confirmed_pool_cert_verified, Toast.LENGTH_SHORT).show() } },
+            pendingSharesRepository = pendingSharesRepository,
+            isBothWifiAndDataUnavailable = { MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) },
         )
         e.loadPersistedStats(statsRepository.get())
         e
@@ -93,6 +98,7 @@ class MiningForegroundService : Service() {
                 }
                 if (stopDueToOverheat) {
                     handler.post {
+                        releaseWakeLock()
                         setOverheatBannerFlag(true)
                         showOverheatNotification()
                         engine.stop()
@@ -151,6 +157,7 @@ class MiningForegroundService : Service() {
                     if (lastBatteryThrottleActive || lastHashrateThrottleActive) THROTTLE_SLEEP_MS else 0L
                 }
                 throttleStateRef.set(ThrottleState(config.maxIntensityPercent, false, throttleSleepMs, config.gpuUtilizationPercent))
+                startForeground(NOTIFICATION_ID, createNotification())
             }
             handler.postDelayed(this, 1000L)
         }
@@ -192,6 +199,7 @@ class MiningForegroundService : Service() {
         super.onCreate()
         configRepository = MiningConfigRepository(applicationContext)
         statsRepository = MiningStatsRepository(applicationContext)
+        pendingSharesRepository = PendingSharesRepository(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -257,6 +265,10 @@ class MiningForegroundService : Service() {
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
+                if (c.usePartialWakeLock) {
+                    wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "btcminer:wake").apply { acquire() }
+                }
                 Toast.makeText(applicationContext, getString(R.string.mining_started), Toast.LENGTH_SHORT).show()
                 registerConstraintReceiver()
                 handler.post(sampleRunnable)
@@ -273,6 +285,7 @@ class MiningForegroundService : Service() {
         synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
         synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
         unregisterConstraintReceiver()
+        releaseWakeLock()
         engine.stop()
         Thread {
             val config = configRepository.getConfig()
@@ -304,6 +317,10 @@ class MiningForegroundService : Service() {
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
+                if (c.usePartialWakeLock) {
+                    wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "btcminer:wake").apply { acquire() }
+                }
                 Toast.makeText(applicationContext, getString(R.string.mining_restarted), Toast.LENGTH_SHORT).show()
                 registerConstraintReceiver()
                 handler.post(sampleRunnable)
@@ -347,9 +364,17 @@ class MiningForegroundService : Service() {
         }
     }
 
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) { }
+        wakeLock = null
+    }
+
     private fun stopMining() {
         AppLog.d(LOG_TAG) { "stopMining()" }
         miningStartTimeMillis = null
+        releaseWakeLock()
         handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
         statsRepository.save(engine.getStatus())
@@ -369,9 +394,11 @@ class MiningForegroundService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val status = if (::configRepository.isInitialized) engine.getStatus() else null
+        val contentText = if (MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) && (status?.connectionLost == true)) getString(R.string.mining_reconnecting) else getString(R.string.mining_notification_text)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.mining_notification_title))
-            .setContentText(getString(R.string.mining_notification_text))
+            .setContentText(contentText)
             .setSmallIcon(R.drawable.ic_mining_notification)
             .setContentIntent(open)
             .setOngoing(true)

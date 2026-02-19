@@ -23,6 +23,7 @@ data class MiningConfig(
     val hashrateTargetHps: Double? = null,
     val gpuCores: Int = 0,
     val gpuUtilizationPercent: Int = 75,
+    val usePartialWakeLock: Boolean = false,
 ) {
     fun isValidForMining(): Boolean =
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()

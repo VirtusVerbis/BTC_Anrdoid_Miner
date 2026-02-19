@@ -33,10 +33,12 @@ class StratumClient(
     private val stratumPin: String? = null,
     private val onReconnectRequest: ((host: String, port: Int) -> Unit)? = null,
     private val onTemplateReceived: (() -> Unit)? = null,
+    private val onConnectionLost: (() -> Unit)? = null,
 ) {
     private val socketRef = AtomicReference<Socket?>(null)
     private val writerRef = AtomicReference<PrintWriter?>(null)
     private val running = AtomicBoolean(false)
+    private val connected = AtomicBoolean(false)
     private val readerThreadRef = AtomicReference<Thread?>(null)
 
     private val currentJob = AtomicReference<StratumJob?>(null)
@@ -76,6 +78,8 @@ class StratumClient(
     fun getExtranonce1Hex(): String? = extranonce1Hex.get()
     fun getExtranonce2Size(): Int = extranonce2Size.get()
     fun isRunning(): Boolean = running.get()
+    /** True when socket is open and subscribe+authorize have succeeded. */
+    fun isConnected(): Boolean = connected.get()
 
     /** Returns true if the last mining.notify had cleanJobs=true (caller should abort current job). */
     fun consumeCleanJobsInvalidation(): Boolean = cleanJobsInvalidation.getAndSet(false)
@@ -85,6 +89,44 @@ class StratumClient(
      */
     fun connect(): String? {
         if (running.getAndSet(true)) return null
+        val err = doConnect()
+        if (err != null) {
+            disconnect()
+            return err
+        }
+        connected.set(true)
+        return null
+    }
+
+    /**
+     * Reconnect after connection loss. Call when [isConnected] is false and session is still [isRunning].
+     * Returns true on success, false on failure.
+     */
+    fun tryReconnect(): Boolean {
+        if (connected.get()) return true
+        closeConnectionOnly()
+        val err = doConnect()
+        if (err != null) {
+            AppLog.d(LOG_TAG) { "tryReconnect failed: $err" }
+            return false
+        }
+        connected.set(true)
+        AppLog.d(LOG_TAG) { "tryReconnect OK" }
+        return true
+    }
+
+    /** Closes socket and reader; sets [connected] false. Does not set [running] false. */
+    private fun closeConnectionOnly() {
+        connected.set(false)
+        try {
+            socketRef.getAndSet(null)?.close()
+        } catch (_: Exception) { }
+        writerRef.set(null)
+        readerThreadRef.getAndSet(null)?.interrupt()
+    }
+
+    /** Creates socket, reader thread, subscribe, authorize. Returns null on success, error message on failure. Does not set [running] or [connected]. */
+    private fun doConnect(): String? {
         return try {
             AppLog.d(LOG_TAG) {
                 if (useTls) "Connecting (TLS) $host:$port" else "Connecting (plain) $host:$port"
@@ -101,7 +143,8 @@ class StratumClient(
             } else {
                 Socket(host, port)
             }
-            socket.soTimeout = 0
+            // Timeout so we detect dead/half-open connections and set connected=false for reconnect logic.
+            socket.soTimeout = 90_000
             socketRef.set(socket)
             val writer = PrintWriter(socket.getOutputStream(), true)
             writerRef.set(writer)
@@ -116,7 +159,8 @@ class StratumClient(
                         handleLine(line)
                     }
                 } catch (_: Exception) { }
-                running.set(false)
+                closeConnectionOnly()
+                onConnectionLost?.invoke()
             }.apply { isDaemon = true; start() })
 
             authorizeResultRef.set(null)
@@ -131,31 +175,27 @@ class StratumClient(
                 waited += 50
             }
             if (extranonce1Hex.get() == null) {
-                disconnect()
+                closeConnectionOnly()
                 return "No subscribe response"
             }
             if (authorizeResultRef.get() == null) {
-                disconnect()
+                closeConnectionOnly()
                 return "No authorize response"
             }
             if (authorizeResultRef.get() == false) {
-                disconnect()
+                closeConnectionOnly()
                 return authorizeErrorRef.get() ?: "Authorization failed"
             }
             null
         } catch (e: Exception) {
-            running.set(false)
+            closeConnectionOnly()
             e.message ?: "Connection failed"
         }
     }
 
     fun disconnect() {
         running.set(false)
-        try {
-            socketRef.getAndSet(null)?.close()
-        } catch (_: Exception) { }
-        writerRef.set(null)
-        readerThreadRef.getAndSet(null)?.interrupt()
+        closeConnectionOnly()
         currentJob.set(null)
     }
 

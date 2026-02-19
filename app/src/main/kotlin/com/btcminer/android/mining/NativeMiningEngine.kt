@@ -3,6 +3,8 @@ package com.btcminer.android.mining
 import com.btcminer.android.AppLog
 import com.btcminer.android.config.MiningConfig
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -17,6 +19,8 @@ class NativeMiningEngine(
     private val onPoolRedirectRequested: ((host: String, port: Int) -> Unit)? = null,
     private val getStratumPin: (String) -> String? = { null },
     private val onPinVerified: (() -> Unit)? = null,
+    private val pendingSharesRepository: PendingSharesRepository? = null,
+    private val isBothWifiAndDataUnavailable: (() -> Boolean)? = null,
 ) : MiningEngine {
 
     private companion object {
@@ -71,7 +75,8 @@ class NativeMiningEngine(
         // Pool redirect (client.reconnect) is disabled: we only notify via onPoolRedirectRequested, do not reconnect.
         val client = StratumClient(host, port, username, password, useTls = useTls, stratumPin = stratumPin,
             onReconnectRequest = { h, p -> onPoolRedirectRequested?.invoke(h, p) },
-            onTemplateReceived = { blockTemplatesCount.incrementAndGet() })
+            onTemplateReceived = { blockTemplatesCount.incrementAndGet() },
+            onConnectionLost = null)
         val err = client.connect()
         if (err != null) {
             AppLog.e(LOG_TAG) { "Connect failed: $err" }
@@ -82,7 +87,8 @@ class NativeMiningEngine(
         if (stratumPin != null) {
             onPinVerified?.invoke()
         }
-        AppLog.d(LOG_TAG) { "Connected, starting mining" }
+        AppLog.d(LOG_TAG) { "Connected, flushing pending shares then starting mining" }
+        flushPendingShares(client)
         clientRef.set(client)
         statusRef.set(MiningStatus(
             MiningStatus.State.Mining,
@@ -156,13 +162,27 @@ class NativeMiningEngine(
         statusRef.set(status)
     }
 
-    override fun isRunning(): Boolean = running.get() && clientRef.get()?.isRunning() == true
+    override fun isRunning(): Boolean = running.get()
 
     override fun getStatus(): MiningStatus = statusRef.get()
 
+    private fun flushPendingShares(client: StratumClient) {
+        val repo = pendingSharesRepository ?: return
+        val list = repo.getAll()
+        if (list.isEmpty()) return
+        AppLog.d(LOG_TAG) { "Flushing ${list.size} pending share(s)" }
+        for (share in list) {
+            val latch = CountDownLatch(1)
+            client.sendSubmit(share.jobId, share.extranonce2Hex, share.ntimeHex, share.nonceHex) { accepted, _ ->
+                if (accepted) acceptedShares.incrementAndGet() else rejectedShares.incrementAndGet()
+                latch.countDown()
+            }
+            latch.await(10, TimeUnit.SECONDS)
+        }
+        repo.clear()
+    }
+
     private fun runMiningLoop(client: StratumClient, config: MiningConfig) {
-        val en1Hex = client.getExtranonce1Hex() ?: return
-        val en2Size = client.getExtranonce2Size().coerceAtLeast(4)
         val statsStartTime = System.currentTimeMillis()
         gpuNoncesScanned.set(0)
         var lastLogTime = statsStartTime
@@ -171,7 +191,13 @@ class NativeMiningEngine(
         val gpuEnabled = config.gpuCores > 0 && NativeMiner.gpuIsAvailable()
         AppLog.d(LOG_TAG) { "Using $threadCount CPU worker(s), GPU=${gpuEnabled}" }
 
-        while (running.get() && client.isRunning()) {
+        var cachedJob: StratumJob? = null
+        var cachedDifficulty = 0.0
+        var cachedEn1Hex: String? = null
+        var cachedEn2Size = 4
+        var lastReconnectAttemptMs = 0L
+
+        while (running.get()) {
             val throttle = throttleStateRef?.get()
             if (throttle?.stopDueToOverheat == true) {
                 AppLog.d(LOG_TAG) { "Stopping due to battery overheat" }
@@ -181,16 +207,88 @@ class NativeMiningEngine(
                     blockTemplates = blockTemplatesCount.get(), noncesScanned = totalNoncesScanned.get()))
                 return
             }
-            var job = client.getCurrentJob()
-            while (job == null && running.get() && client.isRunning()) {
-                Thread.sleep(200)
-                job = client.getCurrentJob()
-            }
-            job ?: return
-            val difficulty = client.getCurrentDifficulty()
-            if (difficulty <= 0.0) {
-                Thread.sleep(200)
-                continue
+
+            val job: StratumJob
+            val difficulty: Double
+            val en1Hex: String
+            val en2Size: Int
+            if (client.isConnected()) {
+                // Update status immediately so UI (e.g. Stratum icon) shows connected even while waiting for a job.
+                val nowConnected = System.currentTimeMillis()
+                val elapsedSec = (nowConnected - statsStartTime) / 1000.0
+                val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
+                statusRef.set(MiningStatus(
+                    state = MiningStatus.State.Mining,
+                    hashrateHs = totalNoncesScanned.get() / effectiveElapsed,
+                    gpuHashrateHs = gpuNoncesScanned.get() / effectiveElapsed,
+                    noncesScanned = totalNoncesScanned.get(),
+                    acceptedShares = acceptedShares.get(),
+                    rejectedShares = rejectedShares.get(),
+                    identifiedShares = identifiedShares.get(),
+                    bestDifficulty = bestDifficultyRef.get(),
+                    blockTemplates = blockTemplatesCount.get(),
+                    connectionLost = false,
+                ))
+                var j = client.getCurrentJob()
+                while (j == null && running.get()) {
+                    Thread.sleep(200)
+                    j = client.getCurrentJob()
+                }
+                if (j == null) continue
+                val diff = client.getCurrentDifficulty()
+                if (diff <= 0.0) {
+                    Thread.sleep(200)
+                    continue
+                }
+                val en1 = client.getExtranonce1Hex() ?: continue
+                val en2 = client.getExtranonce2Size().coerceAtLeast(4)
+                cachedJob = j
+                cachedDifficulty = diff
+                cachedEn1Hex = en1
+                cachedEn2Size = en2
+                job = j
+                difficulty = diff
+                en1Hex = en1
+                en2Size = en2
+            } else {
+                // Disconnected: attempt reconnect when we have network and delay has passed (even if we have a cached job).
+                val now = System.currentTimeMillis()
+                val bothUnavailable = isBothWifiAndDataUnavailable?.invoke() == true
+                val shouldRetry = !bothUnavailable
+                val delayMs = MiningConstants.STRATUM_RECONNECT_RETRY_DELAY_SEC * 1000L
+                val delayPassed = now - lastReconnectAttemptMs >= delayMs
+                if (!shouldRetry) {
+                    AppLog.d(LOG_TAG) { "Disconnected: no network (WiFi and data unavailable), skipping tryReconnect" }
+                } else if (!delayPassed) {
+                    // Delay not passed; will retry when interval has elapsed.
+                } else {
+                    lastReconnectAttemptMs = now
+                    AppLog.d(LOG_TAG) { "Disconnected: calling tryReconnect()" }
+                    if (client.tryReconnect()) {
+                        flushPendingShares(client)
+                        continue
+                    }
+                }
+                if (cachedJob == null || cachedEn1Hex == null) {
+                    Thread.sleep(200)
+                    statusRef.set(MiningStatus(
+                        state = MiningStatus.State.Mining,
+                        hashrateHs = totalNoncesScanned.get() / maxOf((now - statsStartTime) / 1000.0, MIN_ELAPSED_SEC_FOR_HASHRATE),
+                        gpuHashrateHs = gpuNoncesScanned.get() / maxOf((now - statsStartTime) / 1000.0, MIN_ELAPSED_SEC_FOR_HASHRATE),
+                        noncesScanned = totalNoncesScanned.get(),
+                        acceptedShares = acceptedShares.get(),
+                        rejectedShares = rejectedShares.get(),
+                        identifiedShares = identifiedShares.get(),
+                        bestDifficulty = bestDifficultyRef.get(),
+                        blockTemplates = blockTemplatesCount.get(),
+                        connectionLost = true,
+                    ))
+                    continue
+                }
+                job = cachedJob!!
+                difficulty = cachedDifficulty
+                en1Hex = cachedEn1Hex!!
+                en2Size = cachedEn2Size
             }
 
             val extranonce2Hex = String.format("%0${en2Size * 2}x", extranonce2Counter.getAndIncrement() and 0xFFFFFFFFL)
@@ -216,7 +314,7 @@ class NativeMiningEngine(
                     val workerJobId = job.jobId
                     while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
                         if (throttleStateRef?.get()?.stopDueToOverheat == true) break
-                        if (client.getCurrentJob()?.jobId != job.jobId || client.consumeCleanJobsInvalidation()) break
+                        if (client.isConnected() && (client.getCurrentJob()?.jobId != job.jobId || client.consumeCleanJobsInvalidation())) break
                         val throttle = throttleStateRef?.get()
                         val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
                         if (start > MAX_NONCE) break
@@ -272,7 +370,12 @@ class NativeMiningEngine(
                 val singleWorkers = listOf(cpuWorker) + listOfNotNull(gpuWorkerSt)
                 singleWorkers.forEach { it.start() }
                 while (singleWorkers.any { it.isAlive }) {
-                    if (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation()) {
+                    if (!client.isConnected()) {
+                        AppLog.d(LOG_TAG) { "Connection lost during mining, breaking out to try reconnect" }
+                        activeJobId.set(null)
+                        break
+                    }
+                    if (client.isConnected() && (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation())) {
                         AppLog.d(LOG_TAG) { "Job changed, switching to new template" }
                         activeJobId.set(null)
                     }
@@ -294,6 +397,7 @@ class NativeMiningEngine(
                             identifiedShares = identifiedShares.get(),
                             bestDifficulty = bestDifficultyRef.get(),
                             blockTemplates = blockTemplatesCount.get(),
+                            connectionLost = !client.isConnected(),
                         ))
                         lastStatusUpdateTime = now
                     }
@@ -370,6 +474,11 @@ class NativeMiningEngine(
                 val allWorkers = cpuWorkers + listOfNotNull(gpuWorker)
                 allWorkers.forEach { it.start() }
                 while (allWorkers.any { it.isAlive }) {
+                    if (!client.isConnected()) {
+                        AppLog.d(LOG_TAG) { "Connection lost during mining, breaking out to try reconnect" }
+                        activeJobId.set(null)
+                        break
+                    }
                     if (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation()) {
                         AppLog.d(LOG_TAG) { "Job changed, switching to new template" }
                         activeJobId.set(null)
@@ -390,6 +499,7 @@ class NativeMiningEngine(
                         identifiedShares = identifiedShares.get(),
                         bestDifficulty = bestDifficultyRef.get(),
                         blockTemplates = blockTemplatesCount.get(),
+                        connectionLost = !client.isConnected(),
                     ))
                     if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
                         AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, gpuHashrateHs, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
@@ -406,17 +516,22 @@ class NativeMiningEngine(
             val diff = StratumHeaderBuilder.difficultyFromHeader80(header80)
             bestDifficultyRef.updateAndGet { maxOf(it, diff) }
             identifiedShares.incrementAndGet()
-            if (client.getCurrentJob()?.jobId != job.jobId) AppLog.d(LOG_TAG) { "Stale job, submitting anyway so pool sees we are alive" }
             val nonceHex = String.format("%08x", (foundNonce.toLong() and 0xFFFFFFFFL))
-            AppLog.d(LOG_TAG) { String.format(Locale.US, "Share submitted (jobId=%s, nonce 0x%s)", job.jobId, nonceHex) }
-            client.sendSubmit(job.jobId, extranonce2Hex, ntimeHex, nonceHex) { accepted, errorMessage ->
-                if (accepted) {
-                    acceptedShares.incrementAndGet()
-                    AppLog.d(LOG_TAG) { String.format(Locale.US, "Share accepted #%d", acceptedShares.get()) }
-                } else {
-                    rejectedShares.incrementAndGet()
-                    AppLog.e(LOG_TAG) { String.format(Locale.US, "Share rejected #%d: %s", rejectedShares.get(), errorMessage ?: "unknown") }
+            if (client.isConnected()) {
+                if (client.getCurrentJob()?.jobId != job.jobId) AppLog.d(LOG_TAG) { "Stale job, submitting anyway so pool sees we are alive" }
+                AppLog.d(LOG_TAG) { String.format(Locale.US, "Share submitted (jobId=%s, nonce 0x%s)", job.jobId, nonceHex) }
+                client.sendSubmit(job.jobId, extranonce2Hex, ntimeHex, nonceHex) { accepted, errorMessage ->
+                    if (accepted) {
+                        acceptedShares.incrementAndGet()
+                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Share accepted #%d", acceptedShares.get()) }
+                    } else {
+                        rejectedShares.incrementAndGet()
+                        AppLog.e(LOG_TAG) { String.format(Locale.US, "Share rejected #%d: %s", rejectedShares.get(), errorMessage ?: "unknown") }
+                    }
                 }
+            } else {
+                pendingSharesRepository?.add(PendingSharesRepository.QueuedShare(job.jobId, extranonce2Hex, ntimeHex, nonceHex))
+                AppLog.d(LOG_TAG) { "Queued share (disconnected)" }
             }
             val elapsedSec = (System.currentTimeMillis() - statsStartTime) / 1000.0
             val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
@@ -432,6 +547,7 @@ class NativeMiningEngine(
                 identifiedShares = identifiedShares.get(),
                 bestDifficulty = bestDifficultyRef.get(),
                 blockTemplates = blockTemplatesCount.get(),
+                connectionLost = !client.isConnected(),
             ))
         }
     }

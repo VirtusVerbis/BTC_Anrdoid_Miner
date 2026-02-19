@@ -35,6 +35,8 @@ data class MiningStatus(
     val bestDifficulty: Double = 0.0,
     val blockTemplates: Long = 0L,
     val lastError: String? = null,
+    /** True when mining is active but Stratum connection is lost (reconnecting). */
+    val connectionLost: Boolean = false,
 ) {
     enum class State { Idle, Connecting, Mining, Error }
 }

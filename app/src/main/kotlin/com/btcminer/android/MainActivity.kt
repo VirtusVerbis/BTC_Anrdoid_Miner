@@ -300,6 +300,8 @@ class MainActivity : AppCompatActivity() {
             "00:00:00:00"
         }
         binding.miningTimerValue.text = timerStr
+        binding.reconnectingBanner.visibility = if (MiningConstraints.isBothWifiAndDataUnavailable(this) && status.connectionLost) View.VISIBLE else View.GONE
+        binding.stratumConnectionIcon.alpha = if (status.state == MiningStatus.State.Mining && !status.connectionLost) 1f else 0.3f
     }
 
     private fun formatElapsed(elapsedMs: Long): String {
