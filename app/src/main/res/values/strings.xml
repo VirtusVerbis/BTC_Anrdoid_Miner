@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">BTC Miner</string>
     <string name="dashboard_title">Bitcoin Android Miner</string>
-    <string name="wallet_balance_tor_note">Not available when using TOR.</string>
+    <string name="wallet_balance_tor_note">Not available when using TOR / Offline.</string>
 
     <!-- Configuration -->
     <string name="config_title">Configuration</string>
@@ -22,6 +22,8 @@
     <string name="config_lightning_address_hint">user@domain</string>
     <string name="config_worker_name">Worker name</string>
     <string name="config_worker_name_hint">android1</string>
+    <string name="config_partial_wake_lock">Partial Wake Lock</string>
+    <string name="config_partial_wake_lock_summary">Keep mining active when screen off or app minimized</string>
     <string name="config_wifi_only">WiFi only</string>
     <string name="config_wifi_only_summary">Disable mining over mobile data</string>
     <string name="config_mine_only_when_charging">Mine only when charging</string>
@@ -56,6 +58,7 @@
     <string name="mining_notification_channel_name">Mining</string>
     <string name="mining_notification_title">BTC Miner</string>
     <string name="mining_notification_text">Mining active. Tap to open.</string>
+    <string name="mining_reconnecting">Reconnecting…</string>
     <string name="mining_start">Start mining</string>
     <string name="mining_stop">Stop mining</string>
     <string name="mining_start_fail_config">Set pool URL and username in Configuration first.</string>
@@ -69,6 +72,7 @@
 
     <!-- Dashboard stats -->
     <string name="hash_rate_label">Hash Rate (CPU)</string>
+    <string name="stratum_connection_icon_content_description">Stratum connection status: lit when connected, dim when disconnected</string>
     <string name="hash_rate_gpu_label">Hash Rate (GPU)</string>
     <string name="nonces_label">Nonces</string>
     <string name="mining_timer_label">Mining Timer</string>

@@ -136,10 +136,17 @@
         </com.google.android.material.textfield.TextInputLayout>
 
         <com.google.android.material.switchmaterial.SwitchMaterial
-            android:id="@+id/config_wifi_only"
+            android:id="@+id/config_partial_wake_lock"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:text="@string/config_partial_wake_lock" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/config_wifi_only"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:checked="true"
             android:text="@string/config_wifi_only" />
 
