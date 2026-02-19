@@ -114,9 +114,9 @@ class MiningForegroundService : Service() {
                     if (tempTenthsC != 0) {
                         when {
                             tempC >= config.maxBatteryTempC -> {
-                                autoTuningThrottleSleepMs = 60_000L
+                                autoTuningThrottleSleepMs = THROTTLE_SLEEP_MS
                                 autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
-                                configRepository.setAutoTuningLastSleepMs(60_000L)
+                                configRepository.setAutoTuningLastSleepMs(THROTTLE_SLEEP_MS)
                                 lastBatteryThrottleActive = true
                                 autoTuningInBandConsecutiveCount = 0
                             }
@@ -145,7 +145,7 @@ class MiningForegroundService : Service() {
                             }
                         }
                     }
-                    val batterySleep = if (tempTenthsC != 0 && tempC >= config.maxBatteryTempC) 60_000L else autoTuningThrottleSleepMs
+                    val batterySleep = if (tempTenthsC != 0 && tempC >= config.maxBatteryTempC) THROTTLE_SLEEP_MS else autoTuningThrottleSleepMs
                     if (lastHashrateThrottleActive) maxOf(THROTTLE_SLEEP_MS, batterySleep) else batterySleep
                 } else {
                     lastBatteryThrottleActive = when {
@@ -476,9 +476,9 @@ class MiningForegroundService : Service() {
 
     companion object {
         /** Sleep duration (ms) after each chunk when battery or hashrate throttle is active. Adjust for testing. */
-        const val THROTTLE_SLEEP_MS = 60_000L //5000L
+        const val THROTTLE_SLEEP_MS = 120_000L //60_000L
         const val AUTO_TUNING_STEP_MS = 5_000L
-        const val AUTO_TUNING_SLEEP_MAX = 60_000L
+        const val AUTO_TUNING_SLEEP_MAX = 120_000L //60_000L
         /** Fraction of max battery temp for auto-tune band low bound (below this → decrease delay). */
         const val AUTO_TUNING_TARGET_LO_RATIO: Double = 0.85 //0.70
         /** Fraction of max battery temp for auto-tune band high bound (above this up to 100% → increase delay). */
