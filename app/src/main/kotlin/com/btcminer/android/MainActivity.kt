@@ -31,6 +31,7 @@ import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
 import com.btcminer.android.network.CertPins
 import com.btcminer.android.util.BitcoinAddressValidator
+import com.google.android.material.snackbar.Snackbar
 import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -210,6 +211,15 @@ class MainActivity : AppCompatActivity() {
             lastBitcoinAddress = currentAddress
             // Trigger immediate balance check when address changes
             handler.post(mempoolFetchRunnable)
+        }
+        // One-time overheat banner: if mining was stopped due to overheat, show until user dismisses
+        val prefs = getSharedPreferences(MiningForegroundService.OVERHEAT_BANNER_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(MiningForegroundService.KEY_SHOW_OVERHEAT_BANNER, false)) {
+            Snackbar.make(binding.root, getString(R.string.overheat_banner_message), Snackbar.LENGTH_INDEFINITE)
+                .setAction(R.string.overheat_banner_dismiss) {
+                    prefs.edit().putBoolean(MiningForegroundService.KEY_SHOW_OVERHEAT_BANNER, false).apply()
+                }
+                .show()
         }
     }
 

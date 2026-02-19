@@ -250,7 +250,7 @@ class NativeMiningEngine(
                             if (sleepMs > 0L) {
                                 Thread.sleep(sleepMs)
                             } else {
-                                val gpuUtil = config.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
+                                val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent).coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
                                 if (gpuUtil < 100) {
                                     Thread.sleep((100 - gpuUtil) * 20L / 100)
                                 }
@@ -348,7 +348,7 @@ class NativeMiningEngine(
                             if (sleepMs > 0L) {
                                 Thread.sleep(sleepMs)
                             } else {
-                                val gpuUtil = config.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
+                                val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent).coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
                                 if (gpuUtil < 100) {
                                     Thread.sleep((100 - gpuUtil) * 20L / 100)
                                 }

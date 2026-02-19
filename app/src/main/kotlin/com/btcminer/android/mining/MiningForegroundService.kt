@@ -85,6 +85,8 @@ class MiningForegroundService : Service() {
                 }
                 if (stopDueToOverheat) {
                     handler.post {
+                        setOverheatBannerFlag(true)
+                        showOverheatNotification()
                         engine.stop()
                         Toast.makeText(applicationContext, R.string.battery_too_hot_toast, Toast.LENGTH_LONG).show()
                         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -93,7 +95,7 @@ class MiningForegroundService : Service() {
                     return
                 }
                 val throttleSleepMs = if (lastBatteryThrottleActive || lastHashrateThrottleActive) THROTTLE_SLEEP_MS else 0L
-                throttleStateRef.set(ThrottleState(config.maxIntensityPercent, false, throttleSleepMs))
+                throttleStateRef.set(ThrottleState(config.maxIntensityPercent, false, throttleSleepMs, config.gpuUtilizationPercent))
             }
             handler.postDelayed(this, 1000L)
         }
@@ -184,7 +186,8 @@ class MiningForegroundService : Service() {
             }
             Handler(Looper.getMainLooper()).post {
                 miningStartTimeMillis = System.currentTimeMillis()
-                throttleStateRef.set(ThrottleState(configRepository.getConfig().maxIntensityPercent, false, 0L))
+                val c = configRepository.getConfig()
+                throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
                 Toast.makeText(applicationContext, getString(R.string.mining_started), Toast.LENGTH_SHORT).show()
@@ -224,7 +227,8 @@ class MiningForegroundService : Service() {
             }
             Handler(Looper.getMainLooper()).post {
                 miningStartTimeMillis = System.currentTimeMillis()
-                throttleStateRef.set(ThrottleState(configRepository.getConfig().maxIntensityPercent, false, 0L))
+                val c = configRepository.getConfig()
+                throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
                 Toast.makeText(applicationContext, getString(R.string.mining_restarted), Toast.LENGTH_SHORT).show()
@@ -315,7 +319,38 @@ class MiningForegroundService : Service() {
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply { setShowBadge(false) }
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(redirectChannel)
+            val overheatChannel = NotificationChannel(
+                OVERHEAT_CHANNEL_ID,
+                getString(R.string.overheat_notification_title),
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply { setShowBadge(true) }
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(overheatChannel)
         }
+    }
+
+    private fun setOverheatBannerFlag(show: Boolean) {
+        getSharedPreferences(OVERHEAT_BANNER_PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_SHOW_OVERHEAT_BANNER, show).apply()
+    }
+
+    /** Shows a persistent, user-dismissible notification when mining stops due to overheat. */
+    private fun showOverheatNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            createNotificationChannel()
+        }
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, OVERHEAT_CHANNEL_ID)
+            .setContentTitle(getString(R.string.overheat_notification_title))
+            .setContentText(getString(R.string.overheat_notification_body, MiningConfig.BATTERY_TEMP_HARD_STOP_C))
+            .setSmallIcon(R.drawable.ic_mining_notification)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(OVERHEAT_NOTIFICATION_ID, notification)
     }
 
     /** Shows a persistent, user-dismissible notification when the pool sends client.reconnect (redirect not applied). */
@@ -351,5 +386,9 @@ class MiningForegroundService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val REDIRECT_CHANNEL_ID = "pool_redirect"
         private const val REDIRECT_NOTIFICATION_ID = 2
+        private const val OVERHEAT_CHANNEL_ID = "overheat"
+        private const val OVERHEAT_NOTIFICATION_ID = 3
+        const val OVERHEAT_BANNER_PREFS = "overheat_banner"
+        const val KEY_SHOW_OVERHEAT_BANNER = "show_overheat_stopped_banner"
     }
 }
