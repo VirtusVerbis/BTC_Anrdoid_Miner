@@ -291,6 +291,7 @@ class NativeMiningEngine(
                 en2Size = cachedEn2Size
             }
 
+            val isOfflineRound = !client.isConnected()  // mining with cached job while disconnected; do not break worker loop on connection check
             val extranonce2Hex = String.format("%0${en2Size * 2}x", extranonce2Counter.getAndIncrement() and 0xFFFFFFFFL)
 
             val merkleRoot = StratumHeaderBuilder.buildMerkleRoot(
@@ -370,7 +371,7 @@ class NativeMiningEngine(
                 val singleWorkers = listOf(cpuWorker) + listOfNotNull(gpuWorkerSt)
                 singleWorkers.forEach { it.start() }
                 while (singleWorkers.any { it.isAlive }) {
-                    if (!client.isConnected()) {
+                    if (!isOfflineRound && !client.isConnected()) {
                         AppLog.d(LOG_TAG) { "Connection lost during mining, breaking out to try reconnect" }
                         activeJobId.set(null)
                         break
@@ -381,6 +382,19 @@ class NativeMiningEngine(
                     }
                     singleWorkers.forEach { it.join(statusUpdateIntervalMs.toLong()) }
                     val now = System.currentTimeMillis()
+                    if (isOfflineRound) {
+                        val bothUnavailable = isBothWifiAndDataUnavailable?.invoke() == true
+                        val delayMs = MiningConstants.STRATUM_RECONNECT_RETRY_DELAY_SEC * 1000L
+                        if (!bothUnavailable && (now - lastReconnectAttemptMs >= delayMs)) {
+                            lastReconnectAttemptMs = now
+                            if (client.tryReconnect()) {
+                                AppLog.d(LOG_TAG) { "Reconnected from offline round (single-worker), flushing queue" }
+                                flushPendingShares(client)
+                                activeJobId.set(null)
+                                break
+                            }
+                        }
+                    }
                     if (now - lastStatusUpdateTime >= statusUpdateIntervalMs) {
                         val elapsedSec = (now - statsStartTime) / 1000.0
                         // Use effectiveElapsed (min 1s) so we don't divide by a tiny number and show a spike right after "Start Mining"
@@ -474,17 +488,30 @@ class NativeMiningEngine(
                 val allWorkers = cpuWorkers + listOfNotNull(gpuWorker)
                 allWorkers.forEach { it.start() }
                 while (allWorkers.any { it.isAlive }) {
-                    if (!client.isConnected()) {
+                    if (!isOfflineRound && !client.isConnected()) {
                         AppLog.d(LOG_TAG) { "Connection lost during mining, breaking out to try reconnect" }
                         activeJobId.set(null)
                         break
                     }
-                    if (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation()) {
+                    if (client.isConnected() && (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation())) {
                         AppLog.d(LOG_TAG) { "Job changed, switching to new template" }
                         activeJobId.set(null)
                     }
                     allWorkers.forEach { it.join(statusUpdateIntervalMs.toLong()) }
                     val now = System.currentTimeMillis()
+                    if (isOfflineRound) {
+                        val bothUnavailable = isBothWifiAndDataUnavailable?.invoke() == true
+                        val delayMs = MiningConstants.STRATUM_RECONNECT_RETRY_DELAY_SEC * 1000L
+                        if (!bothUnavailable && (now - lastReconnectAttemptMs >= delayMs)) {
+                            lastReconnectAttemptMs = now
+                            if (client.tryReconnect()) {
+                                AppLog.d(LOG_TAG) { "Reconnected from offline round (multi-worker), flushing queue" }
+                                flushPendingShares(client)
+                                activeJobId.set(null)
+                                break
+                            }
+                        }
+                    }
                     val elapsedSec = (now - statsStartTime) / 1000.0
                     val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
                     val hashrateHs = totalNoncesScanned.get() / effectiveElapsed

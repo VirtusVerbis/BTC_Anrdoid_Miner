@@ -63,6 +63,8 @@ class MainActivity : AppCompatActivity() {
     /** Full-screen dimensions saved before entering PIP; used to scale root to fit in PIP. */
     private var pipFullWidth = 0
     private var pipFullHeight = 0
+    /** Listener that updates root scale when PIP window is resized; removed when leaving PIP. */
+    private var pipScaleLayoutListener: View.OnLayoutChangeListener? = null
 
     private val mempoolOkHttpClient: OkHttpClient by lazy {
         val builder = OkHttpClient.Builder()
@@ -290,20 +292,16 @@ class MainActivity : AppCompatActivity() {
                     width = pipFullWidth
                     height = pipFullHeight
                 } ?: FrameLayout.LayoutParams(pipFullWidth, pipFullHeight)
-                root.post {
-                    val parent = root.parent as? View ?: return@post
-                    val pw = parent.width
-                    val ph = parent.height
-                    if (pw > 0 && ph > 0 && pipFullWidth > 0 && pipFullHeight > 0) {
-                        val scale = minOf(pw.toFloat() / pipFullWidth, ph.toFloat() / pipFullHeight)
-                        root.pivotX = 0f
-                        root.pivotY = 0f
-                        root.scaleX = scale
-                        root.scaleY = scale
-                    }
+                pipScaleLayoutListener?.let { (root.parent as? View)?.removeOnLayoutChangeListener(it) }
+                pipScaleLayoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                    updatePipScale()
                 }
+                (root.parent as? View)?.addOnLayoutChangeListener(pipScaleLayoutListener)
+                root.post { updatePipScale() }
             }
         } else {
+            pipScaleLayoutListener?.let { (root.parent as? View)?.removeOnLayoutChangeListener(it) }
+            pipScaleLayoutListener = null
             // Restore normal layout and scale when leaving PIP.
             root.layoutParams = (root.layoutParams as? FrameLayout.LayoutParams)?.apply {
                 width = ViewGroup.LayoutParams.MATCH_PARENT
@@ -312,6 +310,22 @@ class MainActivity : AppCompatActivity() {
             root.scaleX = 1f
             root.scaleY = 1f
             root.requestLayout()
+        }
+    }
+
+    /** Recompute root scale so full content fits the current PIP window size. */
+    private fun updatePipScale() {
+        if (pipFullWidth <= 0 || pipFullHeight <= 0) return
+        val root = binding.root
+        val parent = root.parent as? View ?: return
+        val pw = parent.width
+        val ph = parent.height
+        if (pw > 0 && ph > 0) {
+            val scale = minOf(pw.toFloat() / pipFullWidth, ph.toFloat() / pipFullHeight)
+            root.pivotX = 0f
+            root.pivotY = 0f
+            root.scaleX = scale
+            root.scaleY = scale
         }
     }
 

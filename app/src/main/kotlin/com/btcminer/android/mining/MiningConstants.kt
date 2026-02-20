@@ -5,5 +5,5 @@ package com.btcminer.android.mining
  */
 object MiningConstants {
     /** Stratum reconnect retry delay in seconds. Used for both WiFi and cell. */
-    const val STRATUM_RECONNECT_RETRY_DELAY_SEC = 60 //300
+    const val STRATUM_RECONNECT_RETRY_DELAY_SEC = 10//60 //300
 }
