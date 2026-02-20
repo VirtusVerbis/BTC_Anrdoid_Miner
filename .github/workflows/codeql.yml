@@ -28,6 +28,12 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      - name: Regenerate Gradle wrapper
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-9.2.1-bin.zip -O /tmp/gradle.zip
+          unzip -q -d /tmp /tmp/gradle.zip
+          /tmp/gradle-9.2.1/bin/gradle wrapper --gradle-version 9.2.1 --no-daemon
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
