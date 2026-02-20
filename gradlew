@@ -38,8 +38,8 @@ cd "$SAVED" >/dev/null
 APP_NAME="Gradle"
 APP_BASE_NAME=`basename "$0"`
 
-# Add default JVM options here. Use unquoted -Xmx/-Xms so they are separate arguments.
-DEFAULT_JVM_OPTS="-Xmx64m -Xms64m"
+# Add default JVM options here.
+DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
 
 # Use the maximum available, or set MAX_FD != -1 to use that value.
 MAX_FD="maximum"
@@ -57,4 +57,5 @@ set -- \
         org.gradle.wrapper.GradleWrapperMain \
         "$@"
 
-exec "$JAVA_HOME/bin/java" $DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS "$@"
+# Pass JVM options as literal args to avoid CI (e.g. CodeQL) mis-parsing variable expansion
+exec "$JAVA_HOME/bin/java" -Xmx64m -Xms64m $JAVA_OPTS $GRADLE_OPTS "$@"
