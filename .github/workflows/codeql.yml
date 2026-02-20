@@ -35,6 +35,9 @@ jobs:
           build-mode: manual
 
       - name: Build project
+        env:
+          GRADLE_OPTS: ""
+          JAVA_OPTS: ""
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Perform CodeQL Analysis
