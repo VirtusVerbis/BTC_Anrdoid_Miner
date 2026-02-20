@@ -38,8 +38,8 @@ cd "$SAVED" >/dev/null
 APP_NAME="Gradle"
 APP_BASE_NAME=`basename "$0"`
 
-# Add default JVM options here.
-DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+# Add default JVM options here. Use unquoted -Xmx/-Xms so they are separate arguments.
+DEFAULT_JVM_OPTS="-Xmx64m -Xms64m"
 
 # Use the maximum available, or set MAX_FD != -1 to use that value.
 MAX_FD="maximum"
