@@ -8,6 +8,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
@@ -56,6 +57,8 @@ class StratumClient(
 
     private companion object {
         private const val LOG_TAG = "Stratum"
+        /** Connect timeout (ms) to avoid indefinite block when network is unavailable during reconnect. */
+        private const val CONNECT_TIMEOUT_MS = 15_000
 
         private fun stratumPinningTrustManager(expectedPin: String): X509TrustManager =
             object : X509TrustManager {
@@ -141,9 +144,11 @@ class StratumClient(
                 } else {
                     SSLSocketFactory.getDefault()
                 }
-                factory.createSocket(host, port) as Socket
+                val plainSocket = Socket()
+                plainSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                factory.createSocket(plainSocket, host, port, true) as Socket
             } else {
-                Socket(host, port)
+                Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
             }
             // Timeout so we detect dead/half-open connections and set connected=false for reconnect logic.
             socket.soTimeout = 90_000
