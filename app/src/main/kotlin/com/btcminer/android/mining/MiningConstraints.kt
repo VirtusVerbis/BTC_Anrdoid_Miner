@@ -29,13 +29,18 @@ object MiningConstraints {
     /**
      * True when the device has neither WiFi nor cellular data (e.g. no active network, or active network has neither transport).
      * Used to gate "Reconnecting..." UI and Stratum retry logic.
+     * Returns true (assume unavailable) on any exception to avoid crashes during network transitions.
      */
     fun isBothWifiAndDataUnavailable(context: Context): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
-        val network = cm.activeNetwork ?: return true
-        val caps = cm.getNetworkCapabilities(network) ?: return true
-        return !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
-                !caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+            val network = cm.activeNetwork ?: return true
+            val caps = cm.getNetworkCapabilities(network) ?: return true
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                    !caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+        } catch (e: Exception) {
+            true // Assume unavailable on any error; prevents crash during network transitions
+        }
     }
 
     fun isChargingOk(context: Context, config: MiningConfig): Boolean {
