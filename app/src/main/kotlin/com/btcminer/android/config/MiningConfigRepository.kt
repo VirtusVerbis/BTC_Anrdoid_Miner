@@ -13,7 +13,8 @@ class MiningConfigRepository(context: Context) {
 
     fun getConfig(): MiningConfig = MiningConfig(
         stratumUrl = storage.getStr(SecureConfigStorage.KEY_STRATUM_URL),
-        stratumPort = storage.getInt(SecureConfigStorage.KEY_STRATUM_PORT, MiningConfig.DEFAULT_STRATUM_PORT),
+        stratumPort = storage.getInt(SecureConfigStorage.KEY_STRATUM_PORT, MiningConfig.DEFAULT_STRATUM_PORT)
+            .let { p -> if (p in 1..65535) p else MiningConfig.DEFAULT_STRATUM_PORT },
         stratumUser = storage.getStr(SecureConfigStorage.KEY_STRATUM_USER),
         stratumPass = storage.getStr(SecureConfigStorage.KEY_STRATUM_PASS),
         bitcoinAddress = storage.getStr(SecureConfigStorage.KEY_BITCOIN_ADDRESS),
@@ -53,24 +54,6 @@ class MiningConfigRepository(context: Context) {
             .coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX),
     )
 
-    /** Last throttle sleep (ms) written by auto-tuning (Option B). Clamped when read. */
-    fun getAutoTuningLastSleepMs(): Long =
-        storage.getLong(SecureConfigStorage.KEY_AUTO_TUNING_LAST_SLEEP_MS, 0L).coerceIn(0L, 60_000L)
-
-    fun setAutoTuningLastSleepMs(ms: Long) {
-        storage.putLong(SecureConfigStorage.KEY_AUTO_TUNING_LAST_SLEEP_MS, ms.coerceIn(0L, 60_000L))
-    }
-
-    /** Stable in-band learned sleep (ms) for Option C. Clamped when read. */
-    fun getAutoTuningLearnedSleepMs(): Long? {
-        val v = storage.getLong(SecureConfigStorage.KEY_AUTO_TUNING_LEARNED_SLEEP_MS, -1L)
-        return if (v < 0) null else v.coerceIn(0L, 60_000L)
-    }
-
-    fun setAutoTuningLearnedSleepMs(ms: Long) {
-        storage.putLong(SecureConfigStorage.KEY_AUTO_TUNING_LEARNED_SLEEP_MS, ms.coerceIn(0L, 60_000L))
-    }
-
     /** Returns the stored stratum cert pin for the given host, or null if none. Host should be normalized (no scheme, first segment). */
     fun getStratumPin(host: String): String? =
         storage.getStr(SecureConfigStorage.KEY_STRATUM_PIN_PREFIX + host, "").takeIf { it.isNotBlank() }
@@ -83,7 +66,7 @@ class MiningConfigRepository(context: Context) {
     fun saveConfig(config: MiningConfig) {
         storage.commitBatch { edit ->
             edit.putString(SecureConfigStorage.KEY_STRATUM_URL, config.stratumUrl)
-            edit.putInt(SecureConfigStorage.KEY_STRATUM_PORT, config.stratumPort)
+            edit.putInt(SecureConfigStorage.KEY_STRATUM_PORT, config.stratumPort.coerceIn(1, 65535))
             edit.putString(SecureConfigStorage.KEY_STRATUM_USER, config.stratumUser)
             edit.putString(SecureConfigStorage.KEY_STRATUM_PASS, config.stratumPass)
             edit.putString(SecureConfigStorage.KEY_BITCOIN_ADDRESS, config.bitcoinAddress)

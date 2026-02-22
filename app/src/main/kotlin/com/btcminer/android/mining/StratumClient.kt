@@ -132,9 +132,10 @@ class StratumClient(
 
     /** Creates socket, reader thread, subscribe, authorize. Returns null on success, error message on failure. Does not set [running] or [connected]. */
     private fun doConnect(): String? {
+        val connectPort = port.coerceIn(1, 65535)
         return try {
             AppLog.d(LOG_TAG) {
-                if (useTls) "Connecting (TLS) $host:$port" else "Connecting (plain) $host:$port"
+                if (useTls) "Connecting (TLS) $host:$connectPort" else "Connecting (plain) $host:$connectPort"
             }
             val socket = if (useTls) {
                 val factory = if (stratumPin != null) {
@@ -144,11 +145,10 @@ class StratumClient(
                 } else {
                     SSLSocketFactory.getDefault()
                 }
-                val plainSocket = Socket()
-                plainSocket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-                factory.createSocket(plainSocket, host, port, true) as Socket
+                // Android SSLSocketFactory has no createSocket(Socket, String, int, boolean), so no connect timeout on TLS path.
+                factory.createSocket(host, connectPort) as Socket
             } else {
-                Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
+                Socket().apply { connect(InetSocketAddress(host, connectPort), CONNECT_TIMEOUT_MS) }
             }
             // Timeout so we detect dead/half-open connections and set connected=false for reconnect logic.
             socket.soTimeout = 90_000
