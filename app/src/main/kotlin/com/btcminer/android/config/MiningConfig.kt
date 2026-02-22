@@ -24,6 +24,8 @@ data class MiningConfig(
     val gpuCores: Int = 0,
     val gpuUtilizationPercent: Int = 75,
     val usePartialWakeLock: Boolean = false,
+    val miningThreadPriority: Int = 0,
+    val alarmWakeIntervalSec: Int = 60,
 ) {
     fun isValidForMining(): Boolean =
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()
@@ -54,5 +56,9 @@ data class MiningConfig(
         const val GPU_CORES_MAX = 64
         const val GPU_UTILIZATION_MIN = 1
         const val GPU_UTILIZATION_MAX = 100
+        const val MINING_THREAD_PRIORITY_MIN = -20 //-8
+        const val MINING_THREAD_PRIORITY_MAX = 0
+        const val ALARM_WAKE_INTERVAL_SEC_MIN = 0
+        const val ALARM_WAKE_INTERVAL_SEC_MAX = 60
     }
 }

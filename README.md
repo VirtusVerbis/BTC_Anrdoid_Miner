@@ -23,6 +23,8 @@ https://github.com/BitMaker-hub/NerdMiner_v2/releases
 - Dashboard: hash rate, mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, battery temp, hashrate chart
 - Runs as a **foreground service** so mining continues in the background until you stop it (notification permission required on Android 13+)
 
+**Screen-off mining:** If hashrate drops when the screen is off, in **Settings → Apps → BTC Miner → Battery**, set to **Unrestricted** / **Don’t optimize** / **Allow background** so the system does not throttle the app.
+
 ## Build and run
 
 1. **Open in Android Studio**: File → Open → select the `BTC Android Miner` folder.

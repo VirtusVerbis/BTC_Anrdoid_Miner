@@ -4,6 +4,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
+import android.content.res.ColorStateList
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.IBinder
@@ -17,6 +21,8 @@ import com.btcminer.android.databinding.ActivityConfigBinding
 import com.btcminer.android.mining.MiningForegroundService
 import com.btcminer.android.mining.NativeMiner
 import com.btcminer.android.network.StratumPinCapture
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import com.google.android.material.slider.Slider
 import java.lang.Runtime
 
@@ -54,9 +60,21 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderGpuUtilization.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configGpuUtilizationValue.text = "${value.toInt()}%"
         })
+        binding.configSliderThreadPriority.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
+            binding.configThreadPriorityValue.text = "${value.toInt()}"
+            applyThreadPrioritySliderAppearance(value)
+        })
+        binding.configSliderAlarmWakeInterval.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
+            binding.configAlarmWakeIntervalValue.text = "${value.toInt()}"
+        })
+        binding.configPartialWakeLock.setOnCheckedChangeListener { _, _ ->
+            updateAlarmSliderEnabled()
+        }
         binding.configSave.setOnClickListener { saveConfig() }
         binding.configSaveFloating.setOnClickListener { saveConfig() }
         binding.configResetCounters.setOnClickListener { showResetCountersDialog() }
+        binding.configRequestBatteryExemption.setOnClickListener { requestBatteryExemption() }
+        binding.configOpenBatteryOptimizationSettings.setOnClickListener { openBatteryOptimizationSettings() }
         updateFloatingButtonVisibility()
         binding.configScroll.viewTreeObserver.addOnGlobalLayoutListener {
             updateFloatingButtonVisibility()
@@ -70,6 +88,44 @@ class ConfigActivity : AppCompatActivity() {
         val rect = Rect()
         val inFlowVisible = binding.configSave.getLocalVisibleRect(rect)
         binding.configSaveFloating.visibility = if (inFlowVisible) View.GONE else View.VISIBLE
+    }
+
+    private fun updateAlarmSliderEnabled() {
+        val enabled = binding.configPartialWakeLock.isChecked
+        binding.configSliderAlarmWakeInterval.isEnabled = enabled
+        binding.configAlarmWakeIntervalValue.isEnabled = enabled
+        binding.configAlarmWakeIntervalLabel.isEnabled = enabled
+    }
+
+    private fun requestBatteryExemption() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            Toast.makeText(this, getString(R.string.config_battery_already_exempt), Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:$packageName"))
+            )
+        } catch (e: SecurityException) {
+            openBatteryOptimizationSettings()
+        }
+    }
+
+    private fun openBatteryOptimizationSettings() {
+        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+    }
+
+    private fun applyThreadPrioritySliderAppearance(value: Float) {
+        val v = value.coerceIn(MiningConfig.MINING_THREAD_PRIORITY_MIN.toFloat(), MiningConfig.MINING_THREAD_PRIORITY_MAX.toFloat())
+        val ratio = (v / MiningConfig.MINING_THREAD_PRIORITY_MIN.toFloat()).coerceIn(0f, 1f)
+        val dimColor = ContextCompat.getColor(this, R.color.slider_priority_track_low)
+        val brightColor = ContextCompat.getColor(this, R.color.slider_priority_track_high)
+        val blendedColor = ColorUtils.blendARGB(dimColor, brightColor, ratio)
+        binding.configSliderThreadPriority.setTrackActiveTintList(ColorStateList.valueOf(blendedColor))
+        val heightDp = 4f + ratio * 8f
+        val heightPx = (heightDp * resources.displayMetrics.density).toInt().coerceAtLeast(0)
+        binding.configSliderThreadPriority.setTrackHeight(heightPx)
     }
 
     override fun onSupportNavigateUp(): Boolean {
@@ -109,6 +165,14 @@ class ConfigActivity : AppCompatActivity() {
         binding.configLightningAddress.editText?.setText(c.lightningAddress)
         binding.configWorkerName.editText?.setText(c.workerName)
         binding.configPartialWakeLock.isChecked = c.usePartialWakeLock
+        val alarmSec = c.alarmWakeIntervalSec.coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX)
+        binding.configSliderAlarmWakeInterval.value = alarmSec.toFloat()
+        binding.configAlarmWakeIntervalValue.text = "$alarmSec"
+        updateAlarmSliderEnabled()
+        val threadPriority = c.miningThreadPriority.coerceIn(MiningConfig.MINING_THREAD_PRIORITY_MIN, MiningConfig.MINING_THREAD_PRIORITY_MAX)
+        binding.configSliderThreadPriority.value = threadPriority.toFloat()
+        binding.configThreadPriorityValue.text = "$threadPriority"
+        applyThreadPrioritySliderAppearance(threadPriority.toFloat())
         binding.configWifiOnly.isChecked = c.wifiOnly
         binding.configMineOnlyWhenCharging.isChecked = c.mineOnlyWhenCharging
         binding.configBatteryTempFahrenheit.isChecked = c.batteryTempFahrenheit
@@ -154,6 +218,14 @@ class ConfigActivity : AppCompatActivity() {
             lightningAddress = MiningConfig.sanitize(binding.configLightningAddress.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_LIGHTNING_ADDRESS_LEN),
             workerName = MiningConfig.sanitize(binding.configWorkerName.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_WORKER_NAME_LEN),
             usePartialWakeLock = binding.configPartialWakeLock.isChecked,
+            miningThreadPriority = binding.configSliderThreadPriority.value.toInt().coerceIn(
+                MiningConfig.MINING_THREAD_PRIORITY_MIN,
+                MiningConfig.MINING_THREAD_PRIORITY_MAX
+            ),
+            alarmWakeIntervalSec = binding.configSliderAlarmWakeInterval.value.toInt().coerceIn(
+                MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN,
+                MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX
+            ),
             wifiOnly = binding.configWifiOnly.isChecked,
             mineOnlyWhenCharging = binding.configMineOnlyWhenCharging.isChecked,
             batteryTempFahrenheit = binding.configBatteryTempFahrenheit.isChecked,
