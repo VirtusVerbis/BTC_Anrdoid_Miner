@@ -1,5 +1,8 @@
 # Fake Stratum Server
 
+USED FOR TESTING APP BEHAVIOUR ONLY!  Runs separate from app as Python executable.
+
+
 Minimal Stratum TCP server for testing the BTC Android Miner app without a real pool. It repeats the same block template on a timer, uses a configurable difficulty, and returns configurable or random Accept/Reject for share submits.
 
 ## Requirements
