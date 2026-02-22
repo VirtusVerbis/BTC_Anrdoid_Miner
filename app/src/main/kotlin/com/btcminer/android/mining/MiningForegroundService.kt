@@ -140,7 +140,7 @@ class MiningForegroundService : Service() {
                             lastBatteryThrottleActive = true
                         }
                         tempC < targetLo -> {
-                            autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs - AUTO_TUNING_STEP_MS).coerceAtLeast(0L)
+                            autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs - AUTO_TUNING_STEP_DOWN_MS).coerceAtLeast(0L)
                             autoTuningDirection = AUTO_TUNING_DIRECTION_DECREASING
                             lastBatteryThrottleActive = false
                         }
@@ -149,7 +149,7 @@ class MiningForegroundService : Service() {
                             lastBatteryThrottleActive = false
                         }
                         else -> {
-                            autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs + AUTO_TUNING_STEP_MS).coerceIn(0L, AUTO_TUNING_SLEEP_MAX)
+                            autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs + AUTO_TUNING_STEP_UP_MS).coerceIn(0L, AUTO_TUNING_SLEEP_MAX)
                             autoTuningDirection = AUTO_TUNING_DIRECTION_INCREASING
                             lastBatteryThrottleActive = true
                         }
@@ -561,7 +561,10 @@ class MiningForegroundService : Service() {
     companion object {
         /** Sleep duration (ms) after each chunk when battery or hashrate throttle is active. Adjust for testing. */
         const val THROTTLE_SLEEP_MS = 240_000L //120_000L //60_000L
-        const val AUTO_TUNING_STEP_MS = 1_000L // 5_000L  //step change unit
+        /** Per-second increase (ms) when temp in 95–100% band. */
+        const val AUTO_TUNING_STEP_UP_MS = 1_000L
+        /** Per-second decrease (ms) when temp below 90%; faster recovery. */
+        const val AUTO_TUNING_STEP_DOWN_MS = 5_000L
         const val AUTO_TUNING_SLEEP_MAX = 240_000L //120_000L //60_000L
         /** Default throttle sleep (ms) when auto-tuning starts; no persistence. */
         const val AUTO_TUNING_DEFAULT_SLEEP_MS = 30_000L
