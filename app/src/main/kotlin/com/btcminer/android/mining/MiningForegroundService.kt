@@ -59,8 +59,6 @@ class MiningForegroundService : Service() {
     /** Last adjustment direction for dashboard: 0 = NONE, 1 = DECREASING, 2 = INCREASING */
     @Volatile
     private var autoTuningDirection: Int = 0
-    /** Consecutive samples in band for Option C (stable in-band) persistence */
-    private var autoTuningInBandConsecutiveCount: Int = 0
 
     private val handler = Handler(Looper.getMainLooper())
     private val hashrateHistoryCpu = mutableListOf<Double>()
@@ -121,32 +119,21 @@ class MiningForegroundService : Service() {
                             tempC >= config.maxBatteryTempC -> {
                                 autoTuningThrottleSleepMs = THROTTLE_SLEEP_MS
                                 autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
-                                configRepository.setAutoTuningLastSleepMs(THROTTLE_SLEEP_MS)
                                 lastBatteryThrottleActive = true
-                                autoTuningInBandConsecutiveCount = 0
                             }
                             tempC < targetLo -> {
                                 autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs - AUTO_TUNING_STEP_MS).coerceAtLeast(0L)
                                 autoTuningDirection = AUTO_TUNING_DIRECTION_DECREASING
-                                configRepository.setAutoTuningLastSleepMs(autoTuningThrottleSleepMs)
                                 lastBatteryThrottleActive = false
-                                autoTuningInBandConsecutiveCount = 0
                             }
                             tempC in targetLo..targetHi -> {
                                 autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
                                 lastBatteryThrottleActive = false
-                                autoTuningInBandConsecutiveCount++
-                                if (autoTuningInBandConsecutiveCount >= AUTO_TUNING_IN_BAND_SAMPLES_FOR_LEARNED) {
-                                    configRepository.setAutoTuningLearnedSleepMs(autoTuningThrottleSleepMs)
-                                }
-                                configRepository.setAutoTuningLastSleepMs(autoTuningThrottleSleepMs)
                             }
                             else -> {
                                 autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs + AUTO_TUNING_STEP_MS).coerceIn(0L, AUTO_TUNING_SLEEP_MAX)
                                 autoTuningDirection = AUTO_TUNING_DIRECTION_INCREASING
-                                configRepository.setAutoTuningLastSleepMs(autoTuningThrottleSleepMs)
                                 lastBatteryThrottleActive = true
-                                autoTuningInBandConsecutiveCount = 0
                             }
                         }
                     }
@@ -269,10 +256,8 @@ class MiningForegroundService : Service() {
                 miningStartTimeMillis = System.currentTimeMillis()
                 val c = configRepository.getConfig()
                 if (c.autoTuningByBatteryTemp) {
-                    autoTuningThrottleSleepMs = configRepository.getAutoTuningLearnedSleepMs()
-                        ?: configRepository.getAutoTuningLastSleepMs()
+                    autoTuningThrottleSleepMs = AUTO_TUNING_DEFAULT_SLEEP_MS
                     autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
-                    autoTuningInBandConsecutiveCount = 0
                 }
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
@@ -325,10 +310,8 @@ class MiningForegroundService : Service() {
                 miningStartTimeMillis = System.currentTimeMillis()
                 val c = configRepository.getConfig()
                 if (c.autoTuningByBatteryTemp) {
-                    autoTuningThrottleSleepMs = configRepository.getAutoTuningLearnedSleepMs()
-                        ?: configRepository.getAutoTuningLastSleepMs()
+                    autoTuningThrottleSleepMs = AUTO_TUNING_DEFAULT_SLEEP_MS
                     autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
-                    autoTuningInBandConsecutiveCount = 0
                 }
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
@@ -353,9 +336,13 @@ class MiningForegroundService : Service() {
         constraintReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 val config = configRepository.getConfig()
-                if (engine.isRunning() && !MiningConstraints.canStartMining(this@MiningForegroundService, config)) {
-                    stopMining()
-                }
+                if (!engine.isRunning()) return
+                if (MiningConstraints.canStartMining(this@MiningForegroundService, config)) return
+                // Allow offline mining: do not stop when the only failing constraint is network.
+                val onlyNetworkGone = config.isValidForMining() &&
+                    MiningConstraints.isChargingOk(this@MiningForegroundService, config) &&
+                    !MiningConstraints.isNetworkOk(this@MiningForegroundService, config)
+                if (!onlyNetworkGone) stopMining()
             }
         }
         val filter = IntentFilter().apply {
@@ -542,11 +529,12 @@ class MiningForegroundService : Service() {
         const val THROTTLE_SLEEP_MS = 240_000L //120_000L //60_000L
         const val AUTO_TUNING_STEP_MS = 1_000L // 5_000L  //step change unit
         const val AUTO_TUNING_SLEEP_MAX = 240_000L //120_000L //60_000L
+        /** Default throttle sleep (ms) when auto-tuning starts; no persistence. */
+        const val AUTO_TUNING_DEFAULT_SLEEP_MS = 30_000L
         /** Fraction of max battery temp for auto-tune band low bound (below this → decrease delay). */
         const val AUTO_TUNING_TARGET_LO_RATIO: Double = 0.90 // 0.85 //0.70
         /** Fraction of max battery temp for auto-tune band high bound (above this up to 100% → increase delay). */
         const val AUTO_TUNING_TARGET_HI_RATIO: Double = 0.95 // 0.90
-        const val AUTO_TUNING_IN_BAND_SAMPLES_FOR_LEARNED = 5   //number of learning samples
         const val AUTO_TUNING_DIRECTION_NONE = 0
         const val AUTO_TUNING_DIRECTION_DECREASING = 1
         const val AUTO_TUNING_DIRECTION_INCREASING = 2

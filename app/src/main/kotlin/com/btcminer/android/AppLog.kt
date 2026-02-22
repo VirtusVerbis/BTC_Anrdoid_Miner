@@ -10,7 +10,7 @@ import android.util.Log
 object AppLog {
     /** Set to false to mute debug logs when using debug build on device; flip back to true when debugging. */
     @PublishedApi
-    internal const val ENABLE_DEBUG_LOGS = false //true
+    internal const val ENABLE_DEBUG_LOGS = true
 
     /** Interval in ms between mining stats log lines (hashrate, nonces, accepted, rejected). */
     const val STATS_LOG_INTERVAL_MS = 1000L
