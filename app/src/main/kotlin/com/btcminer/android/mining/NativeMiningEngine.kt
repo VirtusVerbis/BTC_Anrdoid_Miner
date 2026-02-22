@@ -1,5 +1,6 @@
 package com.btcminer.android.mining
 
+import android.os.Process
 import com.btcminer.android.AppLog
 import com.btcminer.android.config.MiningConfig
 import java.util.Locale
@@ -76,7 +77,8 @@ class NativeMiningEngine(
         val client = StratumClient(host, port, username, password, useTls = useTls, stratumPin = stratumPin,
             onReconnectRequest = { h, p -> onPoolRedirectRequested?.invoke(h, p) },
             onTemplateReceived = { blockTemplatesCount.incrementAndGet() },
-            onConnectionLost = null)
+            onConnectionLost = null,
+            threadPriority = config.miningThreadPriority)
         val err = client.connect()
         if (err != null) {
             AppLog.e(LOG_TAG) { "Connect failed: $err" }
@@ -103,6 +105,7 @@ class NativeMiningEngine(
         ))
 
         val minerThread = Thread {
+            Process.setThreadPriority(config.miningThreadPriority)
             try {
                 runMiningLoop(client, config)
             } catch (_: InterruptedException) { }
@@ -312,6 +315,7 @@ class NativeMiningEngine(
             if (threadCount == 1) {
                 var lastStatusUpdateTime = statsStartTime
                 val cpuWorker = Thread {
+                    Process.setThreadPriority(config.miningThreadPriority)
                     val workerJobId = job.jobId
                     while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
                         if (throttleStateRef?.get()?.stopDueToOverheat == true) break
@@ -341,6 +345,7 @@ class NativeMiningEngine(
                 }.apply { isDaemon = true }
                 val gpuWorkerSt = if (gpuEnabled) {
                     Thread {
+                        Process.setThreadPriority(config.miningThreadPriority)
                         val workerJobId = job.jobId
                         while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
                             if (throttleStateRef?.get()?.stopDueToOverheat == true) break
@@ -430,6 +435,7 @@ class NativeMiningEngine(
                 val cpuWorkers = (0 until threadCount).map {
                     val workerJobId = job.jobId
                     Thread {
+                        Process.setThreadPriority(config.miningThreadPriority)
                         while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
                             if (throttleStateRef?.get()?.stopDueToOverheat == true) break
                             val throttle = throttleStateRef?.get()
@@ -458,6 +464,7 @@ class NativeMiningEngine(
                 }
                 val gpuWorker: Thread? = if (gpuEnabled) {
                     Thread {
+                        Process.setThreadPriority(config.miningThreadPriority)
                         val workerJobId = job.jobId
                         while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
                             if (throttleStateRef?.get()?.stopDueToOverheat == true) break

@@ -1,5 +1,6 @@
 package com.btcminer.android.mining
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -13,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.os.BatteryManager
 import android.os.PowerManager
 import android.widget.Toast
@@ -31,6 +33,9 @@ class MiningForegroundService : Service() {
     private lateinit var statsRepository: MiningStatsRepository
     private lateinit var pendingSharesRepository: PendingSharesRepository
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wakeLockRefCount = 0
+    private val wakeLockLock = Any()
+    private var alarmPendingIntent: PendingIntent? = null
     private val throttleStateRef = AtomicReference(ThrottleState(100, false))
     private val engine: MiningEngine by lazy {
         val e = NativeMiningEngine(
@@ -207,6 +212,11 @@ class MiningForegroundService : Service() {
             ACTION_START -> tryStartMining()
             ACTION_STOP -> stopMining()
             ACTION_RESTART -> restartMining()
+            ACTION_ALARM_WAKEUP -> {
+                if (!engine.isRunning()) return START_NOT_STICKY
+                acquireWakeLock()
+                handler.postDelayed({ releaseWakeLock() }, WAKE_LOCK_HOLD_MS)
+            }
         }
         return START_NOT_STICKY
     }
@@ -217,6 +227,8 @@ class MiningForegroundService : Service() {
         handler.removeCallbacks(saveStatsRunnable)
         statsRepository.save(engine.getStatus())
         unregisterConstraintReceiver()
+        cancelAlarm()
+        releaseWakeLock()
         engine.stop()
         super.onDestroy()
     }
@@ -266,8 +278,11 @@ class MiningForegroundService : Service() {
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
                 if (c.usePartialWakeLock) {
-                    wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
-                        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "btcminer:wake").apply { acquire() }
+                    when {
+                        c.alarmWakeIntervalSec == 0 -> acquireWakeLock()
+                        c.alarmWakeIntervalSec in 1..60 -> scheduleAlarm(c.alarmWakeIntervalSec)
+                        else -> { }
+                    }
                 }
                 Toast.makeText(applicationContext, getString(R.string.mining_started), Toast.LENGTH_SHORT).show()
                 registerConstraintReceiver()
@@ -285,6 +300,7 @@ class MiningForegroundService : Service() {
         synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
         synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
         unregisterConstraintReceiver()
+        cancelAlarm()
         releaseWakeLock()
         engine.stop()
         Thread {
@@ -318,8 +334,11 @@ class MiningForegroundService : Service() {
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
                 if (c.usePartialWakeLock) {
-                    wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
-                        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "btcminer:wake").apply { acquire() }
+                    when {
+                        c.alarmWakeIntervalSec == 0 -> acquireWakeLock()
+                        c.alarmWakeIntervalSec in 1..60 -> scheduleAlarm(c.alarmWakeIntervalSec)
+                        else -> { }
+                    }
                 }
                 Toast.makeText(applicationContext, getString(R.string.mining_restarted), Toast.LENGTH_SHORT).show()
                 registerConstraintReceiver()
@@ -364,16 +383,60 @@ class MiningForegroundService : Service() {
         }
     }
 
+    private fun acquireWakeLock() {
+        synchronized(wakeLockLock) {
+            wakeLockRefCount++
+            if (wakeLockRefCount == 1) {
+                wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "btcminer:wake").apply { acquire() }
+            }
+        }
+    }
+
     private fun releaseWakeLock() {
-        try {
-            wakeLock?.let { if (it.isHeld) it.release() }
-        } catch (_: Exception) { }
-        wakeLock = null
+        synchronized(wakeLockLock) {
+            if (wakeLockRefCount > 0) {
+                wakeLockRefCount--
+            }
+            if (wakeLockRefCount == 0) {
+                try {
+                    wakeLock?.let { if (it.isHeld) it.release() }
+                } catch (_: Exception) { }
+                wakeLock = null
+            }
+        }
+    }
+
+    private fun scheduleAlarm(intervalSec: Int) {
+        val intervalMs = (intervalSec * 1000).toLong()
+        val pending = PendingIntent.getBroadcast(
+            this,
+            0,
+            Intent(ACTION_ALARM_WAKEUP).setPackage(packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        alarmPendingIntent = pending
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val triggerAt = SystemClock.elapsedRealtime() + 1000L
+        alarmManager.setRepeating(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            triggerAt,
+            intervalMs,
+            pending
+        )
+    }
+
+    private fun cancelAlarm() {
+        alarmPendingIntent?.let { pi ->
+            (getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pi)
+            alarmPendingIntent = null
+        }
     }
 
     private fun stopMining() {
         AppLog.d(LOG_TAG) { "stopMining()" }
         miningStartTimeMillis = null
+        cancelAlarm()
         releaseWakeLock()
         handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
@@ -476,14 +539,14 @@ class MiningForegroundService : Service() {
 
     companion object {
         /** Sleep duration (ms) after each chunk when battery or hashrate throttle is active. Adjust for testing. */
-        const val THROTTLE_SLEEP_MS = 120_000L //60_000L
-        const val AUTO_TUNING_STEP_MS = 5_000L
-        const val AUTO_TUNING_SLEEP_MAX = 120_000L //60_000L
+        const val THROTTLE_SLEEP_MS = 240_000L //120_000L //60_000L
+        const val AUTO_TUNING_STEP_MS = 1_000L // 5_000L  //step change unit
+        const val AUTO_TUNING_SLEEP_MAX = 240_000L //120_000L //60_000L
         /** Fraction of max battery temp for auto-tune band low bound (below this → decrease delay). */
-        const val AUTO_TUNING_TARGET_LO_RATIO: Double = 0.85 //0.70
+        const val AUTO_TUNING_TARGET_LO_RATIO: Double = 0.90 // 0.85 //0.70
         /** Fraction of max battery temp for auto-tune band high bound (above this up to 100% → increase delay). */
-        const val AUTO_TUNING_TARGET_HI_RATIO: Double = 0.90
-        const val AUTO_TUNING_IN_BAND_SAMPLES_FOR_LEARNED = 5
+        const val AUTO_TUNING_TARGET_HI_RATIO: Double = 0.95 // 0.90
+        const val AUTO_TUNING_IN_BAND_SAMPLES_FOR_LEARNED = 5   //number of learning samples
         const val AUTO_TUNING_DIRECTION_NONE = 0
         const val AUTO_TUNING_DIRECTION_DECREASING = 1
         const val AUTO_TUNING_DIRECTION_INCREASING = 2
@@ -492,6 +555,8 @@ class MiningForegroundService : Service() {
         const val ACTION_START = "com.btcminer.android.mining.START"
         const val ACTION_STOP = "com.btcminer.android.mining.STOP"
         const val ACTION_RESTART = "com.btcminer.android.mining.RESTART"
+        const val ACTION_ALARM_WAKEUP = "com.btcminer.android.mining.ALARM_WAKEUP"
+        const val WAKE_LOCK_HOLD_MS = 55_000L
         private const val CHANNEL_ID = "mining"
         private const val NOTIFICATION_ID = 1
         private const val REDIRECT_CHANNEL_ID = "pool_redirect"

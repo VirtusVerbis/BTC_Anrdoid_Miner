@@ -47,6 +47,10 @@ class MiningConfigRepository(context: Context) {
         gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
             .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
         usePartialWakeLock = storage.getBoolean(SecureConfigStorage.KEY_USE_PARTIAL_WAKE_LOCK, false),
+        miningThreadPriority = storage.getInt(SecureConfigStorage.KEY_MINING_THREAD_PRIORITY, 0)
+            .coerceIn(MiningConfig.MINING_THREAD_PRIORITY_MIN, MiningConfig.MINING_THREAD_PRIORITY_MAX),
+        alarmWakeIntervalSec = storage.getInt(SecureConfigStorage.KEY_ALARM_WAKE_INTERVAL_SEC, 60)
+            .coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX),
     )
 
     /** Last throttle sleep (ms) written by auto-tuning (Option B). Clamped when read. */
@@ -118,6 +122,14 @@ class MiningConfigRepository(context: Context) {
                 config.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
             )
             edit.putBoolean(SecureConfigStorage.KEY_USE_PARTIAL_WAKE_LOCK, config.usePartialWakeLock)
+            edit.putInt(
+                SecureConfigStorage.KEY_MINING_THREAD_PRIORITY,
+                config.miningThreadPriority.coerceIn(MiningConfig.MINING_THREAD_PRIORITY_MIN, MiningConfig.MINING_THREAD_PRIORITY_MAX)
+            )
+            edit.putInt(
+                SecureConfigStorage.KEY_ALARM_WAKE_INTERVAL_SEC,
+                config.alarmWakeIntervalSec.coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX)
+            )
         }
     }
 }

@@ -7,4 +7,6 @@
     <color name="chart_axis_legend">#DE000000</color>
     <color name="throttle_secondary">#DE000000</color>
     <color name="auto_tune_decreasing">#5EB8E6</color>
+    <color name="slider_priority_track_low">#808080</color>
+    <color name="slider_priority_track_high">#F7931A</color>
 </resources>

@@ -1,5 +1,6 @@
 package com.btcminer.android.mining
 
+import android.os.Process
 import android.util.Base64
 import com.btcminer.android.AppLog
 import org.json.JSONArray
@@ -34,6 +35,7 @@ class StratumClient(
     private val onReconnectRequest: ((host: String, port: Int) -> Unit)? = null,
     private val onTemplateReceived: (() -> Unit)? = null,
     private val onConnectionLost: (() -> Unit)? = null,
+    private val threadPriority: Int = 0,
 ) {
     private val socketRef = AtomicReference<Socket?>(null)
     private val writerRef = AtomicReference<PrintWriter?>(null)
@@ -152,6 +154,7 @@ class StratumClient(
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
             readerThreadRef.set(Thread {
                 try {
+                    Process.setThreadPriority(threadPriority)
                     var line: String? = null
                     while (running.get()) {
                         line = reader.readLine()
