@@ -47,6 +47,14 @@ class MiningForegroundService : Service() {
             onPinVerified = { handler.post { Toast.makeText(applicationContext, R.string.security_confirmed_pool_cert_verified, Toast.LENGTH_SHORT).show() } },
             pendingSharesRepository = pendingSharesRepository,
             isBothWifiAndDataUnavailable = { MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) },
+            statsLogExtra = {
+                val intent = applicationContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                if (intent == null) ", battery=—"
+                else {
+                    val tempTenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
+                    if (tempTenths == 0) ", battery=—" else ", battery=${"%.1f".format(tempTenths / 10.0)}°C"
+                }
+            },
         )
         e.loadPersistedStats(statsRepository.get())
         e
@@ -149,10 +157,7 @@ class MiningForegroundService : Service() {
                 if (line == null) logCpuJiffiesFailureIfThrottled { "readCpuJiffies: /proc/stat first line null (empty file?)" }
                 line
             },
-            onFailure = { e ->
-                logCpuJiffiesFailureIfThrottled { "readCpuJiffies: /proc/stat read failed: ${e::class.simpleName}: ${e.message}" }
-                null
-            }
+            onFailure = { null }
         )
         if (statLine == null) {
             return null
@@ -213,9 +218,6 @@ class MiningForegroundService : Service() {
             }
             // CPU utilization: sample, rolling window, and optional throttle
             val cpuSample = readCpuJiffies()
-            if (cpuSample == null) {
-                logCpuJiffiesFailureIfThrottled { "CPU util: readCpuJiffies() returned null (e.g. /proc/stat EACCES on this device)" }
-            }
             cpuSample?.let { (processJiffies, systemJiffies) ->
                 val nowMs = System.currentTimeMillis()
                 synchronized(cpuUtilizationSamples) {

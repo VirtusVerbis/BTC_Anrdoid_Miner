@@ -23,6 +23,7 @@ class NativeMiningEngine(
     private val onPinVerified: (() -> Unit)? = null,
     private val pendingSharesRepository: PendingSharesRepository? = null,
     private val isBothWifiAndDataUnavailable: (() -> Boolean)? = null,
+    private val statsLogExtra: (() -> String)? = null,
 ) : MiningEngine {
 
     private companion object {
@@ -464,7 +465,7 @@ class NativeMiningEngine(
                         val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
                         val hashrateHs = totalNoncesScanned.get() / effectiveElapsed
                         val gpuH = gpuNoncesScanned.get() / effectiveElapsed
-                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, gpuH, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
+                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, blockTemplate=%d%s", hashrateHs, gpuH, totalNoncesScanned.get(), blockTemplatesCount.get(), statsLogExtra?.invoke() ?: "") }
                         lastLogTime = now
                     }
                 }
@@ -578,7 +579,7 @@ class NativeMiningEngine(
                         connectionLost = !client.isConnected(),
                     ))
                     if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
-                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, accepted=%d, rejected=%d, identified=%d", hashrateHs, gpuHashrateHs, totalNoncesScanned.get(), acceptedShares.get(), rejectedShares.get(), identifiedShares.get()) }
+                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, blockTemplate=%d%s", hashrateHs, gpuHashrateHs, totalNoncesScanned.get(), blockTemplatesCount.get(), statsLogExtra?.invoke() ?: "") }
                         lastLogTime = now
                     }
                 }
