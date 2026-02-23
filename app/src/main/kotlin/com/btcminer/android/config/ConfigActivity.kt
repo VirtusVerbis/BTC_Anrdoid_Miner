@@ -181,6 +181,7 @@ class ConfigActivity : AppCompatActivity() {
         binding.configBatteryTempValue.text = "$batteryTempC °C"
         binding.configAutoTuningBatteryTemp.isChecked = c.autoTuningByBatteryTemp
         binding.configHashrateTarget.editText?.setText(c.hashrateTargetHps?.toString() ?: "")
+        binding.configCpuUsageTarget.editText?.setText(c.cpuUsageTargetPercent?.toString() ?: "")
         val maxCores = Runtime.getRuntime().availableProcessors()
         binding.configSliderCores.valueTo = maxCores.toFloat()
         val cores = c.maxWorkerThreads.coerceIn(MiningConfig.MAX_WORKER_THREADS_MIN, maxCores)
@@ -232,6 +233,7 @@ class ConfigActivity : AppCompatActivity() {
             maxBatteryTempC = binding.configSliderBatteryTemp.value.toInt().coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C),
             autoTuningByBatteryTemp = binding.configAutoTuningBatteryTemp.isChecked,
             hashrateTargetHps = binding.configHashrateTarget.editText?.text?.toString()?.trim()?.toDoubleOrNull(),
+            cpuUsageTargetPercent = binding.configCpuUsageTarget.editText?.text?.toString()?.trim()?.toIntOrNull()?.coerceIn(MiningConfig.CPU_USAGE_TARGET_MIN, MiningConfig.CPU_USAGE_TARGET_MAX),
             maxIntensityPercent = binding.configSliderIntensity.value.toInt().coerceIn(
                 MiningConfig.MAX_INTENSITY_MIN,
                 MiningConfig.MAX_INTENSITY_MAX

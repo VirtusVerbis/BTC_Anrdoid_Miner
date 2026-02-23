@@ -73,6 +73,7 @@ class SecureConfigStorage(context: Context) {
         const val KEY_MAX_BATTERY_TEMP_C = "max_battery_temp_c"
         const val KEY_AUTO_TUNING_BY_BATTERY_TEMP = "auto_tuning_by_battery_temp"
         const val KEY_HASHRATE_TARGET_HPS = "hashrate_target_hps"
+        const val KEY_CPU_USAGE_TARGET_PERCENT = "cpu_usage_target_percent"
         const val KEY_GPU_CORES = "gpu_cores"
         const val KEY_GPU_UTILIZATION_PERCENT = "gpu_utilization_percent"
         const val KEY_USE_PARTIAL_WAKE_LOCK = "use_partial_wake_lock"

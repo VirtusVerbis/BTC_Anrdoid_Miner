@@ -390,6 +390,8 @@ class MainActivity : AppCompatActivity() {
             "—"
         }
         binding.gpuHashRateValue.text = gpuHashrateStr
+        val cpuPct = service?.getLastCpuUtilizationPercent()
+        binding.cpuUtilizationValue.text = if (cpuPct != null) String.format(Locale.US, "%.1f%%", cpuPct) else "—"
         binding.noncesValue.text = status.noncesScanned.toString()
         binding.acceptedSharesValue.text = status.acceptedShares.toString()
         binding.rejectedSharesValue.text = status.rejectedShares.toString()
@@ -440,6 +442,7 @@ class MainActivity : AppCompatActivity() {
     private fun clearStatsUi() {
         binding.hashRateValue.text = "0.00 H/s"
         binding.gpuHashRateValue.text = "0.00 H/s"
+        binding.cpuUtilizationValue.text = "—"
         binding.miningTimerValue.text = "00:00:00:00"
         binding.batteryTempValue.text = "—"
         binding.bestDifficultyValue.text = "—"
