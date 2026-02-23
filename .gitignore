@@ -34,3 +34,6 @@ local.properties
 # Keystore (do not commit)
 *.jks
 *.keystore
+
+# don't upload logs
+phone_logcat.txt
