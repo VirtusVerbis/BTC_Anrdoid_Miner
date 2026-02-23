@@ -148,30 +148,68 @@
             android:textColor="?attr/colorOnSurface"
             android:textSize="14sp" />
 
-        <TextView
-            android:id="@+id/gpu_hash_rate_value"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:layout_gravity="center_horizontal"
-            android:text="0.00 H/s"
-            android:textColor="@color/bitcoin_orange"
-            android:textSize="22sp" />
-
-        <TextView
-            android:id="@+id/gpu_hash_rate_label"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:text="@string/hash_rate_gpu_label"
-            android:textColor="?attr/colorOnSurface"
-            android:textSize="14sp" />
-
+        <!-- Row: Battery Temp | GPU Hash Rate (30% | 70%, same font size) -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:layout_gravity="center_horizontal"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="30"
+                android:orientation="vertical"
+                android:gravity="end">
+                <TextView
+                    android:id="@+id/battery_temp_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
+                    android:text="—"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="20sp" />
+                <TextView
+                    android:id="@+id/battery_temp_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
+                    android:text="@string/battery_temp_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="70"
+                android:orientation="vertical"
+                android:gravity="center">
+                <TextView
+                    android:id="@+id/gpu_hash_rate_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:text="0.00 H/s"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="20sp" />
+                <TextView
+                    android:id="@+id/gpu_hash_rate_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:text="@string/hash_rate_gpu_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Row: Nonces | Mining Timer -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
             android:orientation="horizontal"
             android:gravity="center">
 
@@ -188,7 +226,7 @@
                     android:gravity="center_horizontal"
                     android:text="0"
                     android:textColor="@color/bitcoin_orange"
-                    android:textSize="20sp"
+                    android:textSize="18sp"
                     app:autoSizeTextType="uniform"
                     app:autoSizeMinTextSize="10sp"
                     app:autoSizeMaxTextSize="20sp"
@@ -199,13 +237,13 @@
                     android:layout_height="wrap_content"
                     android:text="@string/nonces_label"
                     android:textColor="?attr/colorOnSurface"
-                    android:textSize="12sp" />
+                    android:textSize="10.8sp" />
             </LinearLayout>
 
             <LinearLayout
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="32dp"
+                android:layout_weight="1"
                 android:orientation="vertical"
                 android:gravity="center_horizontal">
                 <TextView
@@ -225,6 +263,7 @@
             </LinearLayout>
         </LinearLayout>
 
+        <!-- Row: Accepted Shares | Rejected Shares | Identified Shares -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -244,14 +283,14 @@
                     android:layout_height="wrap_content"
                     android:text="0"
                     android:textColor="@color/bitcoin_orange"
-                    android:textSize="20sp" />
+                    android:textSize="15sp" />
                 <TextView
                     android:id="@+id/accepted_shares_label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/accepted_shares_label"
                     android:textColor="?attr/colorOnSurface"
-                    android:textSize="12sp" />
+                    android:textSize="9sp" />
             </LinearLayout>
             <LinearLayout
                 android:layout_width="0dp"
@@ -265,14 +304,14 @@
                     android:layout_height="wrap_content"
                     android:text="0"
                     android:textColor="@color/bitcoin_orange"
-                    android:textSize="20sp" />
+                    android:textSize="15sp" />
                 <TextView
                     android:id="@+id/rejected_shares_label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/rejected_shares_label"
                     android:textColor="?attr/colorOnSurface"
-                    android:textSize="12sp" />
+                    android:textSize="9sp" />
             </LinearLayout>
             <LinearLayout
                 android:layout_width="0dp"
@@ -286,28 +325,52 @@
                     android:layout_height="wrap_content"
                     android:text="0"
                     android:textColor="@color/bitcoin_orange"
-                    android:textSize="20sp" />
+                    android:textSize="15sp" />
                 <TextView
                     android:id="@+id/identified_shares_label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/identified_shares_label"
                     android:textColor="?attr/colorOnSurface"
-                    android:textSize="12sp" />
+                    android:textSize="9sp" />
             </LinearLayout>
         </LinearLayout>
 
+        <!-- Row: CPU Util % | Best Difficulty | Block Template -->
         <LinearLayout
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:layout_gravity="center_horizontal"
             android:orientation="horizontal"
             android:gravity="center">
+
             <LinearLayout
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="24dp"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center_horizontal">
+                <TextView
+                    android:id="@+id/cpu_utilization_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="—"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="20sp" />
+                <TextView
+                    android:id="@+id/cpu_utilization_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/cpu_utilization_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
                 android:orientation="vertical"
                 android:gravity="center_horizontal">
                 <TextView
@@ -316,39 +379,20 @@
                     android:layout_height="wrap_content"
                     android:text="—"
                     android:textColor="@color/bitcoin_orange"
-                    android:textSize="20sp" />
+                    android:textSize="15sp" />
                 <TextView
                     android:id="@+id/best_difficulty_label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/best_difficulty_label"
                     android:textColor="?attr/colorOnSurface"
-                    android:textSize="12sp" />
+                    android:textSize="9sp" />
             </LinearLayout>
+
             <LinearLayout
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:gravity="center_horizontal">
-                <TextView
-                    android:id="@+id/battery_temp_value"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="—"
-                    android:textColor="@color/bitcoin_orange"
-                    android:textSize="20sp" />
-                <TextView
-                    android:id="@+id/battery_temp_label"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/battery_temp_label"
-                    android:textColor="?attr/colorOnSurface"
-                    android:textSize="12sp" />
-            </LinearLayout>
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="24dp"
+                android:layout_weight="1"
                 android:orientation="vertical"
                 android:gravity="center_horizontal">
                 <TextView
@@ -357,14 +401,14 @@
                     android:layout_height="wrap_content"
                     android:text="—"
                     android:textColor="@color/bitcoin_orange"
-                    android:textSize="20sp" />
+                    android:textSize="15sp" />
                 <TextView
                     android:id="@+id/block_template_label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/block_template_label"
                     android:textColor="?attr/colorOnSurface"
-                    android:textSize="12sp" />
+                    android:textSize="9sp" />
             </LinearLayout>
         </LinearLayout>
 

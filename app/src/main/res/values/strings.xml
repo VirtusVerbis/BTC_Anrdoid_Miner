@@ -44,6 +44,8 @@
     <string name="config_auto_tuning_battery_temp_summary">Adjust throttle sleep to keep temp in target band (Max −10% to Max). Steps of 5 s; resets to 60 s if over Max.</string>
     <string name="config_hashrate_target">Hashrate target (H/s)</string>
     <string name="config_hashrate_target_hint">e.g. 100. Leave empty for no throttle</string>
+    <string name="config_cpu_usage_target">CPU usage target (%)</string>
+    <string name="config_cpu_usage_target_hint">e.g. 1. Leave empty for no throttle. App %% of total CPU. Requires device root access.</string>
     <string name="battery_too_hot_toast">Overheat Detected: Mining Stopped !</string>
     <string name="overheat_notification_title">Mining stopped</string>
     <string name="overheat_notification_body">Overheat detected. Battery reached %1$d°C.</string>
@@ -82,6 +84,7 @@
     <string name="hash_rate_label">Hash Rate (CPU)</string>
     <string name="stratum_connection_icon_content_description">Stratum connection status: lit when connected, dim when disconnected</string>
     <string name="hash_rate_gpu_label">Hash Rate (GPU)</string>
+    <string name="cpu_utilization_label">CPU Util %</string>
     <string name="nonces_label">Nonces</string>
     <string name="mining_timer_label">Mining Timer</string>
     <string name="accepted_shares_label">Accepted Shares</string>

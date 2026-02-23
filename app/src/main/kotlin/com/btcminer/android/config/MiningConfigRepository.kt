@@ -43,6 +43,8 @@ class MiningConfigRepository(context: Context) {
         autoTuningByBatteryTemp = storage.getBoolean(SecureConfigStorage.KEY_AUTO_TUNING_BY_BATTERY_TEMP, false),
         hashrateTargetHps = storage.getStr(SecureConfigStorage.KEY_HASHRATE_TARGET_HPS).trim()
             .takeIf { it.isNotEmpty() }?.toDoubleOrNull(),
+        cpuUsageTargetPercent = storage.getStr(SecureConfigStorage.KEY_CPU_USAGE_TARGET_PERCENT).trim()
+            .takeIf { it.isNotEmpty() }?.toIntOrNull()?.coerceIn(MiningConfig.CPU_USAGE_TARGET_MIN, MiningConfig.CPU_USAGE_TARGET_MAX),
         gpuCores = storage.getInt(SecureConfigStorage.KEY_GPU_CORES, 0)
             .coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX),
         gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
@@ -95,6 +97,10 @@ class MiningConfigRepository(context: Context) {
             edit.putString(
                 SecureConfigStorage.KEY_HASHRATE_TARGET_HPS,
                 config.hashrateTargetHps?.toString() ?: ""
+            )
+            edit.putString(
+                SecureConfigStorage.KEY_CPU_USAGE_TARGET_PERCENT,
+                config.cpuUsageTargetPercent?.toString() ?: ""
             )
             edit.putInt(
                 SecureConfigStorage.KEY_GPU_CORES,

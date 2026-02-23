@@ -21,6 +21,7 @@ data class MiningConfig(
     val maxBatteryTempC: Int = 30,
     val autoTuningByBatteryTemp: Boolean = false,
     val hashrateTargetHps: Double? = null,
+    val cpuUsageTargetPercent: Int? = null,
     val gpuCores: Int = 0,
     val gpuUtilizationPercent: Int = 75,
     val usePartialWakeLock: Boolean = false,
@@ -54,6 +55,8 @@ data class MiningConfig(
         const val GPU_CORES_MIN = 0
         /** Max workgroup steps (32 * this = local size). Capped by device maxComputeWorkGroupSize/32. */
         const val GPU_CORES_MAX = 64
+        const val CPU_USAGE_TARGET_MIN = 1
+        const val CPU_USAGE_TARGET_MAX = 100
         const val GPU_UTILIZATION_MIN = 1
         const val GPU_UTILIZATION_MAX = 100
         const val MINING_THREAD_PRIORITY_MIN = -20 //-8
