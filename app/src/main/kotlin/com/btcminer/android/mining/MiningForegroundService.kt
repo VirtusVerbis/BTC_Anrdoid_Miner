@@ -25,6 +25,8 @@ import com.btcminer.android.R
 import com.btcminer.android.config.MiningConfig
 import com.btcminer.android.config.MiningConfigRepository
 import com.btcminer.android.network.StratumPinCapture
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 class MiningForegroundService : Service() {
@@ -45,25 +47,61 @@ class MiningForegroundService : Service() {
             onPinVerified = { handler.post { Toast.makeText(applicationContext, R.string.security_confirmed_pool_cert_verified, Toast.LENGTH_SHORT).show() } },
             pendingSharesRepository = pendingSharesRepository,
             isBothWifiAndDataUnavailable = { MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) },
+            statsLogExtra = {
+                val intent = applicationContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                if (intent == null) ", battery=—"
+                else {
+                    val tempTenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
+                    if (tempTenths == 0) ", battery=—" else ", battery=${"%.1f".format(tempTenths / 10.0)}°C"
+                }
+            },
+            onGpuUnavailable = { handler.post { Toast.makeText(applicationContext, R.string.gpu_not_available, Toast.LENGTH_LONG).show() } },
         )
         e.loadPersistedStats(statsRepository.get())
         e
     }
     private var constraintReceiver: BroadcastReceiver? = null
+    @Volatile
     private var lastBatteryThrottleActive = false
+    @Volatile
     private var lastHashrateThrottleActive = false
+    @Volatile
+    private var lastCpuThrottleActive = false
+    @Volatile
+    private var lastCpuUtilizationPercent: Float? = null
+    /** CPU throttle delay (ms) when CPU usage target is set and over target. */
+    @Volatile
+    private var cpuThrottleSleepMs: Long = 0L
     private var miningStartTimeMillis: Long? = null
 
     /** Current throttle sleep (ms) when auto-tuning is ON. 0–60_000. */
+    @Volatile
     private var autoTuningThrottleSleepMs: Long = 0L
     /** Last adjustment direction for dashboard: 0 = NONE, 1 = DECREASING, 2 = INCREASING */
     @Volatile
     private var autoTuningDirection: Int = 0
 
+    /** Samples (timestampMs, processCpuJiffies, systemCpuJiffies) for rolling-window CPU %. */
+    private val cpuUtilizationSamples = mutableListOf<Triple<Long, Long, Long>>()
+
+    /** Throttle CPU jiffies failure logs to once per 60s to avoid log spam when /proc/stat is blocked (e.g. EACCES). */
+    private var lastCpuJiffiesFailureLogMs: Long = 0
+    private fun logCpuJiffiesFailureIfThrottled(msg: () -> String) {
+        val now = System.currentTimeMillis()
+        if (now - lastCpuJiffiesFailureLogMs >= 60_000) {
+            lastCpuJiffiesFailureLogMs = now
+            AppLog.d(LOG_TAG, msg)
+        }
+    }
+
+    private val throttleThreadRunning = AtomicBoolean(false)
+    private var throttleThread: Thread? = null
+
     private val handler = Handler(Looper.getMainLooper())
     private val hashrateHistoryCpu = mutableListOf<Double>()
     private val hashrateHistoryGpu = mutableListOf<Double>()
     private val maxHistorySize = 120
+    /** UI-only: hashrate history and notification. Throttle is updated by [throttleThread]. */
     private val sampleRunnable = object : Runnable {
         override fun run() {
             if (engine.isRunning()) {
@@ -74,84 +112,204 @@ class MiningForegroundService : Service() {
                         while (hashrateHistoryCpu.size > maxHistorySize) hashrateHistoryCpu.removeAt(0)
                     }
                     synchronized(hashrateHistoryGpu) {
-                        hashrateHistoryGpu.add(status.gpuHashrateHs)
+                        hashrateHistoryGpu.add(if (status.gpuAvailable) status.gpuHashrateHs else 0.0)
                         while (hashrateHistoryGpu.size > maxHistorySize) hashrateHistoryGpu.removeAt(0)
                     }
                 }
-                val config = configRepository.getConfig()
-                val tempTenthsC = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                    ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
-                val tempC = tempTenthsC / 10.0
-                val totalHs = status.hashrateHs + status.gpuHashrateHs
-
-                val stopDueToOverheat = tempTenthsC != 0 && tempC >= MiningConfig.BATTERY_TEMP_HARD_STOP_C
-                val resumeTempC = config.maxBatteryTempC * 0.9
-                lastBatteryThrottleActive = when {
-                    tempTenthsC == 0 -> lastBatteryThrottleActive
-                    tempC >= config.maxBatteryTempC -> true
-                    tempC <= resumeTempC -> false
-                    else -> lastBatteryThrottleActive
-                }
-                val hashrateTarget = config.hashrateTargetHps
-                lastHashrateThrottleActive = when {
-                    hashrateTarget == null -> false
-                    totalHs > hashrateTarget -> true
-                    totalHs <= hashrateTarget * 0.9 -> false
-                    else -> lastHashrateThrottleActive
-                }
-                if (stopDueToOverheat) {
-                    handler.post {
-                        releaseWakeLock()
-                        setOverheatBannerFlag(true)
-                        showOverheatNotification()
-                        engine.stop()
-                        Toast.makeText(applicationContext, R.string.battery_too_hot_toast, Toast.LENGTH_LONG).show()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
-                    }
-                    return
-                }
-                val throttleSleepMs = if (config.autoTuningByBatteryTemp) {
-                    val targetLo = config.maxBatteryTempC * AUTO_TUNING_TARGET_LO_RATIO
-                    val targetHi = config.maxBatteryTempC * AUTO_TUNING_TARGET_HI_RATIO
-                    if (tempTenthsC != 0) {
-                        when {
-                            tempC >= config.maxBatteryTempC -> {
-                                autoTuningThrottleSleepMs = THROTTLE_SLEEP_MS
-                                autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
-                                lastBatteryThrottleActive = true
-                            }
-                            tempC < targetLo -> {
-                                autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs - AUTO_TUNING_STEP_MS).coerceAtLeast(0L)
-                                autoTuningDirection = AUTO_TUNING_DIRECTION_DECREASING
-                                lastBatteryThrottleActive = false
-                            }
-                            tempC in targetLo..targetHi -> {
-                                autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
-                                lastBatteryThrottleActive = false
-                            }
-                            else -> {
-                                autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs + AUTO_TUNING_STEP_MS).coerceIn(0L, AUTO_TUNING_SLEEP_MAX)
-                                autoTuningDirection = AUTO_TUNING_DIRECTION_INCREASING
-                                lastBatteryThrottleActive = true
-                            }
-                        }
-                    }
-                    val batterySleep = if (tempTenthsC != 0 && tempC >= config.maxBatteryTempC) THROTTLE_SLEEP_MS else autoTuningThrottleSleepMs
-                    if (lastHashrateThrottleActive) maxOf(THROTTLE_SLEEP_MS, batterySleep) else batterySleep
-                } else {
-                    lastBatteryThrottleActive = when {
-                        tempTenthsC == 0 -> lastBatteryThrottleActive
-                        tempC >= config.maxBatteryTempC -> true
-                        tempC <= config.maxBatteryTempC * 0.9 -> false
-                        else -> lastBatteryThrottleActive
-                    }
-                    if (lastBatteryThrottleActive || lastHashrateThrottleActive) THROTTLE_SLEEP_MS else 0L
-                }
-                throttleStateRef.set(ThrottleState(config.maxIntensityPercent, false, throttleSleepMs, config.gpuUtilizationPercent))
                 startForeground(NOTIFICATION_ID, createNotification())
             }
             handler.postDelayed(this, 1000L)
+        }
+    }
+
+    /**
+     * Reads current process and system CPU times (jiffies). Returns null on read/parse error.
+     * Process: utime+stime from /proc/self/stat; system: sum of first line of /proc/stat (cpu ...).
+     */
+    private fun readCpuJiffies(): Pair<Long, Long>? {
+        val processStat = runCatching {
+            File("/proc/self/stat").readText()
+        }.getOrNull()
+        if (processStat == null) {
+            AppLog.d(LOG_TAG) { "readCpuJiffies: /proc/self/stat read failed" }
+            return null
+        }
+        val rparen = processStat.lastIndexOf(')')
+        if (rparen < 0) {
+            AppLog.d(LOG_TAG) { "readCpuJiffies: no ')' in process stat" }
+            return null
+        }
+        val afterComm = processStat.substring(rparen + 1).trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (afterComm.size < 13) {
+            AppLog.d(LOG_TAG) { "readCpuJiffies: afterComm.size=${afterComm.size} < 13" }
+            return null
+        }
+        val utime = afterComm[11].toLongOrNull()
+        val stime = afterComm[12].toLongOrNull()
+        if (utime == null || stime == null) {
+            AppLog.d(LOG_TAG) { "readCpuJiffies: utime/stime parse failed (utime=$utime stime=$stime)" }
+            return null
+        }
+        val processJiffies = utime + stime
+        val statLine = runCatching {
+            File("/proc/stat").readLines().firstOrNull()
+        }.fold(
+            onSuccess = { line ->
+                if (line == null) logCpuJiffiesFailureIfThrottled { "readCpuJiffies: /proc/stat first line null (empty file?)" }
+                line
+            },
+            onFailure = { null }
+        )
+        if (statLine == null) {
+            return null
+        }
+        val cpuParts = statLine.split(Regex("\\s+")).drop(1).filter { it.isNotEmpty() }.take(8)
+        if (cpuParts.size < 4) {
+            AppLog.d(LOG_TAG) { "readCpuJiffies: cpuParts.size=${cpuParts.size} < 4" }
+            return null
+        }
+        var systemJiffies = 0L
+        for (p in cpuParts) {
+            val v = p.toLongOrNull()
+            if (v == null) {
+                AppLog.d(LOG_TAG) { "readCpuJiffies: system jiffies parse failed for part '$p'" }
+                return null
+            }
+            systemJiffies += v
+        }
+        return processJiffies to systemJiffies
+    }
+
+    /** Runs on a dedicated thread; updates throttle every second so it is not deferred during Doze. */
+    private fun runThrottleLoop() {
+        while (throttleThreadRunning.get() && engine.isRunning()) {
+            val config = configRepository.getConfig()
+            val status = engine.getStatus()
+            val tempTenthsC = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+            val tempC = tempTenthsC / 10.0
+            val totalHs = status.hashrateHs + if (status.gpuAvailable) status.gpuHashrateHs else 0.0
+
+            val stopDueToOverheat = tempTenthsC != 0 && tempC >= MiningConfig.BATTERY_TEMP_HARD_STOP_C
+            val resumeTempC = config.maxBatteryTempC * 0.9
+            lastBatteryThrottleActive = when {
+                tempTenthsC == 0 -> lastBatteryThrottleActive
+                tempC >= config.maxBatteryTempC -> true
+                tempC <= resumeTempC -> false
+                else -> lastBatteryThrottleActive
+            }
+            val hashrateTarget = config.hashrateTargetHps
+            lastHashrateThrottleActive = when {
+                hashrateTarget == null -> false
+                totalHs > hashrateTarget -> true
+                totalHs <= hashrateTarget * 0.9 -> false
+                else -> lastHashrateThrottleActive
+            }
+            if (stopDueToOverheat) {
+                handler.post {
+                    releaseWakeLock()
+                    setOverheatBannerFlag(true)
+                    showOverheatNotification()
+                    engine.stop()
+                    Toast.makeText(applicationContext, R.string.battery_too_hot_toast, Toast.LENGTH_LONG).show()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                return
+            }
+            // CPU utilization: sample, rolling window, and optional throttle
+            val cpuSample = readCpuJiffies()
+            cpuSample?.let { (processJiffies, systemJiffies) ->
+                val nowMs = System.currentTimeMillis()
+                synchronized(cpuUtilizationSamples) {
+                    cpuUtilizationSamples.add(Triple(nowMs, processJiffies, systemJiffies))
+                    val cutoffMs = nowMs - CPU_UTILIZATION_ROLLING_WINDOW_SEC * 1000L
+                    while (cpuUtilizationSamples.isNotEmpty() && cpuUtilizationSamples.first().first < cutoffMs) {
+                        cpuUtilizationSamples.removeAt(0)
+                    }
+                    if (cpuUtilizationSamples.size >= 2) {
+                        val oldest = cpuUtilizationSamples.first()
+                        val latest = cpuUtilizationSamples.last()
+                        val systemDelta = latest.third - oldest.third
+                        if (systemDelta > 0L) {
+                            val processDelta = latest.second - oldest.second
+                            val pct = 100f * processDelta / systemDelta
+                            lastCpuUtilizationPercent = pct
+                            AppLog.d(LOG_TAG) { "CPU util: pct=${"%.1f".format(pct)}% samples=${cpuUtilizationSamples.size}" }
+                            val target = config.cpuUsageTargetPercent
+                            if (target != null) {
+                                val targetLo = target * 0.8f
+                                val targetHi = target.toFloat()
+                                lastCpuThrottleActive = when {
+                                    pct > targetHi -> {
+                                        cpuThrottleSleepMs = (cpuThrottleSleepMs + AUTO_TUNING_STEP_UP_MS).coerceIn(0L, AUTO_TUNING_SLEEP_MAX)
+                                        true
+                                    }
+                                    pct <= targetLo -> {
+                                        cpuThrottleSleepMs = (cpuThrottleSleepMs - AUTO_TUNING_STEP_DOWN_MS).coerceAtLeast(0L)
+                                        false
+                                    }
+                                    else -> lastCpuThrottleActive
+                                }
+                            } else {
+                                lastCpuThrottleActive = false
+                            }
+                        } else {
+                            AppLog.d(LOG_TAG) { "CPU util: systemDelta=$systemDelta <= 0, skip" }
+                        }
+                    } else {
+                        AppLog.d(LOG_TAG) { "CPU util: samples=${cpuUtilizationSamples.size} (need 2)" }
+                    }
+                }
+            }
+            if (config.cpuUsageTargetPercent == null) {
+                lastCpuThrottleActive = false
+            }
+            val batterySleep = if (config.autoTuningByBatteryTemp) {
+                val targetLo = config.maxBatteryTempC * AUTO_TUNING_TARGET_LO_RATIO
+                val targetHi = config.maxBatteryTempC * AUTO_TUNING_TARGET_HI_RATIO
+                if (tempTenthsC != 0) {
+                    when {
+                        tempC >= config.maxBatteryTempC -> {
+                            autoTuningThrottleSleepMs = THROTTLE_SLEEP_MS
+                            autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
+                            lastBatteryThrottleActive = true
+                        }
+                        tempC < targetLo -> {
+                            autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs - AUTO_TUNING_STEP_DOWN_MS).coerceAtLeast(0L)
+                            autoTuningDirection = AUTO_TUNING_DIRECTION_DECREASING
+                            lastBatteryThrottleActive = false
+                        }
+                        tempC in targetLo..targetHi -> {
+                            autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
+                            lastBatteryThrottleActive = false
+                        }
+                        else -> {
+                            autoTuningThrottleSleepMs = (autoTuningThrottleSleepMs + AUTO_TUNING_STEP_UP_MS).coerceIn(0L, AUTO_TUNING_SLEEP_MAX)
+                            autoTuningDirection = AUTO_TUNING_DIRECTION_INCREASING
+                            lastBatteryThrottleActive = true
+                        }
+                    }
+                }
+                if (tempTenthsC != 0 && tempC >= config.maxBatteryTempC) THROTTLE_SLEEP_MS else autoTuningThrottleSleepMs
+            } else {
+                lastBatteryThrottleActive = when {
+                    tempTenthsC == 0 -> lastBatteryThrottleActive
+                    tempC >= config.maxBatteryTempC -> true
+                    tempC <= config.maxBatteryTempC * 0.9 -> false
+                    else -> lastBatteryThrottleActive
+                }
+                if (lastBatteryThrottleActive) THROTTLE_SLEEP_MS else 0L
+            }
+            val hashrateSleep = if (lastHashrateThrottleActive) THROTTLE_SLEEP_MS else 0L
+            val cpuSleep = if (lastCpuThrottleActive) cpuThrottleSleepMs else 0L
+            val throttleSleepMs = maxOf(batterySleep, hashrateSleep, cpuSleep)
+            throttleStateRef.set(ThrottleState(config.maxIntensityPercent, false, throttleSleepMs, config.gpuUtilizationPercent))
+            try {
+                Thread.sleep(1000L)
+            } catch (_: InterruptedException) {
+                break
+            }
         }
     }
 
@@ -187,6 +345,9 @@ class MiningForegroundService : Service() {
     /** 0 = NONE, 1 = DECREASING, 2 = INCREASING. For dashboard color. */
     fun getAutoTuningDirection(): Int = autoTuningDirection
 
+    /** Last computed app CPU utilization % (rolling window), or null if not yet available. */
+    fun getLastCpuUtilizationPercent(): Float? = lastCpuUtilizationPercent
+
     override fun onCreate() {
         super.onCreate()
         configRepository = MiningConfigRepository(applicationContext)
@@ -211,7 +372,9 @@ class MiningForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = LocalBinder()
 
     override fun onDestroy() {
+        handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
+        stopThrottleThread()
         statsRepository.save(engine.getStatus())
         unregisterConstraintReceiver()
         cancelAlarm()
@@ -222,16 +385,19 @@ class MiningForegroundService : Service() {
 
     private fun tryStartMining() {
         AppLog.d(LOG_TAG) { "tryStartMining()" }
+        // Must call startForeground() immediately to avoid ForegroundServiceDidNotStartInTimeException.
+        startForeground(NOTIFICATION_ID, createNotification())
         val config = configRepository.getConfig()
         if (!config.isValidForMining()) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
         if (!MiningConstraints.canStartMining(this, config)) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
-        startForeground(NOTIFICATION_ID, createNotification())
         AppLog.d(LOG_TAG) { "startForeground done, starting engine on background thread" }
         Thread {
             val host = StratumPinCapture.normalizeHost(config.stratumUrl)
@@ -259,6 +425,12 @@ class MiningForegroundService : Service() {
                     autoTuningThrottleSleepMs = AUTO_TUNING_DEFAULT_SLEEP_MS
                     autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
                 }
+                if (c.cpuUsageTargetPercent != null) {
+                    cpuThrottleSleepMs = 0L
+                    lastCpuThrottleActive = false
+                    synchronized(cpuUtilizationSamples) { cpuUtilizationSamples.clear() }
+                }
+                lastCpuUtilizationPercent = null
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
@@ -271,10 +443,19 @@ class MiningForegroundService : Service() {
                 }
                 Toast.makeText(applicationContext, getString(R.string.mining_started), Toast.LENGTH_SHORT).show()
                 registerConstraintReceiver()
+                throttleThreadRunning.set(true)
+                lastCpuJiffiesFailureLogMs = 0L
+                throttleThread = Thread { runThrottleLoop() }.apply { isDaemon = true; start() }
                 handler.post(sampleRunnable)
                 handler.postDelayed(saveStatsRunnable, STATS_SAVE_INTERVAL_MS)
             }
         }.start()
+    }
+
+    private fun stopThrottleThread() {
+        throttleThreadRunning.set(false)
+        throttleThread?.interrupt()
+        throttleThread = null
     }
 
     private fun restartMining() {
@@ -282,6 +463,7 @@ class MiningForegroundService : Service() {
         if (!engine.isRunning()) return
         handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
+        stopThrottleThread()
         synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
         synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
         unregisterConstraintReceiver()
@@ -313,6 +495,12 @@ class MiningForegroundService : Service() {
                     autoTuningThrottleSleepMs = AUTO_TUNING_DEFAULT_SLEEP_MS
                     autoTuningDirection = AUTO_TUNING_DIRECTION_NONE
                 }
+                if (c.cpuUsageTargetPercent != null) {
+                    cpuThrottleSleepMs = 0L
+                    lastCpuThrottleActive = false
+                    synchronized(cpuUtilizationSamples) { cpuUtilizationSamples.clear() }
+                }
+                lastCpuUtilizationPercent = null
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
@@ -325,6 +513,9 @@ class MiningForegroundService : Service() {
                 }
                 Toast.makeText(applicationContext, getString(R.string.mining_restarted), Toast.LENGTH_SHORT).show()
                 registerConstraintReceiver()
+                throttleThreadRunning.set(true)
+                lastCpuJiffiesFailureLogMs = 0L
+                throttleThread = Thread { runThrottleLoop() }.apply { isDaemon = true; start() }
                 handler.post(sampleRunnable)
                 handler.postDelayed(saveStatsRunnable, STATS_SAVE_INTERVAL_MS)
             }
@@ -427,6 +618,7 @@ class MiningForegroundService : Service() {
         releaseWakeLock()
         handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
+        stopThrottleThread()
         statsRepository.save(engine.getStatus())
         synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
         synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
@@ -527,7 +719,10 @@ class MiningForegroundService : Service() {
     companion object {
         /** Sleep duration (ms) after each chunk when battery or hashrate throttle is active. Adjust for testing. */
         const val THROTTLE_SLEEP_MS = 240_000L //120_000L //60_000L
-        const val AUTO_TUNING_STEP_MS = 1_000L // 5_000L  //step change unit
+        /** Per-second increase (ms) when temp in 95–100% band. */
+        const val AUTO_TUNING_STEP_UP_MS = 1_000L
+        /** Per-second decrease (ms) when temp below 90%; faster recovery. */
+        const val AUTO_TUNING_STEP_DOWN_MS = 5_000L
         const val AUTO_TUNING_SLEEP_MAX = 240_000L //120_000L //60_000L
         /** Default throttle sleep (ms) when auto-tuning starts; no persistence. */
         const val AUTO_TUNING_DEFAULT_SLEEP_MS = 30_000L
@@ -538,6 +733,8 @@ class MiningForegroundService : Service() {
         const val AUTO_TUNING_DIRECTION_NONE = 0
         const val AUTO_TUNING_DIRECTION_DECREASING = 1
         const val AUTO_TUNING_DIRECTION_INCREASING = 2
+        /** Rolling window (seconds) for CPU utilization %; samples older than this are dropped. */
+        const val CPU_UTILIZATION_ROLLING_WINDOW_SEC = 60
         private const val STATS_SAVE_INTERVAL_MS = 60_000L
         private const val LOG_TAG = "Mining"
         const val ACTION_START = "com.btcminer.android.mining.START"

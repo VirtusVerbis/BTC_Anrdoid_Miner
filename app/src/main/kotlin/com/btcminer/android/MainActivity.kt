@@ -384,12 +384,19 @@ class MainActivity : AppCompatActivity() {
             "— H/s"
         }
         binding.hashRateValue.text = hashrateStr
-        val gpuHashrateStr = if (status.state == MiningStatus.State.Mining) {
-            String.format(Locale.US, "%.2f H/s", status.gpuHashrateHs)
-        } else {
-            "—"
+        val gpuHashrateStr = when {
+            !status.gpuAvailable -> "----"
+            status.state == MiningStatus.State.Mining -> String.format(Locale.US, "%.2f H/s", status.gpuHashrateHs)
+            else -> "—"
         }
         binding.gpuHashRateValue.text = gpuHashrateStr
+        val config = configRepository.getConfig()
+        val gpuCores = config.gpuCores.coerceAtLeast(0)
+        val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize().coerceAtLeast(32)
+        val effectiveWorkgroupSize = if (gpuCores > 0) (32 * gpuCores).coerceAtMost(maxWorkGroupSize) else 0
+        binding.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuCores > 0) " - $effectiveWorkgroupSize" else ""
+        val cpuPct = service?.getLastCpuUtilizationPercent()
+        binding.cpuUtilizationValue.text = if (cpuPct != null) String.format(Locale.US, "%.1f%%", cpuPct) else "—"
         binding.noncesValue.text = status.noncesScanned.toString()
         binding.acceptedSharesValue.text = status.acceptedShares.toString()
         binding.rejectedSharesValue.text = status.rejectedShares.toString()
@@ -440,6 +447,7 @@ class MainActivity : AppCompatActivity() {
     private fun clearStatsUi() {
         binding.hashRateValue.text = "0.00 H/s"
         binding.gpuHashRateValue.text = "0.00 H/s"
+        binding.cpuUtilizationValue.text = "—"
         binding.miningTimerValue.text = "00:00:00:00"
         binding.batteryTempValue.text = "—"
         binding.bestDifficultyValue.text = "—"

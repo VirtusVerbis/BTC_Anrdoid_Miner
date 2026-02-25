@@ -1,7 +1,7 @@
 /*
  * Vulkan GPU miner JNI.
  * gpuIsAvailable(): initializes Vulkan (instance, device, compute queue). Returns true if Vulkan is present.
- * gpuScanNonces(): scans nonce range via compute shader when SPIR-V is available; else CPU fallback.
+ * gpuScanNonces(): scans nonce range via compute shader. Returns -2 if GPU path unavailable (no CPU fallback).
  */
 #include "sha256.h"
 #include <jni.h>
@@ -21,6 +21,8 @@
 #define UBO_SIZE 128
 #define LOG_TAG "VulkanMiner"
 #define MAX_GPU_WORKGROUP_STEPS 64
+/* Returned to Java when GPU path is unavailable (no SPIR-V or Vulkan failure). */
+#define GPU_UNAVAILABLE (-2)
 
 static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
     return memcmp(hash, target, HASH_SIZE) <= 0;
@@ -48,6 +50,11 @@ static VkDeviceMemory g_resultMemory = VK_NULL_HANDLE;
 static VkCommandPool g_commandPool = VK_NULL_HANDLE;
 static VkCommandBuffer g_commandBuffer = VK_NULL_HANDLE;
 static VkFence g_fence = VK_NULL_HANDLE;
+
+static int g_resources_logged = 0;
+static int g_pipeline_created_logged = 0;
+static int g_first_dispatch_state = 0;
+static int g_workgroup_size_logged = 0;
 
 static int create_compute_pipeline(uint32_t gpuCores) {
     uint32_t maxSteps = g_maxWorkGroupSize / 32;
@@ -100,14 +107,28 @@ static int create_compute_pipeline(uint32_t gpuCores) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vkCreateComputePipelines failed");
         return 0;
     }
+    if (!g_pipeline_created_logged) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Compute shader loaded and pipeline created for GPU");
+        g_pipeline_created_logged = 1;
+    }
     return 1;
 }
 
 static int ensure_compute_resources(void) {
-    if (g_descriptorSetLayout != VK_NULL_HANDLE)
+    if (g_descriptorSetLayout != VK_NULL_HANDLE) {
+        if (!g_resources_logged) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources ready (buffers, command buffer, fence)");
+            g_resources_logged = 1;
+        }
         return 1;
-    if (g_miner_spv_len == 0)
+    }
+    if (g_miner_spv_len == 0) {
+        if (!g_resources_logged) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources failed (buffers/setup)");
+            g_resources_logged = 1;
+        }
         return 0;
+    }
     VkDescriptorSetLayoutBinding bindings[2] = {
         { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
         { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
@@ -117,8 +138,13 @@ static int ensure_compute_resources(void) {
         .bindingCount = 2,
         .pBindings = bindings,
     };
-    if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, NULL, &g_descriptorSetLayout) != VK_SUCCESS)
+    if (vkCreateDescriptorSetLayout(g_device, &layoutInfo, NULL, &g_descriptorSetLayout) != VK_SUCCESS) {
+        if (!g_resources_logged) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources failed (buffers/setup)");
+            g_resources_logged = 1;
+        }
         return 0;
+    }
     VkPipelineLayoutCreateInfo pipeLayoutInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
@@ -127,6 +153,10 @@ static int ensure_compute_resources(void) {
     if (vkCreatePipelineLayout(g_device, &pipeLayoutInfo, NULL, &g_pipelineLayout) != VK_SUCCESS) {
         vkDestroyDescriptorSetLayout(g_device, g_descriptorSetLayout, NULL);
         g_descriptorSetLayout = VK_NULL_HANDLE;
+        if (!g_resources_logged) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources failed (buffers/setup)");
+            g_resources_logged = 1;
+        }
         return 0;
     }
     VkDescriptorPoolSize poolSizes[2] = {
@@ -144,6 +174,10 @@ static int ensure_compute_resources(void) {
         vkDestroyDescriptorSetLayout(g_device, g_descriptorSetLayout, NULL);
         g_pipelineLayout = VK_NULL_HANDLE;
         g_descriptorSetLayout = VK_NULL_HANDLE;
+        if (!g_resources_logged) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources failed (buffers/setup)");
+            g_resources_logged = 1;
+        }
         return 0;
     }
     VkDescriptorSetAllocateInfo allocInfo = {
@@ -159,6 +193,10 @@ static int ensure_compute_resources(void) {
         g_descriptorPool = VK_NULL_HANDLE;
         g_pipelineLayout = VK_NULL_HANDLE;
         g_descriptorSetLayout = VK_NULL_HANDLE;
+        if (!g_resources_logged) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources failed (buffers/setup)");
+            g_resources_logged = 1;
+        }
         return 0;
     }
     VkMemoryRequirements memReq;
@@ -246,6 +284,10 @@ static int ensure_compute_resources(void) {
         g_commandPool = VK_NULL_HANDLE;
         goto fail_result;
     }
+    if (!g_resources_logged) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources ready (buffers, command buffer, fence)");
+        g_resources_logged = 1;
+    }
     return 1;
 fail_result:
     vkFreeMemory(g_device, g_resultMemory, NULL);
@@ -266,6 +308,10 @@ fail_buffers:
     g_descriptorPool = VK_NULL_HANDLE;
     g_pipelineLayout = VK_NULL_HANDLE;
     g_descriptorSetLayout = VK_NULL_HANDLE;
+    if (!g_resources_logged) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources failed (buffers/setup)");
+        g_resources_logged = 1;
+    }
     return 0;
 }
 
@@ -455,7 +501,7 @@ static void write_le32(uint8_t *dst, uint32_t val) {
     dst[3] = (uint8_t)(val >> 24);
 }
 
-/* Run compute dispatch; returns winning nonce or (uint32_t)-1 */
+/* Run compute dispatch; returns winning nonce, -1 if no solution in chunk, or GPU_UNAVAILABLE on failure. */
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
                         const uint8_t *target, int gpuCores) {
     if (gpuCores < 1) gpuCores = 1;
@@ -465,9 +511,9 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if ((unsigned)gpuCores > maxSteps)
         gpuCores = (int)maxSteps;
     if (!ensure_compute_resources())
-        return -1;
+        return GPU_UNAVAILABLE;
     if (!create_compute_pipeline((uint32_t)gpuCores))
-        return -1;
+        return GPU_UNAVAILABLE;
 
     uint32_t localSize = 32 * (uint32_t)gpuCores;
     if (localSize > g_maxWorkGroupSize)
@@ -475,12 +521,17 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (localSize < 1)
         localSize = 1;
 
+    if (!g_workgroup_size_logged) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU workgroup size in use: %u", (unsigned)localSize);
+        g_workgroup_size_logged = 1;
+    }
+
     uint32_t totalInv = nonceEnd - nonceStart + 1;
     uint32_t groupCountX = (totalInv + localSize - 1) / localSize;
     if (groupCountX > g_maxWorkGroupCount)
         groupCountX = g_maxWorkGroupCount;
     if (groupCountX == 0)
-        return -1;
+        return GPU_UNAVAILABLE;
 
     /* Fill UBO: 76 bytes header (as 19 big-endian uints for shader), 4 nonceStart, 4 nonceEnd, 32 target */
     uint8_t ubo[UBO_SIZE];
@@ -496,40 +547,58 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
 
     void *ptr;
     if (vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr) != VK_SUCCESS)
-        return -1;
+        return GPU_UNAVAILABLE;
     memcpy(ptr, ubo, UBO_SIZE);
     vkUnmapMemory(g_device, g_uboMemory);
 
     uint32_t noWin = 0xFFFFFFFFu;
     if (vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr) != VK_SUCCESS)
-        return -1;
+        return GPU_UNAVAILABLE;
     memcpy(ptr, &noWin, sizeof(noWin));
     vkUnmapMemory(g_device, g_resultMemory);
 
     vkResetFences(g_device, 1, &g_fence);
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     if (vkBeginCommandBuffer(g_commandBuffer, &beginInfo) != VK_SUCCESS)
-        return -1;
+        return GPU_UNAVAILABLE;
     vkCmdBindPipeline(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelines[gpuCores]);
     vkCmdBindDescriptorSets(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelineLayout, 0, 1, &g_descriptorSet, 0, NULL);
     vkCmdDispatch(g_commandBuffer, groupCountX, 1, 1);
     if (vkEndCommandBuffer(g_commandBuffer) != VK_SUCCESS)
-        return -1;
+        return GPU_UNAVAILABLE;
     VkSubmitInfo submitInfo = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount = 1,
         .pCommandBuffers = &g_commandBuffer,
     };
-    if (vkQueueSubmit(g_queue, 1, &submitInfo, g_fence) != VK_SUCCESS)
-        return -1;
-    if (vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 5000000000ull) != VK_SUCCESS)
-        return -1;
+    if (g_first_dispatch_state == 0) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch submitted");
+        g_first_dispatch_state = 1;
+    }
+    if (vkQueueSubmit(g_queue, 1, &submitInfo, g_fence) != VK_SUCCESS) {
+        if (g_first_dispatch_state < 2) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
+            g_first_dispatch_state = 2;
+        }
+        return GPU_UNAVAILABLE;
+    }
+    if (vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 5000000000ull) != VK_SUCCESS) {
+        if (g_first_dispatch_state < 2) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
+            g_first_dispatch_state = 2;
+        }
+        return GPU_UNAVAILABLE;
+    }
+    if (g_first_dispatch_state == 1) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch completed");
+        g_first_dispatch_state = 2;
+    }
     if (vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr) != VK_SUCCESS)
-        return -1;
+        return GPU_UNAVAILABLE;
     memcpy(&noWin, ptr, sizeof(noWin));
     vkUnmapMemory(g_device, g_resultMemory);
     if (noWin == 0xFFFFFFFFu)
-        return -1;
+        return -1;  /* Chunk scanned, no solution */
     return (int)(int32_t)noWin;
 }
 #endif
@@ -558,6 +627,31 @@ Java_com_btcminer_android_mining_NativeMiner_getMaxComputeWorkGroupSize(JNIEnv *
 #endif
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclass clazz, jint gpuCores) {
+    (void)env;
+    (void)clazz;
+#ifdef __ANDROID__
+    if (!try_init_vulkan())
+        return JNI_FALSE;
+    if (gpuCores < 1) gpuCores = 1;
+    uint32_t maxSteps = g_maxWorkGroupSize / 32;
+    if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
+        maxSteps = MAX_GPU_WORKGROUP_STEPS;
+    if ((unsigned)gpuCores > maxSteps)
+        gpuCores = (int)maxSteps;
+    if (!ensure_compute_resources())
+        return JNI_FALSE;
+    if (!create_compute_pipeline((uint32_t)gpuCores))
+        return JNI_FALSE;
+    return JNI_TRUE;
+#else
+    (void)gpuCores;
+    return JNI_FALSE;
+#endif
+}
+
+/* Returns -2 (GPU path unavailable) to Java when Vulkan/SPIR-V or dispatch fails; no CPU fallback. */
 JNIEXPORT jint JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuScanNonces(JNIEnv *env, jclass clazz,
                                                            jbyteArray header76Java,
@@ -569,39 +663,24 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNonces(JNIEnv *env, jclass c
     if (!header76Java || !targetJava ||
         (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
         (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
-        return (jint)-1;
+        return (jint)GPU_UNAVAILABLE;
     }
 
     uint8_t header76[HEADER_PREFIX_SIZE];
-    uint8_t header80[BLOCK_HEADER_SIZE];
     uint8_t target[HASH_SIZE];
-    uint8_t hash[HASH_SIZE];
 
 #ifdef __ANDROID__
     if (!try_init_vulkan()) {
-        return (jint)-1;
+        return (jint)GPU_UNAVAILABLE;
     }
     (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
     (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
     int result = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuCores);
-    if (result >= 0)
-        return (jint)result;
-    /* CPU fallback when no SPIR-V or dispatch fails */
+    return (jint)result;
+#else
+    (void)nonceStart;
+    (void)nonceEnd;
+    (void)gpuCores;
+    return (jint)GPU_UNAVAILABLE;
 #endif
-    (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header80);
-    (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
-
-    uint32_t start = (uint32_t)nonceStart;
-    uint32_t end = (uint32_t)nonceEnd;
-    for (uint32_t nonce = start; nonce <= end; nonce++) {
-        header80[76] = (uint8_t)(nonce);
-        header80[77] = (uint8_t)(nonce >> 8);
-        header80[78] = (uint8_t)(nonce >> 16);
-        header80[79] = (uint8_t)(nonce >> 24);
-        sha256_double(header80, BLOCK_HEADER_SIZE, hash);
-        if (hash_meets_target(hash, target)) {
-            return (jint)nonce;
-        }
-    }
-    return (jint)-1;
 }
