@@ -54,9 +54,22 @@ The first build runs CMake/NDK and requires **Vulkan SDK** (or `glslc`) to be in
 
 - Android Studio (recommended) or JDK 17+ and Android SDK for command-line build
 - **Android NDK** (e.g. 25.1 via Android Studio SDK Manager or as specified in `app/build.gradle.kts`)
+- **Vulkan SDK (or glslc):** Required to compile the GPU compute shader to SPIR-V. The native build will fail with an error if `glslangValidator` or `glslc` is not found.
+  - **Install:** [Vulkan SDK](https://vulkan.lunarg.com/) — install and add the SDK `Bin` folder to your PATH (so `glslangValidator` is available). On Windows, the build also checks common paths like `C:/VulkanSDK/1.4.x/Bin/glslangValidator.exe` and `%VULKAN_SDK%/Bin/glslangValidator.exe`.
+  - **Alternative:** A build environment that provides `glslc` (e.g. shaderc) and has it on PATH also satisfies the requirement.
 - minSdk 24, targetSdk 34
 - Device or emulator for testing
 - Permissions used by the app include notification (Android 13+), `WAKE_LOCK`, and `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (for the in-Config battery exemption request)
+
+### Add Vulkan SDK to PATH (Windows)
+
+1. **Find the folder:** After installing the Vulkan SDK, the folder to add is the SDK `Bin` directory (e.g. `C:\VulkanSDK\1.4.xxx\Bin`), which contains `glslangValidator.exe`.
+2. **Open Environment Variables:** Win + R → type `sysdm.cpl` → Enter → Advanced tab → Environment Variables. (Alternatively: search "environment variables" in Start → "Edit the system environment variables" → Environment Variables.)
+3. **Edit PATH:** Under User variables (or System variables), select **Path** → Edit → New → paste the full path (e.g. `C:\VulkanSDK\1.4.341.1\Bin`) → OK on all dialogs.
+4. **Restart terminals:** Close and reopen any Command Prompt, PowerShell, or Android Studio so they see the updated PATH.
+5. **Verify:** In a new terminal, run `glslangValidator -v`; if you see a version line, PATH is set correctly.
+
+If the Vulkan SDK installer set the `VULKAN_SDK` environment variable, you can add `%VULKAN_SDK%\Bin` to PATH instead of a fixed versioned path.
 
 ## License
 
