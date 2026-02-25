@@ -55,6 +55,7 @@ class MiningForegroundService : Service() {
                     if (tempTenths == 0) ", battery=—" else ", battery=${"%.1f".format(tempTenths / 10.0)}°C"
                 }
             },
+            onGpuUnavailable = { handler.post { Toast.makeText(applicationContext, R.string.gpu_not_available, Toast.LENGTH_LONG).show() } },
         )
         e.loadPersistedStats(statsRepository.get())
         e
@@ -111,7 +112,7 @@ class MiningForegroundService : Service() {
                         while (hashrateHistoryCpu.size > maxHistorySize) hashrateHistoryCpu.removeAt(0)
                     }
                     synchronized(hashrateHistoryGpu) {
-                        hashrateHistoryGpu.add(status.gpuHashrateHs)
+                        hashrateHistoryGpu.add(if (status.gpuAvailable) status.gpuHashrateHs else 0.0)
                         while (hashrateHistoryGpu.size > maxHistorySize) hashrateHistoryGpu.removeAt(0)
                     }
                 }
@@ -187,7 +188,7 @@ class MiningForegroundService : Service() {
             val tempTenthsC = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
                 ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
             val tempC = tempTenthsC / 10.0
-            val totalHs = status.hashrateHs + status.gpuHashrateHs
+            val totalHs = status.hashrateHs + if (status.gpuAvailable) status.gpuHashrateHs else 0.0
 
             val stopDueToOverheat = tempTenthsC != 0 && tempC >= MiningConfig.BATTERY_TEMP_HARD_STOP_C
             val resumeTempC = config.maxBatteryTempC * 0.9
@@ -384,16 +385,19 @@ class MiningForegroundService : Service() {
 
     private fun tryStartMining() {
         AppLog.d(LOG_TAG) { "tryStartMining()" }
+        // Must call startForeground() immediately to avoid ForegroundServiceDidNotStartInTimeException.
+        startForeground(NOTIFICATION_ID, createNotification())
         val config = configRepository.getConfig()
         if (!config.isValidForMining()) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
         if (!MiningConstraints.canStartMining(this, config)) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
-        startForeground(NOTIFICATION_ID, createNotification())
         AppLog.d(LOG_TAG) { "startForeground done, starting engine on background thread" }
         Thread {
             val host = StratumPinCapture.normalizeHost(config.stratumUrl)
