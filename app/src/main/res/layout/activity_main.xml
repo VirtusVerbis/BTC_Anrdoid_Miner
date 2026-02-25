@@ -153,6 +153,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
             android:orientation="horizontal"
             android:gravity="center">
 
@@ -161,12 +163,12 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="30"
                 android:orientation="vertical"
-                android:gravity="end">
+                android:gravity="start">
                 <TextView
                     android:id="@+id/battery_temp_value"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="end"
+                    android:layout_gravity="start"
                     android:text="—"
                     android:textColor="@color/bitcoin_orange"
                     android:textSize="20sp" />
@@ -174,7 +176,7 @@
                     android:id="@+id/battery_temp_label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="end"
+                    android:layout_gravity="start"
                     android:text="@string/battery_temp_label"
                     android:textColor="?attr/colorOnSurface"
                     android:textSize="12sp" />
@@ -185,12 +187,12 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="70"
                 android:orientation="vertical"
-                android:gravity="center">
+                android:gravity="end">
                 <TextView
                     android:id="@+id/gpu_hash_rate_value"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center_horizontal"
+                    android:layout_gravity="end"
                     android:text="0.00 H/s"
                     android:textColor="@color/bitcoin_orange"
                     android:textSize="20sp" />
@@ -198,7 +200,7 @@
                     android:id="@+id/gpu_hash_rate_label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center_horizontal"
+                    android:layout_gravity="end"
                     android:text="@string/hash_rate_gpu_label"
                     android:textColor="?attr/colorOnSurface"
                     android:textSize="12sp" />

@@ -24,10 +24,13 @@ class NativeMiningEngine(
     private val pendingSharesRepository: PendingSharesRepository? = null,
     private val isBothWifiAndDataUnavailable: (() -> Boolean)? = null,
     private val statsLogExtra: (() -> String)? = null,
+    private val onGpuUnavailable: (() -> Unit)? = null,
 ) : MiningEngine {
 
     private companion object {
         private const val LOG_TAG = "Mining"
+        /** Returned by gpuScanNonces when GPU path is unavailable (no CPU fallback). */
+        private const val GPU_UNAVAILABLE = -2
         private const val CHUNK_SIZE = 2L * 1024 * 1024
         private const val MAX_NONCE = 0xFFFFFFFFL
         /** Minimum elapsed time (seconds) used as divisor for hashrate. Avoids a huge spike when "Start Mining" is clicked: dividing by a tiny elapsed time would show an inflated rate until the denominator grows. */
@@ -50,6 +53,7 @@ class NativeMiningEngine(
     private val bestDifficultyRef = AtomicReference(0.0)
     private val blockTemplatesCount = AtomicLong(0)
     private val gpuNoncesScanned = AtomicLong(0)
+    private val gpuUnavailable = AtomicBoolean(false)
 
     /** Samples (timestampMs, cpuNonces, gpuNonces) for rolling-window hashrate. Cleared when mining loop starts. */
     private val hashrateSamples = Collections.synchronizedList(mutableListOf<Triple<Long, Long, Long>>())
@@ -214,12 +218,18 @@ class NativeMiningEngine(
     private fun runMiningLoop(client: StratumClient, config: MiningConfig) {
         val statsStartTime = System.currentTimeMillis()
         gpuNoncesScanned.set(0)
+        gpuUnavailable.set(false)
         synchronized(hashrateSamples) { hashrateSamples.clear() }
         var lastLogTime = statsStartTime
         val statusUpdateIntervalMs = config.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
         val threadCount = config.maxWorkerThreads.coerceIn(1, Runtime.getRuntime().availableProcessors())
-        val gpuEnabled = config.gpuCores > 0 && NativeMiner.gpuIsAvailable()
-        AppLog.d(LOG_TAG) { "Using $threadCount CPU worker(s), GPU=${gpuEnabled}" }
+        var gpuEnabled = config.gpuCores > 0 && NativeMiner.gpuIsAvailable() && !gpuUnavailable.get()
+        if (gpuEnabled && !NativeMiner.gpuPipelineReady(config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX))) {
+            gpuUnavailable.set(true)
+            onGpuUnavailable?.invoke()
+            gpuEnabled = false
+        }
+        AppLog.d(LOG_TAG) { "Using $threadCount CPU worker(s), GPU=$gpuEnabled" }
 
         var cachedJob: StratumJob? = null
         var cachedDifficulty = 0.0
@@ -256,6 +266,7 @@ class NativeMiningEngine(
                     state = MiningStatus.State.Mining,
                     hashrateHs = hashrateHs,
                     gpuHashrateHs = gpuHashrateHs,
+                    gpuAvailable = !gpuUnavailable.get(),
                     noncesScanned = cpuN,
                     acceptedShares = acceptedShares.get(),
                     rejectedShares = rejectedShares.get(),
@@ -316,6 +327,7 @@ class NativeMiningEngine(
                         state = MiningStatus.State.Mining,
                         hashrateHs = hashrateHs,
                         gpuHashrateHs = gpuHashrateHs,
+                        gpuAvailable = !gpuUnavailable.get(),
                         noncesScanned = cpuN,
                         acceptedShares = acceptedShares.get(),
                         rejectedShares = rejectedShares.get(),
@@ -402,6 +414,11 @@ class NativeMiningEngine(
                             val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                             val nonceEnd = nonceEndL.toInt()
                             val n = NativeMiner.gpuScanNonces(header76, start.toInt(), nonceEnd, target, config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX))
+                            if (n == GPU_UNAVAILABLE) {
+                                gpuUnavailable.set(true)
+                                onGpuUnavailable?.invoke()
+                                break
+                            }
                             val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
                             gpuNoncesScanned.addAndGet(scanned)
                             if (n >= 0) {
@@ -450,6 +467,7 @@ class NativeMiningEngine(
                             state = MiningStatus.State.Mining,
                             hashrateHs = hashrateHs,
                             gpuHashrateHs = gpuHashrateHs,
+                            gpuAvailable = !gpuUnavailable.get(),
                             noncesScanned = cpuN,
                             acceptedShares = acceptedShares.get(),
                             rejectedShares = rejectedShares.get(),
@@ -523,6 +541,11 @@ class NativeMiningEngine(
                             val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                             val nonceEnd = nonceEndL.toInt()
                             val n = NativeMiner.gpuScanNonces(header76, start.toInt(), nonceEnd, target, config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX))
+                            if (n == GPU_UNAVAILABLE) {
+                                gpuUnavailable.set(true)
+                                onGpuUnavailable?.invoke()
+                                break
+                            }
                             val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
                             gpuNoncesScanned.addAndGet(scanned)
                             if (n >= 0) {
@@ -570,6 +593,7 @@ class NativeMiningEngine(
                         state = MiningStatus.State.Mining,
                         hashrateHs = hashrateHs,
                         gpuHashrateHs = gpuHashrateHs,
+                        gpuAvailable = !gpuUnavailable.get(),
                         noncesScanned = cpuN,
                         acceptedShares = acceptedShares.get(),
                         rejectedShares = rejectedShares.get(),
@@ -622,6 +646,7 @@ class NativeMiningEngine(
                 state = MiningStatus.State.Mining,
                 hashrateHs = hashrateHs,
                 gpuHashrateHs = gpuHashrateHs,
+                gpuAvailable = !gpuUnavailable.get(),
                 noncesScanned = cpuN,
                 acceptedShares = acceptedShares.get(),
                 rejectedShares = rejectedShares.get(),
