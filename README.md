@@ -17,15 +17,16 @@ https://github.com/BitMaker-hub/NerdMiner_v2/releases
 
 - **Stratum v1** pool support (TCP and TLS)
 - Configurable pool URL/port, username/password, wallet and worker name
-- **CPU and GPU** mining: configurable CPU cores and intensity (1–100%), GPU workgroups (0 = off) and GPU intensity
+- **CPU and GPU** mining: configurable CPU cores and intensity (1–100%), GPU workgroups (0 = off) and GPU intensity. **GPU uses Vulkan compute (SPIR-V) only**—no CPU fallback; if the GPU path is unavailable, the dashboard shows "----" for GPU hashrate and a one-time toast "GPU not available". Build requires Vulkan SDK (or glslc) so the shader compiles to SPIR-V.
+- **GPU workgroup size:** chosen at runtime as min(32 × GPU cores, device max); dashboard label shows "Hash Rate (GPU) - {size}" when GPU is enabled.
 - **WiFi only** and **mine only when charging** options
-- **Battery temp** throttling: throttle above configured max, resume when 10% below; **auto-tuning** option keeps temp in a target band; **hard stop** at 43°C with notification
+- **Battery temp** throttling: throttle above configured max, resume when 10% below; **auto-tuning** option keeps temp in a target band; **hard stop** at 43°C with notification. Optional display in **Celsius or Fahrenheit** (Config).
 - **Hashrate target (H/s):** optional cap—when current hashrate (CPU+GPU) exceeds target, mining is throttled; leave empty for no cap
 - **Partial Wake Lock** and **alarm wake interval (0–60 s):** keep mining active when screen is off; interval 0 = hold wake lock for the session, 1–60 = repeating alarm-driven wake lock
 - **Mining thread priority (0 to -20):** slider for CPU priority when screen is off (0 = default, -20 = highest)
 - **Battery optimization** in Config: "Request Don't optimize" (system dialog) and "Open battery optimization settings" so you can whitelist the app from battery optimization
 - **Certificate pinning** for the mining pool (TLS); **encrypted config** (credentials stored with EncryptedSharedPreferences and Android Keystore)
-- Dashboard: hash rate, mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, battery temp, hashrate chart; red/white indicators when throttle is active
+- **Dashboard:** CPU and GPU hash rate (GPU shows "----" when unavailable), mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, battery temp (left), GPU hashrate (right with workgroup size in label), hashrate chart; red/white indicators when throttle is active. **Reset All UI Counters** in Config clears persisted counters (accepted/rejected/identified shares, block templates, best difficulty).
 - Runs as a **foreground service** so mining continues in the background until you stop it (notification permission required on Android 13+)
 
 ### Security (OWASP MASVS)
