@@ -41,11 +41,14 @@ If hashrate drops when the screen is off, use **Config → Battery optimization*
 
 ## Build and run
 
-1. **Open in Android Studio**: File → Open → select the `BTC Android Miner` folder.
-2. **Sync**: Let Android Studio sync Gradle (it will use the included wrapper and JDK). The first build will run CMake/NDK to compile the native miner library—no extra steps needed.
-3. **Run on device**: Connect your phone (USB debugging enabled) and click Run, or build an APK:
-   - **Debug APK**: Build → Build Bundle(s) / APK(s) → Build APK(s). Install the APK from `app/build/outputs/apk/debug/`.
-   - **From command line** (with Java and Android SDK installed): `.\gradlew.bat assembleDebug` (Windows) or `./gradlew assembleDebug` (macOS/Linux).
+The first build runs CMake/NDK and requires **Vulkan SDK** (or `glslc`) to be installed so the GPU compute shader compiles; see [Requirements](#requirements) below.
+
+1. **Clone**: `git clone <your-repo-url>` then `cd "BTC Android Miner"`.
+2. **Open in Android Studio**: File → Open → select the `BTC Android Miner` folder.
+3. **Sync**: Let Android Studio sync Gradle (it will use the included wrapper and JDK). The first build will run CMake/NDK to compile the native miner library.
+4. **Run on device**: Connect your phone (USB debugging enabled) and click Run, or build an APK:
+   - **Debug APK**: Build → Build Bundle(s) / APK(s) → Build APK(s). Install the APK from `app/build/outputs/apk/debug/app-debug.apk`.
+   - **From command line** (with Java and Android SDK installed): `.\gradlew.bat assembleDebug` (Windows) or `./gradlew assembleDebug` (macOS/Linux). The APK is at `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Requirements
 
