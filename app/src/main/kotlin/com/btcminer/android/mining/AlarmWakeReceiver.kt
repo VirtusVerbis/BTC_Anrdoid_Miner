@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.PowerManager
-import android.os.Build
 
 /**
  * Receives ELAPSED_REALTIME_WAKEUP alarms and starts MiningForegroundService with ACTION_ALARM_WAKEUP.
@@ -23,11 +22,7 @@ class AlarmWakeReceiver : BroadcastReceiver() {
             val serviceIntent = Intent(context, MiningForegroundService::class.java).apply {
                 action = MiningForegroundService.ACTION_ALARM_WAKEUP
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
+            context.startService(serviceIntent)
         } finally {
             if (shortLock.isHeld) shortLock.release()
         }
