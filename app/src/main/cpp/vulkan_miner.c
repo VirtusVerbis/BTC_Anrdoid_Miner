@@ -510,10 +510,20 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         maxSteps = MAX_GPU_WORKGROUP_STEPS;
     if ((unsigned)gpuCores > maxSteps)
         gpuCores = (int)maxSteps;
+    /* Defensive: ensure core Vulkan handles are valid before proceeding. */
+    if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE) {
+        return GPU_UNAVAILABLE;
+    }
     if (!ensure_compute_resources())
         return GPU_UNAVAILABLE;
+    if (g_commandBuffer == VK_NULL_HANDLE || g_fence == VK_NULL_HANDLE) {
+        return GPU_UNAVAILABLE;
+    }
     if (!create_compute_pipeline((uint32_t)gpuCores))
         return GPU_UNAVAILABLE;
+    if (gpuCores < 1 || gpuCores > (int)MAX_GPU_WORKGROUP_STEPS || g_pipelines[gpuCores] == VK_NULL_HANDLE) {
+        return GPU_UNAVAILABLE;
+    }
 
     uint32_t localSize = 32 * (uint32_t)gpuCores;
     if (localSize > g_maxWorkGroupSize)
@@ -557,7 +567,14 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     memcpy(ptr, &noWin, sizeof(noWin));
     vkUnmapMemory(g_device, g_resultMemory);
 
-    vkResetFences(g_device, 1, &g_fence);
+    VkResult res = vkResetFences(g_device, 1, &g_fence);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetFences");
+            cleanup_vulkan();
+        }
+        return GPU_UNAVAILABLE;
+    }
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     if (vkBeginCommandBuffer(g_commandBuffer, &beginInfo) != VK_SUCCESS)
         return GPU_UNAVAILABLE;
@@ -575,17 +592,27 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch submitted");
         g_first_dispatch_state = 1;
     }
-    if (vkQueueSubmit(g_queue, 1, &submitInfo, g_fence) != VK_SUCCESS) {
+    res = vkQueueSubmit(g_queue, 1, &submitInfo, g_fence);
+    if (res != VK_SUCCESS) {
         if (g_first_dispatch_state < 2) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
             g_first_dispatch_state = 2;
         }
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkQueueSubmit");
+            cleanup_vulkan();
+        }
         return GPU_UNAVAILABLE;
     }
-    if (vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 5000000000ull) != VK_SUCCESS) {
+    res = vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 5000000000ull);
+    if (res != VK_SUCCESS) {
         if (g_first_dispatch_state < 2) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
             g_first_dispatch_state = 2;
+        }
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkWaitForFences");
+            cleanup_vulkan();
         }
         return GPU_UNAVAILABLE;
     }

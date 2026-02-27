@@ -55,7 +55,15 @@ class MiningForegroundService : Service() {
                     if (tempTenths == 0) ", battery=—" else ", battery=${"%.1f".format(tempTenths / 10.0)}°C"
                 }
             },
-            onGpuUnavailable = { handler.post { Toast.makeText(applicationContext, R.string.gpu_not_available, Toast.LENGTH_LONG).show() } },
+            onGpuUnavailable = {
+                handler.post {
+                    Toast.makeText(
+                        applicationContext,
+                        "GPU Init failed, retrying in 60s.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
         )
         e.loadPersistedStats(statsRepository.get())
         e
@@ -361,9 +369,17 @@ class MiningForegroundService : Service() {
             ACTION_STOP -> stopMining()
             ACTION_RESTART -> restartMining()
             ACTION_ALARM_WAKEUP -> {
-                if (!engine.isRunning()) return START_NOT_STICKY
+                startForeground(NOTIFICATION_ID, createMinimalNotification())
+                if (!engine.isRunning()) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 acquireWakeLock()
-                handler.postDelayed({ releaseWakeLock() }, WAKE_LOCK_HOLD_MS)
+                handler.postDelayed({
+                    releaseWakeLock()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                }, WAKE_LOCK_HOLD_MS)
             }
         }
         return START_NOT_STICKY
@@ -386,7 +402,7 @@ class MiningForegroundService : Service() {
     private fun tryStartMining() {
         AppLog.d(LOG_TAG) { "tryStartMining()" }
         // Must call startForeground() immediately to avoid ForegroundServiceDidNotStartInTimeException.
-        startForeground(NOTIFICATION_ID, createNotification())
+        startForeground(NOTIFICATION_ID, createMinimalNotification())
         val config = configRepository.getConfig()
         if (!config.isValidForMining()) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -626,6 +642,24 @@ class MiningForegroundService : Service() {
         engine.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /** Builds a notification without touching [engine]. Use for first startForeground() to avoid timeout. */
+    private fun createMinimalNotification(): Notification {
+        createNotificationChannel()
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.mining_notification_title))
+            .setContentText(getString(R.string.mining_notification_text))
+            .setSmallIcon(R.drawable.ic_mining_notification)
+            .setContentIntent(open)
+            .setOngoing(true)
+            .build()
     }
 
     private fun createNotification(): Notification {
