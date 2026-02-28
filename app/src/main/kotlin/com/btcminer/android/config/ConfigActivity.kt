@@ -25,6 +25,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import com.google.android.material.slider.Slider
 import java.lang.Runtime
+import java.util.Locale
 
 class ConfigActivity : AppCompatActivity() {
 
@@ -65,8 +66,11 @@ class ConfigActivity : AppCompatActivity() {
             applyThreadPrioritySliderAppearance(value)
         })
         binding.configSliderAlarmWakeInterval.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
-            binding.configAlarmWakeIntervalValue.text = "${value.toInt()}"
+            binding.configAlarmWakeIntervalValue.text = formatAlarmWakeIntervalLabel(value.toInt())
         })
+        binding.configSliderAlarmWakeInterval.setLabelFormatter { value ->
+            formatAlarmWakeIntervalLabel(value.toInt())
+        }
         binding.configPartialWakeLock.setOnCheckedChangeListener { _, _ ->
             updateAlarmSliderEnabled()
         }
@@ -95,6 +99,18 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderAlarmWakeInterval.isEnabled = enabled
         binding.configAlarmWakeIntervalValue.isEnabled = enabled
         binding.configAlarmWakeIntervalLabel.isEnabled = enabled
+    }
+
+    private fun formatAlarmWakeIntervalLabel(seconds: Int): String {
+        val s = seconds.coerceAtLeast(0)
+        if (s == 0) return "0 s (off)"
+        val minutesExact = s / 60.0
+        val minutesText = if (s % 60 == 0) {
+            (s / 60).toString()
+        } else {
+            String.format(Locale.US, "%.1f", minutesExact)
+        }
+        return "$s s ($minutesText min)"
     }
 
     private fun requestBatteryExemption() {
@@ -166,8 +182,11 @@ class ConfigActivity : AppCompatActivity() {
         binding.configWorkerName.editText?.setText(c.workerName)
         binding.configPartialWakeLock.isChecked = c.usePartialWakeLock
         val alarmSec = c.alarmWakeIntervalSec.coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX)
+        binding.configSliderAlarmWakeInterval.valueFrom = MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN.toFloat()
+        binding.configSliderAlarmWakeInterval.valueTo = MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX.toFloat()
+        binding.configSliderAlarmWakeInterval.stepSize = 1f
         binding.configSliderAlarmWakeInterval.value = alarmSec.toFloat()
-        binding.configAlarmWakeIntervalValue.text = "$alarmSec"
+        binding.configAlarmWakeIntervalValue.text = formatAlarmWakeIntervalLabel(alarmSec)
         updateAlarmSliderEnabled()
         val threadPriority = c.miningThreadPriority.coerceIn(MiningConfig.MINING_THREAD_PRIORITY_MIN, MiningConfig.MINING_THREAD_PRIORITY_MAX)
         binding.configSliderThreadPriority.value = threadPriority.toFloat()

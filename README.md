@@ -22,7 +22,7 @@ https://github.com/BitMaker-hub/NerdMiner_v2/releases
 - **WiFi only** and **mine only when charging** options
 - **Battery temp** throttling: throttle above configured max, resume when 10% below; **auto-tuning** option keeps temp in a target band; **hard stop** at 43°C with notification. Optional display in **Celsius or Fahrenheit** (Config).
 - **Hashrate target (H/s):** optional cap—when current hashrate (CPU+GPU) exceeds target, mining is throttled; leave empty for no cap
-- **Partial Wake Lock** and **alarm wake interval (0–60 s):** keep mining active when screen is off; interval 0 = hold wake lock for the session, 1–60 = repeating alarm-driven wake lock
+- **Partial Wake Lock** and **alarm wake interval (0–900 s):** keep mining active when screen is off; interval 0 = hold wake lock for the session, 1–900 = repeating alarm-driven wake lock (up to 15 minutes)
 - **Mining thread priority (0 to -20):** slider for CPU priority when screen is off (0 = default, -20 = highest)
 - **Battery optimization** in Config: "Request Don't optimize" (system dialog) and "Open battery optimization settings" so you can whitelist the app from battery optimization
 - **Certificate pinning** for the mining pool (TLS); **encrypted config** (credentials stored with EncryptedSharedPreferences and Android Keystore)

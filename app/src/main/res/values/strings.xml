@@ -25,7 +25,7 @@
     <string name="config_partial_wake_lock">Partial Wake Lock</string>
     <string name="config_partial_wake_lock_summary">Keep mining active when screen off or app minimized</string>
     <string name="config_alarm_wake_interval">Alarm wake interval (s)</string>
-    <string name="config_alarm_wake_interval_summary">0=off, 1–60=repeat every N seconds. Requires Partial Wake Lock.</string>
+    <string name="config_alarm_wake_interval_summary">0=off, 1–900=repeat every N seconds (up to 15 min). Requires Partial Wake Lock.</string>
     <string name="config_battery_optimization_heading">Battery optimization (mining when screen off)</string>
     <string name="config_request_battery_exemption">Request Don\'t optimize (dialog)</string>
     <string name="config_open_battery_optimization_settings">Open battery optimization settings</string>
