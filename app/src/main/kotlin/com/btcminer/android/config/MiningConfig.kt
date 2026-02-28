@@ -25,6 +25,7 @@ data class MiningConfig(
     val gpuCores: Int = 0,
     val gpuUtilizationPercent: Int = 75,
     val usePartialWakeLock: Boolean = false,
+    val useLegacyAlarm: Boolean = false,
     val miningThreadPriority: Int = 0,
     val alarmWakeIntervalSec: Int = 60,
 ) {

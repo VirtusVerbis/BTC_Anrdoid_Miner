@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.Build.VERSION_CODES
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -26,6 +27,7 @@ import com.btcminer.android.config.MiningConfig
 import com.btcminer.android.config.MiningConfigRepository
 import com.btcminer.android.network.StratumPinCapture
 import java.io.File
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -106,27 +108,40 @@ class MiningForegroundService : Service() {
     private var throttleThread: Thread? = null
 
     private val handler = Handler(Looper.getMainLooper())
+    private val sampleExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "mining-sample").apply { isDaemon = true }
+    }
     private val hashrateHistoryCpu = mutableListOf<Double>()
     private val hashrateHistoryGpu = mutableListOf<Double>()
     private val maxHistorySize = 120
-    /** UI-only: hashrate history and notification. Throttle is updated by [throttleThread]. */
-    private val sampleRunnable = object : Runnable {
+    /** UI-only: hashrate history and notification. Heavy work runs on [sampleExecutor]; only startForeground on main. */
+    private val sampleRunnable: Runnable = object : Runnable {
         override fun run() {
             if (engine.isRunning()) {
-                val status = engine.getStatus()
-                if (status.state == MiningStatus.State.Mining) {
-                    synchronized(hashrateHistoryCpu) {
-                        hashrateHistoryCpu.add(status.hashrateHs)
-                        while (hashrateHistoryCpu.size > maxHistorySize) hashrateHistoryCpu.removeAt(0)
+                sampleExecutor.execute {
+                    val status = engine.getStatus()
+                    if (status.state == MiningStatus.State.Mining) {
+                        synchronized(hashrateHistoryCpu) {
+                            hashrateHistoryCpu.add(status.hashrateHs)
+                            while (hashrateHistoryCpu.size > maxHistorySize) hashrateHistoryCpu.removeAt(0)
+                        }
+                        synchronized(hashrateHistoryGpu) {
+                            hashrateHistoryGpu.add(if (status.gpuAvailable) status.gpuHashrateHs else 0.0)
+                            while (hashrateHistoryGpu.size > maxHistorySize) hashrateHistoryGpu.removeAt(0)
+                        }
                     }
-                    synchronized(hashrateHistoryGpu) {
-                        hashrateHistoryGpu.add(if (status.gpuAvailable) status.gpuHashrateHs else 0.0)
-                        while (hashrateHistoryGpu.size > maxHistorySize) hashrateHistoryGpu.removeAt(0)
+                    val contentText = if (MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) && status.connectionLost) getString(R.string.mining_reconnecting) else getString(R.string.mining_notification_text)
+                    val notification = buildNotification(contentText)
+                    handler.post {
+                        if (engine.isRunning()) {
+                            startForeground(NOTIFICATION_ID, notification)
+                            handler.postDelayed(sampleRunnable, 1000L)
+                        }
                     }
                 }
-                startForeground(NOTIFICATION_ID, createNotification())
+            } else {
+                handler.postDelayed(this, 1000L)
             }
-            handler.postDelayed(this, 1000L)
         }
     }
 
@@ -321,10 +336,14 @@ class MiningForegroundService : Service() {
         }
     }
 
-    private val saveStatsRunnable = object : Runnable {
+    private val saveStatsRunnable: Runnable = object : Runnable {
         override fun run() {
-            statsRepository.save(engine.getStatus())
-            handler.postDelayed(this, STATS_SAVE_INTERVAL_MS)
+            sampleExecutor.execute {
+                statsRepository.save(engine.getStatus())
+                handler.post {
+                    if (engine.isRunning()) handler.postDelayed(saveStatsRunnable, STATS_SAVE_INTERVAL_MS)
+                }
+            }
         }
     }
 
@@ -376,6 +395,13 @@ class MiningForegroundService : Service() {
                     return START_NOT_STICKY
                 }
                 acquireWakeLock()
+                val config = configRepository.getConfig()
+                if (!config.useLegacyAlarm &&
+                    config.alarmWakeIntervalSec in 1..MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX &&
+                    engine.isRunning()
+                ) {
+                    scheduleAlarm(config.alarmWakeIntervalSec, config.useLegacyAlarm)
+                }
                 handler.postDelayed({
                     releaseWakeLock()
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -390,6 +416,7 @@ class MiningForegroundService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
+        sampleExecutor.shutdown()
         stopThrottleThread()
         statsRepository.save(engine.getStatus())
         unregisterConstraintReceiver()
@@ -453,7 +480,7 @@ class MiningForegroundService : Service() {
                 if (c.usePartialWakeLock) {
                     when {
                         c.alarmWakeIntervalSec == 0 -> acquireWakeLock()
-                        c.alarmWakeIntervalSec in 1..60 -> scheduleAlarm(c.alarmWakeIntervalSec)
+                        c.alarmWakeIntervalSec in 1..MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX -> scheduleAlarm(c.alarmWakeIntervalSec, c.useLegacyAlarm)
                         else -> { }
                     }
                 }
@@ -523,7 +550,7 @@ class MiningForegroundService : Service() {
                 if (c.usePartialWakeLock) {
                     when {
                         c.alarmWakeIntervalSec == 0 -> acquireWakeLock()
-                        c.alarmWakeIntervalSec in 1..60 -> scheduleAlarm(c.alarmWakeIntervalSec)
+                        c.alarmWakeIntervalSec in 1..MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX -> scheduleAlarm(c.alarmWakeIntervalSec, c.useLegacyAlarm)
                         else -> { }
                     }
                 }
@@ -601,7 +628,7 @@ class MiningForegroundService : Service() {
         }
     }
 
-    private fun scheduleAlarm(intervalSec: Int) {
+    private fun scheduleAlarm(intervalSec: Int, useLegacyAlarm: Boolean) {
         val intervalMs = (intervalSec * 1000).toLong()
         val pending = PendingIntent.getBroadcast(
             this,
@@ -611,13 +638,29 @@ class MiningForegroundService : Service() {
         )
         alarmPendingIntent = pending
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val triggerAt = SystemClock.elapsedRealtime() + 1000L
-        alarmManager.setRepeating(
-            AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            triggerAt,
-            intervalMs,
-            pending
-        )
+        if (useLegacyAlarm) {
+            val triggerAt = SystemClock.elapsedRealtime() + 1000L
+            alarmManager.setRepeating(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                triggerAt,
+                intervalMs,
+                pending
+            )
+        } else {
+            val triggerAt = SystemClock.elapsedRealtime() + intervalMs
+            if (Build.VERSION.SDK_INT >= VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    triggerAt,
+                    pending
+                )
+            } else if (Build.VERSION.SDK_INT >= VERSION_CODES.KITKAT) {
+                @Suppress("DEPRECATION")
+                alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pending)
+            } else {
+                alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pending)
+            }
+        }
     }
 
     private fun cancelAlarm() {
@@ -662,7 +705,8 @@ class MiningForegroundService : Service() {
             .build()
     }
 
-    private fun createNotification(): Notification {
+    /** Builds mining notification with given content text. Safe to call from background thread. */
+    private fun buildNotification(contentText: String): Notification {
         createNotificationChannel()
         val open = PendingIntent.getActivity(
             this,
@@ -670,8 +714,6 @@ class MiningForegroundService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val status = if (::configRepository.isInitialized) engine.getStatus() else null
-        val contentText = if (MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) && (status?.connectionLost == true)) getString(R.string.mining_reconnecting) else getString(R.string.mining_notification_text)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.mining_notification_title))
             .setContentText(contentText)
