@@ -62,6 +62,6 @@ data class MiningConfig(
         const val MINING_THREAD_PRIORITY_MIN = -20 //-8
         const val MINING_THREAD_PRIORITY_MAX = 0
         const val ALARM_WAKE_INTERVAL_SEC_MIN = 0
-        const val ALARM_WAKE_INTERVAL_SEC_MAX = 60
+        const val ALARM_WAKE_INTERVAL_SEC_MAX = 900
     }
 }
