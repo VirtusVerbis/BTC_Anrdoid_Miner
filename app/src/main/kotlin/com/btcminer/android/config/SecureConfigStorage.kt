@@ -77,6 +77,7 @@ class SecureConfigStorage(context: Context) {
         const val KEY_GPU_CORES = "gpu_cores"
         const val KEY_GPU_UTILIZATION_PERCENT = "gpu_utilization_percent"
         const val KEY_USE_PARTIAL_WAKE_LOCK = "use_partial_wake_lock"
+        const val KEY_USE_LEGACY_ALARM = "use_legacy_alarm"
         const val KEY_MINING_THREAD_PRIORITY = "mining_thread_priority"
         const val KEY_ALARM_WAKE_INTERVAL_SEC = "alarm_wake_interval_sec"
     }

@@ -167,6 +167,13 @@
             android:text="60"
             android:textColor="?attr/colorOnSurface" />
 
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/config_use_legacy_alarm"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/config_use_legacy_alarm" />
+
         <TextView
             android:id="@+id/config_battery_optimization_heading"
             android:layout_width="wrap_content"

@@ -181,6 +181,7 @@ class ConfigActivity : AppCompatActivity() {
         binding.configLightningAddress.editText?.setText(c.lightningAddress)
         binding.configWorkerName.editText?.setText(c.workerName)
         binding.configPartialWakeLock.isChecked = c.usePartialWakeLock
+        binding.configUseLegacyAlarm.isChecked = c.useLegacyAlarm
         val alarmSec = c.alarmWakeIntervalSec.coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX)
         binding.configSliderAlarmWakeInterval.valueFrom = MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN.toFloat()
         binding.configSliderAlarmWakeInterval.valueTo = MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX.toFloat()
@@ -238,6 +239,7 @@ class ConfigActivity : AppCompatActivity() {
             lightningAddress = MiningConfig.sanitize(binding.configLightningAddress.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_LIGHTNING_ADDRESS_LEN),
             workerName = MiningConfig.sanitize(binding.configWorkerName.editText?.text?.toString()?.trim() ?: "", MiningConfig.MAX_WORKER_NAME_LEN),
             usePartialWakeLock = binding.configPartialWakeLock.isChecked,
+            useLegacyAlarm = binding.configUseLegacyAlarm.isChecked,
             miningThreadPriority = binding.configSliderThreadPriority.value.toInt().coerceIn(
                 MiningConfig.MINING_THREAD_PRIORITY_MIN,
                 MiningConfig.MINING_THREAD_PRIORITY_MAX
