@@ -37,3 +37,7 @@ local.properties
 
 # don't upload logs
 phone_logcat.txt
+phone_log.txt
+crash-log.txt
+main-log.txt
+last-crash-log.txt
