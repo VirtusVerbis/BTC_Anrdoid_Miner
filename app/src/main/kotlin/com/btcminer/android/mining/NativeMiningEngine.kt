@@ -3,6 +3,7 @@ package com.btcminer.android.mining
 import android.os.Process
 import com.btcminer.android.AppLog
 import com.btcminer.android.config.MiningConfig
+import com.btcminer.android.util.NumberFormatUtils
 import java.util.Locale
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
@@ -37,8 +38,6 @@ class NativeMiningEngine(
         private const val MIN_ELAPSED_SEC_FOR_HASHRATE = 1.0
         /** Rolling window (seconds) for hashrate display; configurable constant. */
         private const val ROLLING_WINDOW_SEC = 60
-        /** Interval between GPU re-init attempts when GPU is unavailable. */
-        private const val GPU_RETRY_INTERVAL_MS = 60_000L
     }
 
     private data class FoundResult(val jobId: String, val nonce: Int, val extranonce2Hex: String, val ntimeHex: String)
@@ -236,6 +235,7 @@ class NativeMiningEngine(
         var gpuEnabled = config.gpuCores > 0 && NativeMiner.gpuIsAvailable() && !gpuUnavailable.get()
         if (gpuEnabled && !NativeMiner.gpuPipelineReady(config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX))) {
             if (!gpuUnavailable.getAndSet(true)) {
+                AppLog.d(LOG_TAG) { "GPU init failed at startup" }
                 onGpuUnavailable?.invoke()
                 startGpuRetryThreadIfNeeded(config)
             }
@@ -434,6 +434,7 @@ class NativeMiningEngine(
                             )
                             if (n == GPU_UNAVAILABLE) {
                                 if (!gpuUnavailable.getAndSet(true)) {
+                                    AppLog.d(LOG_TAG) { "GPU unavailable (gpuScanNonces returned GPU_UNAVAILABLE)" }
                                     onGpuUnavailable?.invoke()
                                     startGpuRetryThreadIfNeeded(config)
                                 }
@@ -503,7 +504,9 @@ class NativeMiningEngine(
                         val effectiveElapsed = maxOf(elapsedSec, MIN_ELAPSED_SEC_FOR_HASHRATE)
                         val hashrateHs = totalNoncesScanned.get() / effectiveElapsed
                         val gpuH = gpuNoncesScanned.get() / effectiveElapsed
-                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, blockTemplate=%d%s", hashrateHs, gpuH, totalNoncesScanned.get(), blockTemplatesCount.get(), statsLogExtra?.invoke() ?: "") }
+                        AppLog.d(LOG_TAG) {
+                            "Stats: CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuH)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}${statsLogExtra?.invoke() ?: ""}"
+                        }
                         lastLogTime = now
                     }
                 }
@@ -569,6 +572,7 @@ class NativeMiningEngine(
                             )
                             if (n == GPU_UNAVAILABLE) {
                                 if (!gpuUnavailable.getAndSet(true)) {
+                                    AppLog.d(LOG_TAG) { "GPU unavailable (gpuScanNonces returned GPU_UNAVAILABLE)" }
                                     onGpuUnavailable?.invoke()
                                     startGpuRetryThreadIfNeeded(config)
                                 }
@@ -631,7 +635,9 @@ class NativeMiningEngine(
                         connectionLost = !client.isConnected(),
                     ))
                     if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
-                        AppLog.d(LOG_TAG) { String.format(Locale.US, "Stats: CPU %.2f GPU %.2f H/s, nonces=%d, blockTemplate=%d%s", hashrateHs, gpuHashrateHs, totalNoncesScanned.get(), blockTemplatesCount.get(), statsLogExtra?.invoke() ?: "") }
+                        AppLog.d(LOG_TAG) {
+                            "Stats: CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}${statsLogExtra?.invoke() ?: ""}"
+                        }
                         lastLogTime = now
                     }
                 }
@@ -688,7 +694,7 @@ class NativeMiningEngine(
 
     /**
      * Starts a dedicated background thread that periodically retries GPU init while GPU is unavailable.
-     * The thread sleeps [GPU_RETRY_INTERVAL_MS] between attempts and exits when mining stops, GPU becomes
+     * The thread sleeps [MiningConstants.GPU_RETRY_INTERVAL_MS] between attempts and exits when mining stops, GPU becomes
      * available again, or a retry succeeds.
      */
     private fun startGpuRetryThreadIfNeeded(config: MiningConfig) {
@@ -696,14 +702,16 @@ class NativeMiningEngine(
         val gpuCores = config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX)
         val thread = Thread({
             try {
+                var retryCount = 0
                 while (running.get() && gpuUnavailable.get()) {
                     try {
-                        Thread.sleep(GPU_RETRY_INTERVAL_MS)
+                        Thread.sleep(MiningConstants.GPU_RETRY_INTERVAL_MS)
                     } catch (_: InterruptedException) {
                         break
                     }
                     if (!running.get() || !gpuUnavailable.get()) break
-                    AppLog.d(LOG_TAG) { "GPU retry attempt starting" }
+                    retryCount++
+                    AppLog.d(LOG_TAG) { "GPU retry attempt #$retryCount starting" }
                     val available = NativeMiner.gpuIsAvailable() &&
                         NativeMiner.gpuPipelineReady(gpuCores)
                     if (available) {
@@ -712,7 +720,7 @@ class NativeMiningEngine(
                         break
                     } else {
                         AppLog.d(LOG_TAG) {
-                            "GPU init failed, will retry in ${GPU_RETRY_INTERVAL_MS / 1000}s"
+                            "GPU init failed, retry attempt #$retryCount, will retry in ${MiningConstants.GPU_RETRY_INTERVAL_MS / 1000}s"
                         }
                     }
                 }

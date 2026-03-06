@@ -479,7 +479,10 @@ static int try_init_vulkan(void) {
 
 static void cleanup_vulkan(void) {
     if (g_device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_device);
+        VkResult r = vkDeviceWaitIdle(g_device);
+        if (r != VK_SUCCESS && r != VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkDeviceWaitIdle returned %d", (int)r);
+        }
         destroy_compute_resources();
         vkDestroyDevice(g_device, NULL);
         g_device = VK_NULL_HANDLE;
@@ -524,6 +527,10 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (gpuCores < 1 || gpuCores > (int)MAX_GPU_WORKGROUP_STEPS || g_pipelines[gpuCores] == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
+    if (g_uboMemory == VK_NULL_HANDLE || g_resultMemory == VK_NULL_HANDLE ||
+        g_descriptorSet == VK_NULL_HANDLE || g_pipelineLayout == VK_NULL_HANDLE) {
+        return GPU_UNAVAILABLE;
+    }
 
     uint32_t localSize = 32 * (uint32_t)gpuCores;
     if (localSize > g_maxWorkGroupSize)
@@ -556,14 +563,26 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     memcpy(ubo + 84, target, 32);
 
     void *ptr;
-    if (vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr) != VK_SUCCESS)
+    VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr);
+    if (mapRes != VK_SUCCESS) {
+        if (mapRes == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (ubo)");
+            cleanup_vulkan();
+        }
         return GPU_UNAVAILABLE;
+    }
     memcpy(ptr, ubo, UBO_SIZE);
     vkUnmapMemory(g_device, g_uboMemory);
 
     uint32_t noWin = 0xFFFFFFFFu;
-    if (vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr) != VK_SUCCESS)
+    mapRes = vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr);
+    if (mapRes != VK_SUCCESS) {
+        if (mapRes == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result)");
+            cleanup_vulkan();
+        }
         return GPU_UNAVAILABLE;
+    }
     memcpy(ptr, &noWin, sizeof(noWin));
     vkUnmapMemory(g_device, g_resultMemory);
 
@@ -620,8 +639,14 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch completed");
         g_first_dispatch_state = 2;
     }
-    if (vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr) != VK_SUCCESS)
+    mapRes = vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr);
+    if (mapRes != VK_SUCCESS) {
+        if (mapRes == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result read)");
+            cleanup_vulkan();
+        }
         return GPU_UNAVAILABLE;
+    }
     memcpy(&noWin, ptr, sizeof(noWin));
     vkUnmapMemory(g_device, g_resultMemory);
     if (noWin == 0xFFFFFFFFu)

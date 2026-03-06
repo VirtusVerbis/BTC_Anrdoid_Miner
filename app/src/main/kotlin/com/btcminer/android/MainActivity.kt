@@ -37,6 +37,7 @@ import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
 import com.btcminer.android.network.CertPins
 import com.btcminer.android.util.BitcoinAddressValidator
+import com.btcminer.android.util.NumberFormatUtils
 import com.google.android.material.snackbar.Snackbar
 import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
@@ -379,14 +380,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatsUi(status: MiningStatus, service: MiningForegroundService?) {
         val hashrateStr = if (status.state == MiningStatus.State.Mining) {
-            String.format(Locale.US, "%.2f H/s", status.hashrateHs)
+            "${NumberFormatUtils.formatHashrateWithSpaces(status.hashrateHs)} H/s"
         } else {
             "— H/s"
         }
         binding.hashRateValue.text = hashrateStr
         val gpuHashrateStr = when {
             !status.gpuAvailable -> "----"
-            status.state == MiningStatus.State.Mining -> String.format(Locale.US, "%.2f H/s", status.gpuHashrateHs)
+            status.state == MiningStatus.State.Mining -> "${NumberFormatUtils.formatHashrateWithSpaces(status.gpuHashrateHs)} H/s"
             else -> "—"
         }
         binding.gpuHashRateValue.text = gpuHashrateStr
@@ -397,7 +398,7 @@ class MainActivity : AppCompatActivity() {
         binding.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuCores > 0) " - $effectiveWorkgroupSize" else ""
         val cpuPct = service?.getLastCpuUtilizationPercent()
         binding.cpuUtilizationValue.text = if (cpuPct != null) String.format(Locale.US, "%.1f%%", cpuPct) else "—"
-        binding.noncesValue.text = status.noncesScanned.toString()
+        binding.noncesValue.text = NumberFormatUtils.formatWithSpaces(status.noncesScanned)
         binding.acceptedSharesValue.text = status.acceptedShares.toString()
         binding.rejectedSharesValue.text = status.rejectedShares.toString()
         binding.root.findViewById<TextView>(R.id.identified_shares_value).text = status.identifiedShares.toString()
