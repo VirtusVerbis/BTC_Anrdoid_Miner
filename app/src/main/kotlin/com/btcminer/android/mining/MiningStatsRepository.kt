@@ -65,6 +65,19 @@ class MiningStatsRepository(context: Context) {
     }
 
     /**
+     * Returns the last mining run duration in milliseconds. 0 if never saved.
+     */
+    fun getLastRunDurationMs(): Long = prefs.getLong(KEY_LAST_RUN_DURATION_MS, 0L)
+
+    /**
+     * Saves the last run duration. Called every minute while mining and on stop.
+     * Pass 0 to clear (when user clicks Start Mining).
+     */
+    fun saveLastRunDuration(durationMs: Long) {
+        prefs.edit().putLong(KEY_LAST_RUN_DURATION_MS, durationMs).apply()
+    }
+
+    /**
      * Writes zeros for the five persisted counters. Used only when user resets via Config.
      */
     fun saveZeros() {
@@ -84,5 +97,6 @@ class MiningStatsRepository(context: Context) {
         private const val KEY_IDENTIFIED_SHARES = "identified_shares"
         private const val KEY_BEST_DIFFICULTY = "best_difficulty"
         private const val KEY_BLOCK_TEMPLATES = "block_templates"
+        private const val KEY_LAST_RUN_DURATION_MS = "last_run_duration_ms"
     }
 }

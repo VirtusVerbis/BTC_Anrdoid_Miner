@@ -340,6 +340,12 @@ class MiningForegroundService : Service() {
         override fun run() {
             sampleExecutor.execute {
                 statsRepository.save(engine.getStatus())
+                if (engine.isRunning()) {
+                    val start = miningStartTimeMillis
+                    if (start != null) {
+                        statsRepository.saveLastRunDuration(System.currentTimeMillis() - start)
+                    }
+                }
                 handler.post {
                     if (engine.isRunning()) handler.postDelayed(saveStatsRunnable, STATS_SAVE_INTERVAL_MS)
                 }
@@ -428,6 +434,7 @@ class MiningForegroundService : Service() {
 
     private fun tryStartMining() {
         AppLog.d(LOG_TAG) { "tryStartMining()" }
+        statsRepository.saveLastRunDuration(0)
         // Must call startForeground() immediately to avoid ForegroundServiceDidNotStartInTimeException.
         startForeground(NOTIFICATION_ID, createMinimalNotification())
         val config = configRepository.getConfig()
@@ -672,6 +679,9 @@ class MiningForegroundService : Service() {
 
     private fun stopMining() {
         AppLog.d(LOG_TAG) { "stopMining()" }
+        miningStartTimeMillis?.let { start ->
+            statsRepository.saveLastRunDuration(System.currentTimeMillis() - start)
+        }
         miningStartTimeMillis = null
         cancelAlarm()
         releaseWakeLock()

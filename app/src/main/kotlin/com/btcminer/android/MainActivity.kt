@@ -405,12 +405,18 @@ class MainActivity : AppCompatActivity() {
         binding.bestDifficultyValue.text = if (status.bestDifficulty > 0.0) String.format(Locale.US, "%.6f", status.bestDifficulty) else "—"
         binding.blockTemplateValue.text = status.blockTemplates.toString()
         val startMs = service?.getMiningStartTimeMillis()
-        val timerStr = if (status.state == MiningStatus.State.Mining && startMs != null) {
-            formatElapsed(System.currentTimeMillis() - startMs)
+        val (timerStr, timerLabel) = if (status.state == MiningStatus.State.Mining && startMs != null) {
+            formatElapsed(System.currentTimeMillis() - startMs) to getString(R.string.mining_timer_label)
         } else {
-            "00:00:00:00"
+            val lastRunMs = MiningStatsRepository(applicationContext).getLastRunDurationMs()
+            if (lastRunMs > 0) {
+                formatElapsed(lastRunMs) to getString(R.string.mining_timer_last_run)
+            } else {
+                "00:00:00:00" to getString(R.string.mining_timer_label)
+            }
         }
         binding.miningTimerValue.text = timerStr
+        binding.miningTimerLabel.text = timerLabel
         binding.reconnectingBanner.visibility = if (MiningConstraints.isBothWifiAndDataUnavailable(this) && status.connectionLost) View.VISIBLE else View.GONE
         binding.stratumConnectionIcon.alpha = if (status.state == MiningStatus.State.Mining && !status.connectionLost) 1f else 0.3f
     }
