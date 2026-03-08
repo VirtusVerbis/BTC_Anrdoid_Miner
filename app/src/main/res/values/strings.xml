@@ -56,12 +56,12 @@
     <string name="config_cores_used">CPU Cores</string>
     <string name="config_cores_used_summary">Number of CPU cores used for mining (1 = single thread, can throttle with intensity below)</string>
     <string name="config_max_intensity">Max CPU intensity (%)</string>
-    <string name="config_max_intensity_summary">1–100</string>
+    <string name="config_max_intensity_summary">0–100 (0=10 min delay, 100=no delay)</string>
     <string name="config_gpu_section">GPU</string>
     <string name="config_gpu_cores">GPU Workgroups</string>
     <string name="config_gpu_cores_summary">Parallelism level (0 = GPU off)</string>
     <string name="config_gpu_utilization">Max GPU Intensity (%)</string>
-    <string name="config_gpu_utilization_summary">1–100, like CPU intensity</string>
+    <string name="config_gpu_utilization_summary">0–100 (0=10 min delay, 100=no delay)</string>
     <string name="config_status_update_interval">Status update interval (ms)</string>
     <string name="config_status_update_interval_summary">Update hashrate every X ms (dashboard)</string>
     <string name="config_saved">Configuration saved</string>

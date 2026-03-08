@@ -20,6 +20,7 @@ import com.btcminer.android.R
 import com.btcminer.android.databinding.ActivityConfigBinding
 import com.btcminer.android.mining.MiningForegroundService
 import com.btcminer.android.mining.NativeMiner
+import com.btcminer.android.util.NumberFormatUtils
 import com.btcminer.android.network.StratumPinCapture
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
@@ -47,7 +48,7 @@ class ConfigActivity : AppCompatActivity() {
             binding.configCoresValue.text = "${value.toInt()}"
         })
         binding.configSliderIntensity.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
-            binding.configMaxIntensityValue.text = "${value.toInt()}%"
+            binding.configMaxIntensityValue.text = formatIntensityLabel(value.toInt())
         })
         binding.configSliderStatusInterval.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configStatusIntervalValue.text = "${value.toInt()} ms"
@@ -59,7 +60,7 @@ class ConfigActivity : AppCompatActivity() {
             binding.configGpuCoresValue.text = "${value.toInt()}"
         })
         binding.configSliderGpuUtilization.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
-            binding.configGpuUtilizationValue.text = "${value.toInt()}%"
+            binding.configGpuUtilizationValue.text = formatIntensityLabel(value.toInt())
         })
         binding.configSliderThreadPriority.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configThreadPriorityValue.text = "${value.toInt()}"
@@ -100,6 +101,9 @@ class ConfigActivity : AppCompatActivity() {
         binding.configAlarmWakeIntervalValue.isEnabled = enabled
         binding.configAlarmWakeIntervalLabel.isEnabled = enabled
     }
+
+    private fun formatIntensityLabel(percent: Int): String =
+        "${percent}% (${NumberFormatUtils.formatDurationMmSs(MiningConfig.intensityDelayMs(percent))})"
 
     private fun formatAlarmWakeIntervalLabel(seconds: Int): String {
         val s = seconds.coerceAtLeast(0)
@@ -208,7 +212,7 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderCores.value = cores.toFloat()
         binding.configCoresValue.text = "$cores"
         binding.configSliderIntensity.value = c.maxIntensityPercent.toFloat()
-        binding.configMaxIntensityValue.text = "${c.maxIntensityPercent}%"
+        binding.configMaxIntensityValue.text = formatIntensityLabel(c.maxIntensityPercent)
         val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize()
         val gpuMaxSteps = if (maxWorkGroupSize == 0) 8 else (maxWorkGroupSize / 32).coerceAtLeast(1).coerceAtMost(MiningConfig.GPU_CORES_MAX)
         binding.configSliderGpuCores.valueTo = gpuMaxSteps.toFloat()
@@ -216,7 +220,7 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderGpuCores.value = gpuCores.toFloat()
         binding.configGpuCoresValue.text = "$gpuCores"
         binding.configSliderGpuUtilization.value = c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX).toFloat()
-        binding.configGpuUtilizationValue.text = "${c.gpuUtilizationPercent}%"
+        binding.configGpuUtilizationValue.text = formatIntensityLabel(c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX))
         val statusMs = c.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
         binding.configSliderStatusInterval.value = statusMs.toFloat()
         binding.configStatusIntervalValue.text = "$statusMs ms"

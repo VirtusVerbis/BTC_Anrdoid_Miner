@@ -44,7 +44,14 @@ data class MiningConfig(
         /** Remove control characters (ASCII 0–31, 127) and truncate to maxLen. */
         fun sanitize(str: String, maxLen: Int): String =
             str.filter { c -> c.code in 32..126 }.take(maxLen)
-        const val MAX_INTENSITY_MIN = 1
+        /** Max delay (ms) per chunk when intensity is 0. 600_000 = 10 minutes. */
+        const val INTENSITY_MAX_DELAY_MS = 600_000L
+        /** Delay (ms) per chunk for given intensity percent. 0% = 10 min, 100% = 0. */
+        fun intensityDelayMs(percent: Int): Long {
+            if (percent >= 100) return 0L
+            return (100 - percent.coerceIn(0, 99)) * INTENSITY_MAX_DELAY_MS / 100
+        }
+        const val MAX_INTENSITY_MIN = 0
         const val MAX_INTENSITY_MAX = 100
         const val MAX_WORKER_THREADS_MIN = 1
         const val DEFAULT_STRATUM_PORT = 3333
@@ -58,7 +65,7 @@ data class MiningConfig(
         const val GPU_CORES_MAX = 64
         const val CPU_USAGE_TARGET_MIN = 1
         const val CPU_USAGE_TARGET_MAX = 100
-        const val GPU_UTILIZATION_MIN = 1
+        const val GPU_UTILIZATION_MIN = 0
         const val GPU_UTILIZATION_MAX = 100
         const val MINING_THREAD_PRIORITY_MIN = -20 //-8
         const val MINING_THREAD_PRIORITY_MAX = 0
