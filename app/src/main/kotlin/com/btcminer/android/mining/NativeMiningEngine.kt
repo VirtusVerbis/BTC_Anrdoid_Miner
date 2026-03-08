@@ -300,7 +300,13 @@ class NativeMiningEngine(
                     val cpuIntensityDelay = fixedIntensitySleepMs(intensity)
                     lastCpuIntensityDelayMs.set(cpuIntensityDelay)
                     val totalSleep = cpuIntensityDelay + throttleSleep
-                    if (totalSleep > 0L) Thread.sleep(totalSleep)
+                    if (totalSleep > 0L) {
+                        try {
+                            Thread.sleep(totalSleep)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
+                    }
                     if (n >= 0) {
                         foundSharesQueue.offer(FoundResult(job.jobId, n, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76))
                         break
@@ -383,7 +389,13 @@ class NativeMiningEngine(
                 val gpuIntensityDelay = fixedIntensitySleepMs(gpuUtil)
                 lastGpuIntensityDelayMs.set(gpuIntensityDelay)
                 val totalSleep = gpuIntensityDelay + throttleSleep
-                if (totalSleep > 0L) Thread.sleep(totalSleep)
+                if (totalSleep > 0L) {
+                    try {
+                        Thread.sleep(totalSleep)
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+                }
                 if (n >= 0) {
                     foundSharesQueue.offer(FoundResult(job.jobId, n, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76))
                     break
@@ -578,7 +590,7 @@ class NativeMiningEngine(
             ))
             if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
                 AppLog.d(LOG_TAG) {
-                    "Stats: CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get() + gpuNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}${statsLogExtra?.invoke() ?: ""}"
+                    "Stats: ${statsLogExtra?.invoke() ?: ""}CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get() + gpuNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}"
                 }
                 lastLogTime = now
             }

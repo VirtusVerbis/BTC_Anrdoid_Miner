@@ -51,10 +51,10 @@ class MiningForegroundService : Service() {
             isBothWifiAndDataUnavailable = { MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) },
             statsLogExtra = {
                 val intent = applicationContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                if (intent == null) ", battery=—"
+                if (intent == null) "battery=—, "
                 else {
                     val tempTenths = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
-                    if (tempTenths == 0) ", battery=—" else ", battery=${"%.1f".format(tempTenths / 10.0)}°C"
+                    if (tempTenths == 0) "battery=—, " else "battery=${"%.1f".format(tempTenths / 10.0)}°C, "
                 }
             },
             onGpuUnavailable = {
