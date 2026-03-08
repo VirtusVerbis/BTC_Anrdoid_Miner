@@ -457,6 +457,7 @@ class MiningForegroundService : Service() {
                     Toast.makeText(applicationContext, R.string.security_reminder_defaulting_to_trust, Toast.LENGTH_SHORT).show()
                 }
             }
+            throttleStateRef.set(ThrottleState(config.maxIntensityPercent, false, 0L, config.gpuUtilizationPercent))
             engine.start(config)
             if (!engine.isRunning()) {
                 val err = engine.getStatus().lastError ?: "Mining failed"
@@ -533,6 +534,7 @@ class MiningForegroundService : Service() {
                     Toast.makeText(applicationContext, R.string.security_reminder_defaulting_to_trust, Toast.LENGTH_SHORT).show()
                 }
             }
+            throttleStateRef.set(ThrottleState(config.maxIntensityPercent, false, 0L, config.gpuUtilizationPercent))
             engine.start(config)
             if (!engine.isRunning()) {
                 Handler(Looper.getMainLooper()).post { stopMining() }
