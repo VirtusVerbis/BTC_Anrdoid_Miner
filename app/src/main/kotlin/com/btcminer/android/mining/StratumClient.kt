@@ -89,6 +89,9 @@ class StratumClient(
     /** Returns true if the last mining.notify had cleanJobs=true (caller should abort current job). */
     fun consumeCleanJobsInvalidation(): Boolean = cleanJobsInvalidation.getAndSet(false)
 
+    /** True if the last mining.notify had cleanJobs=true. Does not clear the flag (use consumeCleanJobsInvalidation for that). */
+    fun hasCleanJobsInvalidation(): Boolean = cleanJobsInvalidation.get()
+
     /**
      * Connect, subscribe, authorize. Returns error message or null on success.
      */

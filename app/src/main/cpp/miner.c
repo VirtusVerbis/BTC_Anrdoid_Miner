@@ -7,6 +7,9 @@
 #define HEADER_PREFIX_SIZE 76
 #define HASH_SIZE 32
 
+/* Set by cpuRequestInterrupt; checked every 64k iterations in nativeScanNonces. */
+static volatile int g_cpu_interrupt_requested = 0;
+
 /* Compare hash and target as 32-byte big-endian; return 1 if hash <= target, 0 otherwise. */
 static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
     return memcmp(hash, target, HASH_SIZE) <= 0;
@@ -54,6 +57,13 @@ Java_com_btcminer_android_mining_NativeMiner_nativeHashBlockHeader(JNIEnv *env, 
     return result;
 }
 
+JNIEXPORT void JNICALL
+Java_com_btcminer_android_mining_NativeMiner_cpuRequestInterrupt(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    g_cpu_interrupt_requested = 1;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_btcminer_android_mining_NativeMiner_nativeScanNonces(JNIEnv *env, jclass clazz,
                                                              jbyteArray header76Java,
@@ -74,7 +84,12 @@ Java_com_btcminer_android_mining_NativeMiner_nativeScanNonces(JNIEnv *env, jclas
 
     uint32_t start = (uint32_t)nonceStart;
     uint32_t end = (uint32_t)nonceEnd;
+    g_cpu_interrupt_requested = 0;
     for (uint32_t nonce = start; nonce <= end; nonce++) {
+        if (((nonce - start) & 0xFFFF) == 0 && g_cpu_interrupt_requested) {
+            g_cpu_interrupt_requested = 0;
+            return (jint)-3;
+        }
         header80[76] = (uint8_t)(nonce);
         header80[77] = (uint8_t)(nonce >> 8);
         header80[78] = (uint8_t)(nonce >> 16);

@@ -55,6 +55,19 @@ static int g_resources_logged = 0;
 static int g_pipeline_created_logged = 0;
 static int g_first_dispatch_state = 0;
 static int g_workgroup_size_logged = 0;
+static volatile int g_interrupt_requested = 0;
+
+static const char* vk_result_str(VkResult r) {
+    switch ((int)r) {
+        case 0: return "VK_SUCCESS";
+        case -1: return "VK_ERROR_OUT_OF_MEMORY";
+        case -2: return "VK_ERROR_INITIALIZATION_FAILED";
+        case -4: return "VK_ERROR_DEVICE_LOST";
+        case -7: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case -12: return "VK_TIMEOUT";
+        default: return "VK_OTHER";
+    }
+}
 
 static int create_compute_pipeline(uint32_t gpuCores) {
     uint32_t maxSteps = g_maxWorkGroupSize / 32;
@@ -517,8 +530,10 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
-    if (!ensure_compute_resources())
+    if (!ensure_compute_resources()) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "run_gpu_scan: ensure_compute_resources failed");
         return GPU_UNAVAILABLE;
+    }
     if (g_commandBuffer == VK_NULL_HANDLE || g_fence == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
@@ -531,6 +546,7 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         g_descriptorSet == VK_NULL_HANDLE || g_pipelineLayout == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
+    g_interrupt_requested = 0;
 
     uint32_t localSize = 32 * (uint32_t)gpuCores;
     if (localSize > g_maxWorkGroupSize)
@@ -568,6 +584,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         if (mapRes == VK_ERROR_DEVICE_LOST) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (ubo)");
             cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(ubo) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
         }
         return GPU_UNAVAILABLE;
     }
@@ -580,6 +598,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         if (mapRes == VK_ERROR_DEVICE_LOST) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result)");
             cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(result) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
         }
         return GPU_UNAVAILABLE;
     }
@@ -591,17 +611,25 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         if (res == VK_ERROR_DEVICE_LOST) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetFences");
             cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkResetFences failed: %s (%d)", vk_result_str(res), (int)res);
         }
         return GPU_UNAVAILABLE;
     }
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    if (vkBeginCommandBuffer(g_commandBuffer, &beginInfo) != VK_SUCCESS)
+    res = vkBeginCommandBuffer(g_commandBuffer, &beginInfo);
+    if (res != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkBeginCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
         return GPU_UNAVAILABLE;
+    }
     vkCmdBindPipeline(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelines[gpuCores]);
     vkCmdBindDescriptorSets(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelineLayout, 0, 1, &g_descriptorSet, 0, NULL);
     vkCmdDispatch(g_commandBuffer, groupCountX, 1, 1);
-    if (vkEndCommandBuffer(g_commandBuffer) != VK_SUCCESS)
+    res = vkEndCommandBuffer(g_commandBuffer);
+    if (res != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkEndCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
         return GPU_UNAVAILABLE;
+    }
     VkSubmitInfo submitInfo = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount = 1,
@@ -620,11 +648,23 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         if (res == VK_ERROR_DEVICE_LOST) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkQueueSubmit");
             cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkQueueSubmit failed: %s (%d)", vk_result_str(res), (int)res);
         }
         return GPU_UNAVAILABLE;
     }
-    res = vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 5000000000ull);
-    if (res != VK_SUCCESS) {
+    for (;;) {
+        res = vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 1000000000ull);
+        if (res == VK_SUCCESS)
+            break;
+        if (res == VK_TIMEOUT) {
+            if (g_interrupt_requested) {
+                g_interrupt_requested = 0;
+                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU scan interrupted by watchdog");
+                return GPU_UNAVAILABLE;
+            }
+            continue;
+        }
         if (g_first_dispatch_state < 2) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
             g_first_dispatch_state = 2;
@@ -632,6 +672,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         if (res == VK_ERROR_DEVICE_LOST) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkWaitForFences");
             cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkWaitForFences failed: %s (%d)", vk_result_str(res), (int)res);
         }
         return GPU_UNAVAILABLE;
     }
@@ -644,6 +686,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         if (mapRes == VK_ERROR_DEVICE_LOST) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result read)");
             cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(result read) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
         }
         return GPU_UNAVAILABLE;
     }
@@ -654,6 +698,15 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     return (int)(int32_t)noWin;
 }
 #endif
+
+JNIEXPORT void JNICALL
+Java_com_btcminer_android_mining_NativeMiner_gpuRequestInterrupt(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+#ifdef __ANDROID__
+    g_interrupt_requested = 1;
+#endif
+}
 
 JNIEXPORT jboolean JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuIsAvailable(JNIEnv *env, jclass clazz) {

@@ -32,12 +32,20 @@ class NativeMiningEngine(
         private const val LOG_TAG = "Mining"
         /** Returned by gpuScanNonces when GPU path is unavailable (no CPU fallback). */
         private const val GPU_UNAVAILABLE = -2
+        /** Returned by nativeScanNonces when CPU worker was interrupted by stuck watchdog. */
+        private const val CPU_INTERRUPTED = -3
         private const val CHUNK_SIZE = 2L * 1024 * 1024
         private const val MAX_NONCE = 0xFFFFFFFFL
         /** Minimum elapsed time (seconds) used as divisor for hashrate. Avoids a huge spike when "Start Mining" is clicked: dividing by a tiny elapsed time would show an inflated rate until the denominator grows. */
         private const val MIN_ELAPSED_SEC_FOR_HASHRATE = 1.0
         /** Rolling window (seconds) for hashrate display; configurable constant. */
         private const val ROLLING_WINDOW_SEC = 60
+
+        private fun computeIntensitySleepMs(workMs: Long, intensityPercent: Int): Long {
+            if (intensityPercent >= 100) return 0L
+            val effective = intensityPercent.coerceIn(1, 99)
+            return (workMs * (100 - effective)) / effective
+        }
     }
 
     private data class FoundResult(val jobId: String, val nonce: Int, val extranonce2Hex: String, val ntimeHex: String)
@@ -59,6 +67,9 @@ class NativeMiningEngine(
     private val gpuRetryThreadRunning = AtomicBoolean(false)
     @Volatile
     private var gpuRetryThread: Thread? = null
+
+    private val lastCpuIntensityDelayMs = AtomicLong(0L)
+    private val lastGpuIntensityDelayMs = AtomicLong(0L)
 
     /** Samples (timestampMs, cpuNonces, gpuNonces) for rolling-window hashrate. Cleared when mining loop starts. */
     private val hashrateSamples = Collections.synchronizedList(mutableListOf<Triple<Long, Long, Long>>())
@@ -86,6 +97,8 @@ class NativeMiningEngine(
         if (running.getAndSet(true)) return
         AppLog.d(LOG_TAG) { "start()" }
         totalNoncesScanned.set(0)
+        lastCpuIntensityDelayMs.set(0L)
+        lastGpuIntensityDelayMs.set(0L)
         // Persistent counters (acceptedShares, rejectedShares, identifiedShares, bestDifficultyRef, blockTemplatesCount) are not reset here; nonces are per-round only
 
         val urlTrimmed = config.stratumUrl.trim()
@@ -374,6 +387,8 @@ class NativeMiningEngine(
             val activeJobId = AtomicReference(job.jobId)
             val foundRef = AtomicReference<FoundResult?>(null)
             val nextChunkStart = AtomicLong(0)
+            val roundStartTimeMs = System.currentTimeMillis()
+            val roundStartGpuNonces = gpuNoncesScanned.get()
             if (threadCount == 1) {
                 var lastStatusUpdateTime = statsStartTime
                 val cpuWorker = Thread {
@@ -381,24 +396,27 @@ class NativeMiningEngine(
                     val workerJobId = job.jobId
                     while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
                         if (throttleStateRef?.get()?.stopDueToOverheat == true) break
-                        if (client.isConnected() && (client.getCurrentJob()?.jobId != job.jobId || client.consumeCleanJobsInvalidation())) break
+                        if (client.isConnected() && client.hasCleanJobsInvalidation()) break
                         val throttle = throttleStateRef?.get()
                         val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
                         if (start > MAX_NONCE) break
                         val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                         val nonceEnd = nonceEndL.toInt()
+                        val t0 = System.currentTimeMillis()
                         val n = NativeMiner.nativeScanNonces(header76, start.toInt(), nonceEnd, target)
+                        val workMs = System.currentTimeMillis() - t0
+                        if (n == CPU_INTERRUPTED) {
+                            AppLog.d(LOG_TAG) { "CPU worker interrupted (stuck watchdog)" }
+                            break
+                        }
                         val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
                         totalNoncesScanned.addAndGet(scanned)
-                        val sleepMs = throttle?.throttleSleepMs ?: 0L
-                        if (sleepMs > 0L) {
-                            Thread.sleep(sleepMs)
-                        } else {
-                            val intensity = throttle?.effectiveIntensityPercent ?: config.maxIntensityPercent
-                            if (intensity < 100) {
-                                Thread.sleep((100 - intensity) * 20L / 100)
-                            }
-                        }
+                        val intensity = throttle?.effectiveIntensityPercent ?: config.maxIntensityPercent
+                        val throttleSleep = throttle?.throttleSleepMs ?: 0L
+                        val cpuIntensityDelay = computeIntensitySleepMs(workMs, intensity)
+                        lastCpuIntensityDelayMs.set(cpuIntensityDelay)
+                        val totalSleep = cpuIntensityDelay + throttleSleep
+                        if (totalSleep > 0L) Thread.sleep(totalSleep)
                         if (n >= 0) {
                             foundRef.compareAndSet(null, FoundResult(job.jobId, n, extranonce2Hex, ntimeHex))
                             break
@@ -412,19 +430,11 @@ class NativeMiningEngine(
                         while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
                             if (throttleStateRef?.get()?.stopDueToOverheat == true) break
                             val throttle = throttleStateRef?.get()
-                            val sleepMs = throttle?.throttleSleepMs ?: 0L
-                            if (sleepMs > 0L) {
-                                Thread.sleep(sleepMs)
-                            } else {
-                                val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent).coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
-                                if (gpuUtil < 100) {
-                                    Thread.sleep((100 - gpuUtil) * 20L / 100)
-                                }
-                            }
                             val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
                             if (start > MAX_NONCE) break
                             val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                             val nonceEnd = nonceEndL.toInt()
+                            val t0 = System.currentTimeMillis()
                             val n = NativeMiner.gpuScanNonces(
                                 header76,
                                 start.toInt(),
@@ -432,6 +442,7 @@ class NativeMiningEngine(
                                 target,
                                 config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX)
                             )
+                            val workMs = System.currentTimeMillis() - t0
                             if (n == GPU_UNAVAILABLE) {
                                 if (!gpuUnavailable.getAndSet(true)) {
                                     AppLog.d(LOG_TAG) { "GPU unavailable (gpuScanNonces returned GPU_UNAVAILABLE)" }
@@ -442,6 +453,12 @@ class NativeMiningEngine(
                             }
                             val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
                             gpuNoncesScanned.addAndGet(scanned)
+                            val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent).coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
+                            val throttleSleep = throttle?.throttleSleepMs ?: 0L
+                            val gpuIntensityDelay = computeIntensitySleepMs(workMs, gpuUtil)
+                            lastGpuIntensityDelayMs.set(gpuIntensityDelay)
+                            val totalSleep = gpuIntensityDelay + throttleSleep
+                            if (totalSleep > 0L) Thread.sleep(totalSleep)
                             if (n >= 0) {
                                 foundRef.compareAndSet(null, FoundResult(job.jobId, n, extranonce2Hex, ntimeHex))
                                 break
@@ -457,12 +474,31 @@ class NativeMiningEngine(
                         activeJobId.set(null)
                         break
                     }
-                    if (client.isConnected() && (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation())) {
-                        AppLog.d(LOG_TAG) { "Job changed, switching to new template" }
+                    if (client.isConnected() && client.consumeCleanJobsInvalidation()) {
+                        AppLog.d(LOG_TAG) { "Job changed (clean_jobs), switching to new template" }
                         activeJobId.set(null)
                     }
                     singleWorkers.forEach { it.join(statusUpdateIntervalMs.toLong()) }
                     val now = System.currentTimeMillis()
+                    val elapsed = now - roundStartTimeMs
+                    if (gpuEnabled) {
+                        val gpuWorkerRef = gpuWorkerSt
+                        if (gpuWorkerRef != null && gpuWorkerRef.isAlive) {
+                            val gpuProgress = gpuNoncesScanned.get() - roundStartGpuNonces
+                            if (elapsed >= MiningConstants.WORKER_STUCK_TIMEOUT_MS && gpuProgress == 0L) {
+                                AppLog.d(LOG_TAG) { "GPU worker stuck (no progress for ${elapsed / 1000}s), requesting interrupt" }
+                                NativeMiner.gpuRequestInterrupt()
+                                activeJobId.set(null)
+                            }
+                        }
+                    }
+                    if (elapsed >= MiningConstants.ROUND_STUCK_TIMEOUT_MS && singleWorkers.any { it.isAlive }) {
+                        AppLog.d(LOG_TAG) { "Round stuck (${elapsed / 1000}s), interrupting all workers" }
+                        NativeMiner.gpuRequestInterrupt()
+                        NativeMiner.cpuRequestInterrupt()
+                        singleWorkers.forEach { it.interrupt() }
+                        activeJobId.set(null)
+                    }
                     if (isOfflineRound) {
                         val bothUnavailable = isBothWifiAndDataUnavailable?.invoke() == true
                         val delayMs = MiningConstants.STRATUM_RECONNECT_RETRY_DELAY_SEC * 1000L
@@ -505,7 +541,7 @@ class NativeMiningEngine(
                         val hashrateHs = totalNoncesScanned.get() / effectiveElapsed
                         val gpuH = gpuNoncesScanned.get() / effectiveElapsed
                         AppLog.d(LOG_TAG) {
-                            "Stats: CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuH)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}${statsLogExtra?.invoke() ?: ""}"
+                            "Stats: CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuH)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}${statsLogExtra?.invoke() ?: ""}"
                         }
                         lastLogTime = now
                     }
@@ -524,18 +560,21 @@ class NativeMiningEngine(
                             if (start > MAX_NONCE) break
                             val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                             val nonceEnd = nonceEndL.toInt()
+                            val t0 = System.currentTimeMillis()
                             val n = NativeMiner.nativeScanNonces(header76, start.toInt(), nonceEnd, target)
+                            val workMs = System.currentTimeMillis() - t0
+                            if (n == CPU_INTERRUPTED) {
+                                AppLog.d(LOG_TAG) { "CPU worker interrupted (stuck watchdog)" }
+                                break
+                            }
                             val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
                             totalNoncesScanned.addAndGet(scanned)
-                            val sleepMs = throttle?.throttleSleepMs ?: 0L
-                            if (sleepMs > 0L) {
-                                Thread.sleep(sleepMs)
-                            } else {
-                                val intensity = throttle?.effectiveIntensityPercent ?: config.maxIntensityPercent
-                                if (intensity < 100) {
-                                    Thread.sleep((100 - intensity) * 20L / 100)
-                                }
-                            }
+                            val intensity = throttle?.effectiveIntensityPercent ?: config.maxIntensityPercent
+                            val throttleSleep = throttle?.throttleSleepMs ?: 0L
+                            val cpuIntensityDelay = computeIntensitySleepMs(workMs, intensity)
+                            lastCpuIntensityDelayMs.set(cpuIntensityDelay)
+                            val totalSleep = cpuIntensityDelay + throttleSleep
+                            if (totalSleep > 0L) Thread.sleep(totalSleep)
                             if (n >= 0) {
                                 foundRef.compareAndSet(null, FoundResult(job.jobId, n, extranonce2Hex, ntimeHex))
                                 break
@@ -550,19 +589,11 @@ class NativeMiningEngine(
                         while (running.get() && foundRef.get() == null && activeJobId.get() == workerJobId) {
                             if (throttleStateRef?.get()?.stopDueToOverheat == true) break
                             val throttle = throttleStateRef?.get()
-                            val sleepMs = throttle?.throttleSleepMs ?: 0L
-                            if (sleepMs > 0L) {
-                                Thread.sleep(sleepMs)
-                            } else {
-                                val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent).coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
-                                if (gpuUtil < 100) {
-                                    Thread.sleep((100 - gpuUtil) * 20L / 100)
-                                }
-                            }
                             val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
                             if (start > MAX_NONCE) break
                             val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                             val nonceEnd = nonceEndL.toInt()
+                            val t0 = System.currentTimeMillis()
                             val n = NativeMiner.gpuScanNonces(
                                 header76,
                                 start.toInt(),
@@ -570,6 +601,7 @@ class NativeMiningEngine(
                                 target,
                                 config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX)
                             )
+                            val workMs = System.currentTimeMillis() - t0
                             if (n == GPU_UNAVAILABLE) {
                                 if (!gpuUnavailable.getAndSet(true)) {
                                     AppLog.d(LOG_TAG) { "GPU unavailable (gpuScanNonces returned GPU_UNAVAILABLE)" }
@@ -580,6 +612,12 @@ class NativeMiningEngine(
                             }
                             val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
                             gpuNoncesScanned.addAndGet(scanned)
+                            val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent).coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
+                            val throttleSleep = throttle?.throttleSleepMs ?: 0L
+                            val gpuIntensityDelay = computeIntensitySleepMs(workMs, gpuUtil)
+                            lastGpuIntensityDelayMs.set(gpuIntensityDelay)
+                            val totalSleep = gpuIntensityDelay + throttleSleep
+                            if (totalSleep > 0L) Thread.sleep(totalSleep)
                             if (n >= 0) {
                                 foundRef.compareAndSet(null, FoundResult(job.jobId, n, extranonce2Hex, ntimeHex))
                                 break
@@ -595,12 +633,31 @@ class NativeMiningEngine(
                         activeJobId.set(null)
                         break
                     }
-                    if (client.isConnected() && (client.getCurrentJob()?.jobId != activeJobId.get() || client.consumeCleanJobsInvalidation())) {
-                        AppLog.d(LOG_TAG) { "Job changed, switching to new template" }
+                    if (client.isConnected() && client.consumeCleanJobsInvalidation()) {
+                        AppLog.d(LOG_TAG) { "Job changed (clean_jobs), switching to new template" }
                         activeJobId.set(null)
                     }
                     allWorkers.forEach { it.join(statusUpdateIntervalMs.toLong()) }
                     val now = System.currentTimeMillis()
+                    val elapsed = now - roundStartTimeMs
+                    if (gpuEnabled) {
+                        val gpuWorkerRef = gpuWorker
+                        if (gpuWorkerRef != null && gpuWorkerRef.isAlive) {
+                            val gpuProgress = gpuNoncesScanned.get() - roundStartGpuNonces
+                            if (elapsed >= MiningConstants.WORKER_STUCK_TIMEOUT_MS && gpuProgress == 0L) {
+                                AppLog.d(LOG_TAG) { "GPU worker stuck (no progress for ${elapsed / 1000}s), requesting interrupt" }
+                                NativeMiner.gpuRequestInterrupt()
+                                activeJobId.set(null)
+                            }
+                        }
+                    }
+                    if (elapsed >= MiningConstants.ROUND_STUCK_TIMEOUT_MS && allWorkers.any { it.isAlive }) {
+                        AppLog.d(LOG_TAG) { "Round stuck (${elapsed / 1000}s), interrupting all workers" }
+                        NativeMiner.gpuRequestInterrupt()
+                        NativeMiner.cpuRequestInterrupt()
+                        allWorkers.forEach { it.interrupt() }
+                        activeJobId.set(null)
+                    }
                     if (isOfflineRound) {
                         val bothUnavailable = isBothWifiAndDataUnavailable?.invoke() == true
                         val delayMs = MiningConstants.STRATUM_RECONNECT_RETRY_DELAY_SEC * 1000L
@@ -636,7 +693,7 @@ class NativeMiningEngine(
                     ))
                     if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
                         AppLog.d(LOG_TAG) {
-                            "Stats: CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}${statsLogExtra?.invoke() ?: ""}"
+                            "Stats: CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}${statsLogExtra?.invoke() ?: ""}"
                         }
                         lastLogTime = now
                     }

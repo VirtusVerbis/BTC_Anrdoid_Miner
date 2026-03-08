@@ -18,4 +18,12 @@ object NumberFormatUtils {
 
     /** 1234 -> "1 234" (for blockTemplate, share counts, etc.) */
     fun formatIntWithSpaces(value: Int): String = longFormat.format(value.toLong())
+
+    /** 113838 -> "1:54" (minutes:seconds from milliseconds) */
+    fun formatDurationMmSs(durationMs: Long): String {
+        val totalSec = (durationMs / 1000).coerceAtLeast(0)
+        val minutes = totalSec / 60
+        val seconds = totalSec % 60
+        return String.format(Locale.US, "%d:%02d", minutes, seconds)
+    }
 }

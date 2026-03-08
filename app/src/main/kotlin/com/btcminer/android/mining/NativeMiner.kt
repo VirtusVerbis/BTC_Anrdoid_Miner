@@ -35,6 +35,18 @@ object NativeMiner {
     external fun nativeScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray): Int
 
     /**
+     * Requests the GPU worker to interrupt. When set, [gpuScanNonces] will return -2 on its next
+     * vkWaitForFences timeout (within ~1s). Used by the stuck-worker watchdog.
+     */
+    external fun gpuRequestInterrupt(): Unit
+
+    /**
+     * Requests CPU workers to interrupt. When set, [nativeScanNonces] will return -3 on its next
+     * 64k-iteration check. Used by the stuck-worker watchdog.
+     */
+    external fun cpuRequestInterrupt(): Unit
+
+    /**
      * Whether Vulkan is available for GPU compute. When true, [gpuScanNonces] can be used.
      */
     external fun gpuIsAvailable(): Boolean
