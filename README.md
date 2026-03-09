@@ -40,6 +40,14 @@ The app is aligned with [OWASP Mobile Application Security Verification Standard
 
 If hashrate drops when the screen is off, use **Config → Battery optimization** to request "Don't optimize" (dialog) or open battery settings and set the app to **Unrestricted** / **Don’t optimize** / **Allow background**. You can also enable **Partial Wake Lock** and optionally the **alarm wake interval** to improve screen-off behavior. As a fallback, in **Settings → Apps → BTC Miner → Battery**, set to **Unrestricted** / **Don't optimize**.
 
+For best results on all devices (especially OPlus/OnePlus/Oppo/Realme), configure:
+
+- **Allow background activity** – ON (Settings → Apps → BTC Miner → Battery)
+- **Battery optimization** – Don't optimize
+- **App Auto-Launch** – ON (if available)
+- **Lock the app in Recent apps** – long-press the app card in Recent apps, tap Lock; reduces killing and settings reverting
+- **Deep / Adaptive optimization** – OFF for the app (if possible; often under Battery → Battery optimization → Advanced)
+
 ## Build and run
 
 The first build runs CMake/NDK and requires **Vulkan SDK** (or `glslc`) to be installed so the GPU compute shader compiles; see [Requirements](#requirements) below.
