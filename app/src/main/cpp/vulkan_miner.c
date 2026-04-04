@@ -5,6 +5,7 @@
  */
 #include "sha256.h"
 #include <jni.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,14 @@
 #define BLOCK_HEADER_SIZE 80
 #define HASH_SIZE 32
 #define UBO_SIZE 128
+/* Host packing must match miner.comp uniform block; compile-time guard if layout grows. */
+#define UBO_HOST_PAYLOAD_BYTES (HEADER_PREFIX_SIZE + 4u + 4u + (uint32_t)HASH_SIZE)
+_Static_assert(UBO_HOST_PAYLOAD_BYTES <= UBO_SIZE, "UBO host layout exceeds UBO_SIZE; update vulkan_miner.c and miner.comp");
+_Static_assert(HEADER_PREFIX_SIZE % 4 == 0, "UBO header must be a multiple of 4 bytes");
+#define UBO_HEADER_WORDS (HEADER_PREFIX_SIZE / 4)
+#define UBO_OFFSET_NONCE_START (HEADER_PREFIX_SIZE)
+#define UBO_OFFSET_NONCE_END (HEADER_PREFIX_SIZE + 4u)
+#define UBO_OFFSET_TARGET (HEADER_PREFIX_SIZE + 8u)
 #define LOG_TAG "VulkanMiner"
 #define MAX_GPU_WORKGROUP_STEPS 64
 /* Returned to Java when GPU path is unavailable (no SPIR-V or Vulkan failure). */
@@ -55,7 +64,7 @@ static int g_resources_logged = 0;
 static int g_pipeline_created_logged = 0;
 static int g_first_dispatch_state = 0;
 static int g_workgroup_size_logged = 0;
-static volatile int g_interrupt_requested = 0;
+static atomic_int g_interrupt_requested = 0;
 
 static const char* vk_result_str(VkResult r) {
     switch ((int)r) {
@@ -546,7 +555,7 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         g_descriptorSet == VK_NULL_HANDLE || g_pipelineLayout == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
-    g_interrupt_requested = 0;
+    atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
 
     uint32_t localSize = 32 * (uint32_t)gpuCores;
     if (localSize > g_maxWorkGroupSize)
@@ -566,17 +575,17 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (groupCountX == 0)
         return GPU_UNAVAILABLE;
 
-    /* Fill UBO: 76 bytes header (as 19 big-endian uints for shader), 4 nonceStart, 4 nonceEnd, 32 target */
+    /* Fill UBO: HEADER_PREFIX_SIZE header (as big-endian uints), nonceStart, nonceEnd, HASH_SIZE target */
     uint8_t ubo[UBO_SIZE];
     memset(ubo, 0, sizeof(ubo));
-    for (int i = 0; i < 19; i++) {
+    for (int i = 0; i < UBO_HEADER_WORDS; i++) {
         uint32_t w = (uint32_t)header76[i*4] << 24 | (uint32_t)header76[i*4+1] << 16 |
                      (uint32_t)header76[i*4+2] << 8 | (uint32_t)header76[i*4+3];
         write_le32(ubo + i * 4, w);
     }
-    write_le32(ubo + 76, nonceStart);
-    write_le32(ubo + 80, nonceEnd);
-    memcpy(ubo + 84, target, 32);
+    write_le32(ubo + UBO_OFFSET_NONCE_START, nonceStart);
+    write_le32(ubo + UBO_OFFSET_NONCE_END, nonceEnd);
+    memcpy(ubo + UBO_OFFSET_TARGET, target, HASH_SIZE);
 
     void *ptr;
     VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr);
@@ -658,8 +667,7 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         if (res == VK_SUCCESS)
             break;
         if (res == VK_TIMEOUT) {
-            if (g_interrupt_requested) {
-                g_interrupt_requested = 0;
+            if (atomic_exchange_explicit(&g_interrupt_requested, 0, memory_order_acq_rel)) {
                 __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU scan interrupted by watchdog");
                 return GPU_UNAVAILABLE;
             }
@@ -704,7 +712,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuRequestInterrupt(JNIEnv *env, jc
     (void)env;
     (void)clazz;
 #ifdef __ANDROID__
-    g_interrupt_requested = 1;
+    atomic_store_explicit(&g_interrupt_requested, 1, memory_order_release);
 #endif
 }
 

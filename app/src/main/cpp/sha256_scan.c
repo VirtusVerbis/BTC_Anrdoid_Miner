@@ -6,6 +6,7 @@
 #include "sha256_arm_sha2.h"
 #include "sha256_neon_4way.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -19,7 +20,7 @@
 
 #define CPU_SHA_FLAVOR_ERROR (-4)
 
-extern volatile int g_cpu_interrupt_requested;
+extern atomic_int g_cpu_interrupt_requested;
 
 static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
     return memcmp(hash, target, HASH_SIZE) <= 0;
@@ -90,8 +91,8 @@ static int scan_scalar_full(const uint8_t *header76, uint32_t start, uint32_t en
     uint8_t hash[HASH_SIZE];
     memcpy(h80, header76, HEADER_PREFIX_SIZE);
     for (uint32_t nonce = start; nonce <= end; nonce++) {
-        if (((nonce - start) & 0xFFFFu) == 0u && g_cpu_interrupt_requested) {
-            g_cpu_interrupt_requested = 0;
+        if (((nonce - start) & 0xFFFFu) == 0u &&
+            atomic_exchange_explicit(&g_cpu_interrupt_requested, 0, memory_order_acq_rel)) {
             return -3;
         }
         h80[76] = (uint8_t)nonce;
@@ -110,8 +111,8 @@ static int scan_scalar_mid(const uint8_t *header76, uint32_t start, uint32_t end
     uint8_t d32[32];
     uint8_t hash[HASH_SIZE];
     for (uint32_t nonce = start; nonce <= end; nonce++) {
-        if (((nonce - start) & 0xFFFFu) == 0u && g_cpu_interrupt_requested) {
-            g_cpu_interrupt_requested = 0;
+        if (((nonce - start) & 0xFFFFu) == 0u &&
+            atomic_exchange_explicit(&g_cpu_interrupt_requested, 0, memory_order_acq_rel)) {
             return -3;
         }
         first_hash_mid(mid, header76, nonce, d32, scalar_compress_fn);
@@ -128,8 +129,8 @@ static int scan_arm_full(const uint8_t *header76, uint32_t start, uint32_t end, 
     uint8_t hash[HASH_SIZE];
     uint8_t dig32[32];
     for (uint32_t nonce = start; nonce <= end; nonce++) {
-        if (((nonce - start) & 0xFFFFu) == 0u && g_cpu_interrupt_requested) {
-            g_cpu_interrupt_requested = 0;
+        if (((nonce - start) & 0xFFFFu) == 0u &&
+            atomic_exchange_explicit(&g_cpu_interrupt_requested, 0, memory_order_acq_rel)) {
             return -3;
         }
         header80_from_76_nonce(header76, nonce, h80);
@@ -157,8 +158,8 @@ static int scan_arm_mid(const uint8_t *header76, uint32_t start, uint32_t end, c
     uint8_t d32[32];
     uint8_t hash[HASH_SIZE];
     for (uint32_t nonce = start; nonce <= end; nonce++) {
-        if (((nonce - start) & 0xFFFFu) == 0u && g_cpu_interrupt_requested) {
-            g_cpu_interrupt_requested = 0;
+        if (((nonce - start) & 0xFFFFu) == 0u &&
+            atomic_exchange_explicit(&g_cpu_interrupt_requested, 0, memory_order_acq_rel)) {
             return -3;
         }
         first_hash_mid(mid, header76, nonce, d32, arm_compress_fn);
@@ -172,8 +173,8 @@ static int scan_neon4_full(const uint8_t *header76, uint32_t start, uint32_t end
     uint32_t n = start;
     uint8_t dig[4][32];
     while (n <= end) {
-        if (((n - start) & 0xFFFFu) == 0u && g_cpu_interrupt_requested) {
-            g_cpu_interrupt_requested = 0;
+        if (((n - start) & 0xFFFFu) == 0u &&
+            atomic_exchange_explicit(&g_cpu_interrupt_requested, 0, memory_order_acq_rel)) {
             return -3;
         }
         if (n + 3 <= end) {
@@ -202,8 +203,8 @@ static int scan_neon4_mid(const uint8_t *header76, uint32_t start, uint32_t end,
     uint8_t d32[32];
     uint8_t hash[HASH_SIZE];
     while (n <= end) {
-        if (((n - start) & 0xFFFFu) == 0u && g_cpu_interrupt_requested) {
-            g_cpu_interrupt_requested = 0;
+        if (((n - start) & 0xFFFFu) == 0u &&
+            atomic_exchange_explicit(&g_cpu_interrupt_requested, 0, memory_order_acq_rel)) {
             return -3;
         }
         if (n + 3 <= end) {

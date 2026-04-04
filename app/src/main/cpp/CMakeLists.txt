@@ -54,6 +54,7 @@ endif()
 add_library(miner SHARED ${MINER_SRCS})
 target_include_directories(miner PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 add_dependencies(miner miner_shader)
+target_compile_features(miner PRIVATE c_std_11)
 
 # Optional native self-test logs: pass -DSHA256_SELFTEST_DIAG=1 in Gradle cmake arguments, e.g.
 # android { defaultConfig { externalNativeBuild { cmake { arguments += "-DSHA256_SELFTEST_DIAG=1" } } } }

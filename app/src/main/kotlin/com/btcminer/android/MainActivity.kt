@@ -137,8 +137,9 @@ class MainActivity : AppCompatActivity() {
                 handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
                 return
             }
-            if (!BitcoinAddressValidator.isValidFormat(address)) {
+            if (!BitcoinAddressValidator.isValidAddress(address)) {
                 binding.walletBalanceValue.text = "—"
+                binding.walletBalanceNote.setText(R.string.wallet_balance_invalid_address)
                 binding.walletBalanceNote.visibility = View.VISIBLE
                 handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
                 return
@@ -177,7 +178,12 @@ class MainActivity : AppCompatActivity() {
                         if (showCertInvalid) Toast.makeText(this@MainActivity, R.string.mempool_cert_invalid, Toast.LENGTH_SHORT).show()
                     }
                     binding.walletBalanceValue.text = toShow
-                    binding.walletBalanceNote.visibility = if (toShow == "INVALID") View.VISIBLE else View.GONE
+                    if (toShow == "INVALID") {
+                        binding.walletBalanceNote.setText(R.string.wallet_balance_tor_note)
+                        binding.walletBalanceNote.visibility = View.VISIBLE
+                    } else {
+                        binding.walletBalanceNote.visibility = View.GONE
+                    }
                     handler.postDelayed(self, MEMPOOL_BALANCE_FETCH_INTERVAL_MS)
                 }
             }.start()

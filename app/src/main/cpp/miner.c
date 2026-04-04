@@ -1,6 +1,7 @@
 #include "sha256.h"
 #include "sha256_scan.h"
 #include <jni.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -14,7 +15,7 @@
 #define HASH_SIZE 32
 
 /* Set by cpuRequestInterrupt; checked every 64k iterations in nonce scan. */
-volatile int g_cpu_interrupt_requested = 0;
+atomic_int g_cpu_interrupt_requested = 0;
 
 /* NIST test vector: SHA-256("abc") = 0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad */
 static const uint8_t TEST_ABC_HASH[HASH_SIZE] = {
@@ -62,7 +63,7 @@ JNIEXPORT void JNICALL
 Java_com_btcminer_android_mining_NativeMiner_cpuRequestInterrupt(JNIEnv *env, jclass clazz) {
     (void)env;
     (void)clazz;
-    g_cpu_interrupt_requested = 1;
+    atomic_store_explicit(&g_cpu_interrupt_requested, 1, memory_order_release);
 }
 
 JNIEXPORT jboolean JNICALL
@@ -109,6 +110,6 @@ Java_com_btcminer_android_mining_NativeMiner_nativeScanNonces(JNIEnv *env, jclas
 
     uint32_t start = (uint32_t)nonceStart;
     uint32_t end = (uint32_t)nonceEnd;
-    g_cpu_interrupt_requested = 0;
+    atomic_store_explicit(&g_cpu_interrupt_requested, 0, memory_order_relaxed);
     return (jint)scan_nonces_dispatch((int)flavor, header76, start, end, target);
 }

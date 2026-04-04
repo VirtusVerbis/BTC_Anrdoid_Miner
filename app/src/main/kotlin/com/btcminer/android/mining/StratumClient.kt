@@ -16,6 +16,7 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
+import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -59,6 +60,22 @@ class StratumClient(
         private const val LOG_TAG = "Stratum"
         /** Connect timeout (ms) to avoid indefinite block when network is unavailable during reconnect. */
         private const val CONNECT_TIMEOUT_MS = 15_000
+
+        /**
+         * [SSLSocketFactory.createSocket] for an existing [Socket] is **protected** on the JVM; Kotlin cannot
+         * call it directly. Reflection performs timeout-bound TCP connect then TLS handshake.
+         */
+        private val sslSocketOverPlainMethod: Method = SSLSocketFactory::class.java.getDeclaredMethod(
+            "createSocket",
+            Socket::class.java,
+            String::class.java,
+            Int::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+        ).apply { isAccessible = true }
+
+        @Suppress("UNCHECKED_CAST")
+        private fun createTlsSocketOverPlain(factory: SSLSocketFactory, plain: Socket, host: String, port: Int): Socket =
+            sslSocketOverPlainMethod.invoke(factory, plain, host, port, true) as Socket
 
         private fun stratumPinningTrustManager(expectedPin: String): X509TrustManager =
             object : X509TrustManager {
@@ -141,15 +158,25 @@ class StratumClient(
                 if (useTls) "Connecting (TLS) $host:$connectPort" else "Connecting (plain) $host:$connectPort"
             }
             val socket = if (useTls) {
-                val factory = if (stratumPin != null) {
+                // SSLContext.getSocketFactory() is typed as SocketFactory; both branches are SSLSocketFactory at runtime.
+                val factory: SSLSocketFactory = if (stratumPin != null) {
                     val ctx = SSLContext.getInstance("TLS")
                     ctx.init(null, arrayOf<TrustManager>(stratumPinningTrustManager(stratumPin)), null)
-                    ctx.socketFactory
+                    ctx.socketFactory as SSLSocketFactory
                 } else {
-                    SSLSocketFactory.getDefault()
+                    SSLSocketFactory.getDefault() as SSLSocketFactory
                 }
-                // Android SSLSocketFactory has no createSocket(Socket, String, int, boolean), so no connect timeout on TLS path.
-                factory.createSocket(host, connectPort) as Socket
+                // Bound TCP connect like plain path; then TLS handshake on the connected socket.
+                val plain = Socket()
+                try {
+                    plain.connect(InetSocketAddress(host, connectPort), CONNECT_TIMEOUT_MS)
+                    createTlsSocketOverPlain(factory, plain, host, connectPort)
+                } catch (e: Exception) {
+                    try {
+                        plain.close()
+                    } catch (_: Exception) { }
+                    throw e
+                }
             } else {
                 Socket().apply { connect(InetSocketAddress(host, connectPort), CONNECT_TIMEOUT_MS) }
             }

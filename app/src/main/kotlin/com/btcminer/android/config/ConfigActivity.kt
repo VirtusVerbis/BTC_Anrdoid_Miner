@@ -20,6 +20,7 @@ import com.btcminer.android.R
 import com.btcminer.android.databinding.ActivityConfigBinding
 import com.btcminer.android.mining.MiningForegroundService
 import com.btcminer.android.mining.NativeMiner
+import com.btcminer.android.util.BitcoinAddressValidator
 import com.btcminer.android.util.NumberFormatUtils
 import com.btcminer.android.network.StratumPinCapture
 import androidx.core.content.ContextCompat
@@ -322,6 +323,16 @@ class ConfigActivity : AppCompatActivity() {
             ),
             cpuSha256Flavor = cpuShaFlavor,
         )
+
+        if (config.bitcoinAddress.isNotBlank() && !BitcoinAddressValidator.isValidAddress(config.bitcoinAddress)) {
+            Toast.makeText(this, R.string.config_invalid_bitcoin_address, Toast.LENGTH_LONG).show()
+            return
+        }
+        val stratumPayout = BitcoinAddressValidator.stratumPayoutAddressCandidate(config.stratumUser)
+        if (stratumPayout != null && !BitcoinAddressValidator.isValidAddress(stratumPayout)) {
+            Toast.makeText(this, R.string.config_invalid_stratum_payout_address, Toast.LENGTH_LONG).show()
+            return
+        }
 
         if (pinThisPoolChecked && config.stratumUrl.isNotBlank() && useTls) {
             val host = StratumPinCapture.normalizeHost(config.stratumUrl)

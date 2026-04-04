@@ -233,6 +233,18 @@ class MiningForegroundService : Service() {
                     releaseWakeLock()
                     setOverheatBannerFlag(true)
                     showOverheatNotification()
+                    // Let mining workers see overheat and unblock native GPU fence / CPU scan paths before engine.stop().
+                    val ts = throttleStateRef.get()
+                    throttleStateRef.set(
+                        ThrottleState(
+                            ts.effectiveIntensityPercent,
+                            stopDueToOverheat = true,
+                            throttleSleepMs = ts.throttleSleepMs,
+                            effectiveGpuUtilizationPercent = ts.effectiveGpuUtilizationPercent,
+                        ),
+                    )
+                    NativeMiner.gpuRequestInterrupt()
+                    NativeMiner.cpuRequestInterrupt()
                     engine.stop()
                     Toast.makeText(applicationContext, R.string.battery_too_hot_toast, Toast.LENGTH_LONG).show()
                     stopForeground(STOP_FOREGROUND_REMOVE)
