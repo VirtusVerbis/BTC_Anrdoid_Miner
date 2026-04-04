@@ -227,6 +227,10 @@ class ConfigActivity : AppCompatActivity() {
         binding.configStatusIntervalValue.text = "$statusMs ms"
         applyCpuShaFlavorRadios()
         binding.configRadioGroupCpuSha.check(radioIdForFlavor(c.cpuSha256Flavor))
+        binding.configRadioGroupGpuSha.check(
+            if (c.gpuSha256Mode == GpuSha256Mode.GPU_MIDSTATE) R.id.config_radio_gpu_sha_mid
+            else R.id.config_radio_gpu_sha_full
+        )
         loadedConfig = c
     }
 
@@ -279,6 +283,11 @@ class ConfigActivity : AppCompatActivity() {
             if (CpuShaCapabilities.isSelectable(requestedFlavor)) requestedFlavor
             else CpuShaCapabilities.coerceToSupported(requestedFlavor)
 
+        val gpuSha256Mode = when (binding.configRadioGroupGpuSha.checkedRadioButtonId) {
+            R.id.config_radio_gpu_sha_mid -> GpuSha256Mode.GPU_MIDSTATE
+            else -> GpuSha256Mode.GPU_FULL
+        }
+
         val config = MiningConfig(
             stratumUrl = MiningConfig.sanitize(stratumUrlRaw, MiningConfig.MAX_STRATUM_URL_LEN),
             stratumPort = portCoerced,
@@ -322,6 +331,7 @@ class ConfigActivity : AppCompatActivity() {
                 MiningConfig.GPU_UTILIZATION_MAX
             ),
             cpuSha256Flavor = cpuShaFlavor,
+            gpuSha256Mode = gpuSha256Mode,
         )
 
         if (config.bitcoinAddress.isNotBlank() && !BitcoinAddressValidator.isValidAddress(config.bitcoinAddress)) {

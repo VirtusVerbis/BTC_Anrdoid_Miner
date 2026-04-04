@@ -4,9 +4,11 @@
  * gpuScanNonces(): scans nonce range via compute shader. Returns -2 if GPU path unavailable (no CPU fallback).
  */
 #include "sha256.h"
+#include "btc_header_sha256.h"
 #include <jni.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <android/log.h>
@@ -19,15 +21,19 @@
 #define HEADER_PREFIX_SIZE 76
 #define BLOCK_HEADER_SIZE 80
 #define HASH_SIZE 32
-#define UBO_SIZE 128
-/* Host packing must match miner.comp uniform block; compile-time guard if layout grows. */
-#define UBO_HOST_PAYLOAD_BYTES (HEADER_PREFIX_SIZE + 4u + 4u + (uint32_t)HASH_SIZE)
+#define UBO_SIZE 256
+#define UBO_HEADER_WORDS (HEADER_PREFIX_SIZE / 4)
+#define UBO_OFFSET_MIDSTATE (HEADER_PREFIX_SIZE)
+#define UBO_OFFSET_NONCE_START (HEADER_PREFIX_SIZE + 32u)
+#define UBO_OFFSET_NONCE_END (UBO_OFFSET_NONCE_START + 4u)
+#define UBO_OFFSET_TARGET (UBO_OFFSET_NONCE_END + 4u)
+#define UBO_OFFSET_GPU_USE_MIDSTATE (UBO_OFFSET_TARGET + (uint32_t)HASH_SIZE)
+#define UBO_OFFSET_GPU_SELFTEST (UBO_OFFSET_GPU_USE_MIDSTATE + 4u)
+#define UBO_HOST_PAYLOAD_BYTES (UBO_OFFSET_GPU_SELFTEST + 4u)
 _Static_assert(UBO_HOST_PAYLOAD_BYTES <= UBO_SIZE, "UBO host layout exceeds UBO_SIZE; update vulkan_miner.c and miner.comp");
 _Static_assert(HEADER_PREFIX_SIZE % 4 == 0, "UBO header must be a multiple of 4 bytes");
-#define UBO_HEADER_WORDS (HEADER_PREFIX_SIZE / 4)
-#define UBO_OFFSET_NONCE_START (HEADER_PREFIX_SIZE)
-#define UBO_OFFSET_NONCE_END (HEADER_PREFIX_SIZE + 4u)
-#define UBO_OFFSET_TARGET (HEADER_PREFIX_SIZE + 8u)
+#define RESULT_BUFFER_SIZE 128
+#define GPU_SELFTEST_TAG "GPU_SHA_SelfTest"
 #define LOG_TAG "VulkanMiner"
 #define MAX_GPU_WORKGROUP_STEPS 64
 /* Returned to Java when GPU path is unavailable (no SPIR-V or Vulkan failure). */
@@ -49,7 +55,8 @@ static int g_vulkan_available = -1;
 
 static VkDescriptorSetLayout g_descriptorSetLayout = VK_NULL_HANDLE;
 static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
-static VkPipeline g_pipelines[MAX_GPU_WORKGROUP_STEPS + 1] = { VK_NULL_HANDLE }; /* index 0 unused, 1..maxSteps = gpuCores */
+static VkPipeline g_pipelines[MAX_GPU_WORKGROUP_STEPS + 1];
+static VkPipeline g_pipeline_selftest = VK_NULL_HANDLE;
 static VkDescriptorPool g_descriptorPool = VK_NULL_HANDLE;
 static VkDescriptorSet g_descriptorSet = VK_NULL_HANDLE;
 static VkBuffer g_uboBuffer = VK_NULL_HANDLE;
@@ -65,6 +72,8 @@ static int g_pipeline_created_logged = 0;
 static int g_first_dispatch_state = 0;
 static int g_workgroup_size_logged = 0;
 static atomic_int g_interrupt_requested = 0;
+/** Set in ensure_compute_resources: false if we fell back to host-visible without HOST_COHERENT. */
+static int g_host_mem_coherent = 1;
 
 static const char* vk_result_str(VkResult r) {
     switch ((int)r) {
@@ -78,18 +87,32 @@ static const char* vk_result_str(VkResult r) {
     }
 }
 
-static int create_compute_pipeline(uint32_t gpuCores) {
-    uint32_t maxSteps = g_maxWorkGroupSize / 32;
-    if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
-        maxSteps = MAX_GPU_WORKGROUP_STEPS;
-    if (gpuCores < 1 || gpuCores > maxSteps || (unsigned)gpuCores > MAX_GPU_WORKGROUP_STEPS || g_pipelines[gpuCores] != VK_NULL_HANDLE)
-        return (g_pipelines[gpuCores] != VK_NULL_HANDLE);
-    uint32_t localSize = 32 * gpuCores;
-    if (localSize > g_maxWorkGroupSize)
-        localSize = g_maxWorkGroupSize;
-    if (localSize < 1)
-        localSize = 1;
+static void host_flush_before_gpu_read(VkDeviceMemory mem) {
+    if (g_host_mem_coherent || mem == VK_NULL_HANDLE)
+        return;
+    VkMappedMemoryRange range = {
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+        .memory = mem,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
+    vkFlushMappedMemoryRanges(g_device, 1, &range);
+}
 
+/** Call only while [mem] is host-mapped for this device (see Vulkan spec). */
+static void host_invalidate_after_gpu_write_while_mapped(VkDeviceMemory mem) {
+    if (g_host_mem_coherent || mem == VK_NULL_HANDLE)
+        return;
+    VkMappedMemoryRange range = {
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+        .memory = mem,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
+    vkInvalidateMappedMemoryRanges(g_device, 1, &range);
+}
+
+static int create_miner_shader_module(VkShaderModule *outModule) {
     VkShaderModuleCreateInfo modInfo = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = g_miner_spv_len,
@@ -99,17 +122,26 @@ static int create_compute_pipeline(uint32_t gpuCores) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "No SPIR-V; using CPU fallback");
         return 0;
     }
-    VkShaderModule shaderModule;
-    if (vkCreateShaderModule(g_device, &modInfo, NULL, &shaderModule) != VK_SUCCESS) {
+    if (vkCreateShaderModule(g_device, &modInfo, NULL, outModule) != VK_SUCCESS) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vkCreateShaderModule failed");
         return 0;
     }
-    VkSpecializationMapEntry specEntry = { .constantID = 0, .offset = 0, .size = sizeof(uint32_t) };
+    return 1;
+}
+
+static int create_pipeline_with_spec(uint32_t localSize, VkPipeline *outPipeline) {
+    VkShaderModule shaderModule;
+    if (!create_miner_shader_module(&shaderModule))
+        return 0;
+    uint32_t specData[1] = { localSize };
+    VkSpecializationMapEntry specMap[1] = {
+        { .constantID = 0, .offset = 0, .size = sizeof(uint32_t) },
+    };
     VkSpecializationInfo specInfo = {
         .mapEntryCount = 1,
-        .pMapEntries = &specEntry,
-        .dataSize = sizeof(uint32_t),
-        .pData = &localSize,
+        .pMapEntries = specMap,
+        .dataSize = sizeof(specData),
+        .pData = specData,
     };
     VkPipelineShaderStageCreateInfo stageInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -123,7 +155,7 @@ static int create_compute_pipeline(uint32_t gpuCores) {
         .stage = stageInfo,
         .layout = g_pipelineLayout,
     };
-    VkResult res = vkCreateComputePipelines(g_device, VK_NULL_HANDLE, 1, &pipeInfo, NULL, &g_pipelines[gpuCores]);
+    VkResult res = vkCreateComputePipelines(g_device, VK_NULL_HANDLE, 1, &pipeInfo, NULL, outPipeline);
     vkDestroyShaderModule(g_device, shaderModule, NULL);
     if (res != VK_SUCCESS) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vkCreateComputePipelines failed");
@@ -134,6 +166,29 @@ static int create_compute_pipeline(uint32_t gpuCores) {
         g_pipeline_created_logged = 1;
     }
     return 1;
+}
+
+static int ensure_mining_pipeline(uint32_t gpuCores) {
+    uint32_t maxSteps = g_maxWorkGroupSize / 32;
+    if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
+        maxSteps = MAX_GPU_WORKGROUP_STEPS;
+    if (gpuCores < 1 || gpuCores > maxSteps || (unsigned)gpuCores > MAX_GPU_WORKGROUP_STEPS)
+        return 0;
+    VkPipeline *slot = &g_pipelines[gpuCores];
+    if (*slot != VK_NULL_HANDLE)
+        return 1;
+    uint32_t localSize = 32u * gpuCores;
+    if (localSize > g_maxWorkGroupSize)
+        localSize = g_maxWorkGroupSize;
+    if (localSize < 1u)
+        localSize = 1u;
+    return create_pipeline_with_spec(localSize, slot);
+}
+
+static int ensure_selftest_pipeline(void) {
+    if (g_pipeline_selftest != VK_NULL_HANDLE)
+        return 1;
+    return create_pipeline_with_spec(1u, &g_pipeline_selftest);
 }
 
 static int ensure_compute_resources(void) {
@@ -250,6 +305,8 @@ static int ensure_compute_resources(void) {
     }
     if (memTypeIndex == (uint32_t)-1)
         goto fail_buffers;
+    g_host_mem_coherent =
+        (memProps.memoryTypes[memTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
     VkMemoryAllocateInfo allocMem = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memReq.size,
@@ -259,7 +316,7 @@ static int ensure_compute_resources(void) {
         goto fail_buffers;
     vkBindBufferMemory(g_device, g_uboBuffer, g_uboMemory, 0);
 
-    bufInfo.size = sizeof(uint32_t);
+    bufInfo.size = RESULT_BUFFER_SIZE;
     bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     if (vkCreateBuffer(g_device, &bufInfo, NULL, &g_resultBuffer) != VK_SUCCESS)
         goto fail_ubo;
@@ -274,7 +331,7 @@ static int ensure_compute_resources(void) {
     vkBindBufferMemory(g_device, g_resultBuffer, g_resultMemory, 0);
 
     VkDescriptorBufferInfo uboInfo = { g_uboBuffer, 0, UBO_SIZE };
-    VkDescriptorBufferInfo resultInfo = { g_resultBuffer, 0, sizeof(uint32_t) };
+    VkDescriptorBufferInfo resultInfo = { g_resultBuffer, 0, RESULT_BUFFER_SIZE };
     VkWriteDescriptorSet writes[2] = {
         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_descriptorSet, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &uboInfo },
         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_descriptorSet, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &resultInfo },
@@ -370,6 +427,10 @@ static void destroy_compute_resources(void) {
             vkDestroyPipeline(g_device, g_pipelines[i], NULL);
             g_pipelines[i] = VK_NULL_HANDLE;
         }
+    }
+    if (g_pipeline_selftest != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pipeline_selftest, NULL);
+        g_pipeline_selftest = VK_NULL_HANDLE;
     }
     if (g_descriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(g_device, g_descriptorPool, NULL);
@@ -526,9 +587,228 @@ static void write_le32(uint8_t *dst, uint32_t val) {
     dst[3] = (uint8_t)(val >> 24);
 }
 
+static void fill_ubo_mining(uint8_t *ubo, const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
+                            const uint8_t *target, int useMidstate, int selftestWriteDigest, const uint32_t mid[8]) {
+    memset(ubo, 0, UBO_SIZE);
+    for (int i = 0; i < UBO_HEADER_WORDS; i++) {
+        uint32_t w = (uint32_t)header76[i * 4] << 24 | (uint32_t)header76[i * 4 + 1] << 16 |
+                     (uint32_t)header76[i * 4 + 2] << 8 | (uint32_t)header76[i * 4 + 3];
+        write_le32(ubo + i * 4, w);
+    }
+    if (useMidstate) {
+        for (int i = 0; i < 8; i++)
+            write_le32(ubo + UBO_OFFSET_MIDSTATE + i * 4, mid[i]);
+    }
+    write_le32(ubo + UBO_OFFSET_NONCE_START, nonceStart);
+    write_le32(ubo + UBO_OFFSET_NONCE_END, nonceEnd);
+    memcpy(ubo + UBO_OFFSET_TARGET, target, HASH_SIZE);
+    write_le32(ubo + UBO_OFFSET_GPU_USE_MIDSTATE, useMidstate ? 1u : 0u);
+    write_le32(ubo + UBO_OFFSET_GPU_SELFTEST, selftestWriteDigest ? 1u : 0u);
+}
+
+static void sha256_words_to_digest_be(const uint32_t w[8], uint8_t out[32]) {
+    for (int i = 0; i < 8; i++) {
+        out[i * 4 + 0] = (uint8_t)(w[i] >> 24);
+        out[i * 4 + 1] = (uint8_t)(w[i] >> 16);
+        out[i * 4 + 2] = (uint8_t)(w[i] >> 8);
+        out[i * 4 + 3] = (uint8_t)w[i];
+    }
+}
+
+static void bytes32_to_hex(const uint8_t b[32], char out[65]) {
+    static const char *const hex = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hex[b[i] >> 4];
+        out[i * 2 + 1] = hex[b[i] & 0x0f];
+    }
+    out[64] = '\0';
+}
+
+static int submit_once_and_wait(VkPipeline pipeline, uint32_t groupX, uint32_t groupY, uint32_t groupZ) {
+    VkResult res = vkResetFences(g_device, 1, &g_fence);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetFences");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkResetFences failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    res = vkBeginCommandBuffer(g_commandBuffer, &beginInfo);
+    if (res != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkBeginCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        return 0;
+    }
+    vkCmdBindPipeline(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelineLayout, 0, 1, &g_descriptorSet, 0, NULL);
+    vkCmdDispatch(g_commandBuffer, groupX, groupY, groupZ);
+    VkMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+    };
+    vkCmdPipelineBarrier(g_commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier,
+        0, NULL, 0, NULL);
+    res = vkEndCommandBuffer(g_commandBuffer);
+    if (res != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkEndCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        return 0;
+    }
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &g_commandBuffer,
+    };
+    if (g_first_dispatch_state == 0) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch submitted");
+        g_first_dispatch_state = 1;
+    }
+    res = vkQueueSubmit(g_queue, 1, &submitInfo, g_fence);
+    if (res != VK_SUCCESS) {
+        if (g_first_dispatch_state < 2) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
+            g_first_dispatch_state = 2;
+        }
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkQueueSubmit");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkQueueSubmit failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    for (;;) {
+        res = vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 1000000000ull);
+        if (res == VK_SUCCESS)
+            break;
+        if (res == VK_TIMEOUT) {
+            if (atomic_exchange_explicit(&g_interrupt_requested, 0, memory_order_acq_rel)) {
+                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU scan interrupted by watchdog");
+                return 0;
+            }
+            continue;
+        }
+        if (g_first_dispatch_state < 2) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
+            g_first_dispatch_state = 2;
+        }
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkWaitForFences");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkWaitForFences failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    if (g_first_dispatch_state == 1) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch completed");
+        g_first_dispatch_state = 2;
+    }
+    return 1;
+}
+
+/** Vulkan SSBO readback self-test: nonce=1, digest write path; logs GPU_SELFTEST_TAG. Returns 1 if ok. */
+static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
+    if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE)
+        return 0;
+    if (!ensure_compute_resources()) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: ensure_compute_resources failed");
+        return 0;
+    }
+    if (!ensure_selftest_pipeline()) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: self-test pipeline failed");
+        return 0;
+    }
+    const uint8_t *h76 = btc_gpu_selftest_header76();
+    uint32_t mid[8] = {0};
+    if (useMidstate)
+        btc_midstate_header76(h76, mid);
+    uint8_t target[HASH_SIZE];
+    memset(target, 0, sizeof(target));
+    uint8_t ubo[UBO_SIZE];
+    fill_ubo_mining(ubo, h76, 1u, 1u, target, useMidstate, 1, mid);
+
+    void *ptr;
+    VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr);
+    if (mapRes != VK_SUCCESS) {
+        if (mapRes == VK_ERROR_DEVICE_LOST)
+            cleanup_vulkan();
+        return 0;
+    }
+    memcpy(ptr, ubo, UBO_SIZE);
+    host_flush_before_gpu_read(g_uboMemory);
+    vkUnmapMemory(g_device, g_uboMemory);
+
+    mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
+    if (mapRes != VK_SUCCESS) {
+        if (mapRes == VK_ERROR_DEVICE_LOST)
+            cleanup_vulkan();
+        return 0;
+    }
+    memset(ptr, 0, RESULT_BUFFER_SIZE);
+    host_flush_before_gpu_read(g_resultMemory);
+    vkUnmapMemory(g_device, g_resultMemory);
+
+    if (!submit_once_and_wait(g_pipeline_selftest, 1u, 1u, 1u))
+        return 0;
+
+    mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
+    if (mapRes != VK_SUCCESS) {
+        if (mapRes == VK_ERROR_DEVICE_LOST)
+            cleanup_vulkan();
+        return 0;
+    }
+    host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
+    uint32_t *words = (uint32_t *)ptr;
+    uint32_t sent = words[0];
+    uint32_t gw_first[8], gw_final[8];
+    memcpy(gw_first, words + 1, sizeof(gw_first));
+    memcpy(gw_final, words + 9, sizeof(gw_final));
+    vkUnmapMemory(g_device, g_resultMemory);
+
+    uint8_t ref_first[32], ref_final[32];
+    btc_first_sha_full(h76, 1u, ref_first);
+    btc_double_sha_full(h76, 1u, ref_final);
+    uint8_t g_first[32], g_final[32];
+    sha256_words_to_digest_be(gw_first, g_first);
+    sha256_words_to_digest_be(gw_final, g_final);
+    int same_first = (memcmp(ref_first, g_first, 32) == 0);
+    int same_final = (memcmp(ref_final, g_final, 32) == 0);
+
+    char ref_f_hex[65], ref_l_hex[65], g_f_hex[65], g_l_hex[65];
+    bytes32_to_hex(ref_first, ref_f_hex);
+    bytes32_to_hex(ref_final, ref_l_hex);
+    bytes32_to_hex(g_first, g_f_hex);
+    bytes32_to_hex(g_final, g_l_hex);
+
+    char mid_line[128];
+    if (useMidstate) {
+        snprintf(mid_line, sizeof(mid_line), "%08x:%08x:%08x:%08x:%08x:%08x:%08x:%08x", mid[0], mid[1], mid[2], mid[3],
+            mid[4], mid[5], mid[6], mid[7]);
+    } else {
+        snprintf(mid_line, sizeof(mid_line), "n/a");
+    }
+
+    __android_log_print(ANDROID_LOG_INFO, GPU_SELFTEST_TAG,
+        "vulkan_readback mode=%s midstate=%s cpu_first=%s cpu_final=%s gpu_first=%s gpu_final=%s same_first=%d same_final=%d nonce_sentinel=%08x",
+        useMidstate ? "GPU_Midstate" : "GPU_Full", mid_line, ref_f_hex, ref_l_hex, g_f_hex, g_l_hex, same_first, same_final,
+        (unsigned)sent);
+
+    if (useMidstate && same_first) {
+        uint8_t ref_mid_first[32];
+        btc_first_sha_from_mid(h76, mid, 1u, ref_mid_first);
+        int midpath = (memcmp(ref_mid_first, g_first, 32) == 0);
+        __android_log_print(ANDROID_LOG_INFO, GPU_SELFTEST_TAG, "vulkan_readback cpu_midstate_first_matches_gpu_first=%d", midpath);
+    }
+
+    return (same_first && same_final && sent == 0xFFFFFFFFu) ? 1 : 0;
+}
+
 /* Run compute dispatch; returns winning nonce, -1 if no solution in chunk, or GPU_UNAVAILABLE on failure. */
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
-                        const uint8_t *target, int gpuCores) {
+                        const uint8_t *target, int gpuCores, int useMidstate) {
     if (gpuCores < 1) gpuCores = 1;
     uint32_t maxSteps = g_maxWorkGroupSize / 32;
     if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
@@ -546,9 +826,10 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (g_commandBuffer == VK_NULL_HANDLE || g_fence == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
-    if (!create_compute_pipeline((uint32_t)gpuCores))
+    if (!ensure_mining_pipeline((uint32_t)gpuCores))
         return GPU_UNAVAILABLE;
-    if (gpuCores < 1 || gpuCores > (int)MAX_GPU_WORKGROUP_STEPS || g_pipelines[gpuCores] == VK_NULL_HANDLE) {
+    VkPipeline miningPipe = g_pipelines[gpuCores];
+    if (gpuCores < 1 || gpuCores > (int)MAX_GPU_WORKGROUP_STEPS || miningPipe == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
     if (g_uboMemory == VK_NULL_HANDLE || g_resultMemory == VK_NULL_HANDLE ||
@@ -575,17 +856,11 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (groupCountX == 0)
         return GPU_UNAVAILABLE;
 
-    /* Fill UBO: HEADER_PREFIX_SIZE header (as big-endian uints), nonceStart, nonceEnd, HASH_SIZE target */
+    uint32_t mid[8] = {0};
+    if (useMidstate)
+        btc_midstate_header76(header76, mid);
     uint8_t ubo[UBO_SIZE];
-    memset(ubo, 0, sizeof(ubo));
-    for (int i = 0; i < UBO_HEADER_WORDS; i++) {
-        uint32_t w = (uint32_t)header76[i*4] << 24 | (uint32_t)header76[i*4+1] << 16 |
-                     (uint32_t)header76[i*4+2] << 8 | (uint32_t)header76[i*4+3];
-        write_le32(ubo + i * 4, w);
-    }
-    write_le32(ubo + UBO_OFFSET_NONCE_START, nonceStart);
-    write_le32(ubo + UBO_OFFSET_NONCE_END, nonceEnd);
-    memcpy(ubo + UBO_OFFSET_TARGET, target, HASH_SIZE);
+    fill_ubo_mining(ubo, header76, nonceStart, nonceEnd, target, useMidstate, 0, mid);
 
     void *ptr;
     VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr);
@@ -599,10 +874,10 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         return GPU_UNAVAILABLE;
     }
     memcpy(ptr, ubo, UBO_SIZE);
+    host_flush_before_gpu_read(g_uboMemory);
     vkUnmapMemory(g_device, g_uboMemory);
 
-    uint32_t noWin = 0xFFFFFFFFu;
-    mapRes = vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr);
+    mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
     if (mapRes != VK_SUCCESS) {
         if (mapRes == VK_ERROR_DEVICE_LOST) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result)");
@@ -612,83 +887,14 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         }
         return GPU_UNAVAILABLE;
     }
-    memcpy(ptr, &noWin, sizeof(noWin));
+    memset(ptr, 0xFF, RESULT_BUFFER_SIZE);
+    host_flush_before_gpu_read(g_resultMemory);
     vkUnmapMemory(g_device, g_resultMemory);
 
-    VkResult res = vkResetFences(g_device, 1, &g_fence);
-    if (res != VK_SUCCESS) {
-        if (res == VK_ERROR_DEVICE_LOST) {
-            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetFences");
-            cleanup_vulkan();
-        } else {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkResetFences failed: %s (%d)", vk_result_str(res), (int)res);
-        }
+    if (!submit_once_and_wait(miningPipe, groupCountX, 1u, 1u))
         return GPU_UNAVAILABLE;
-    }
-    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    res = vkBeginCommandBuffer(g_commandBuffer, &beginInfo);
-    if (res != VK_SUCCESS) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkBeginCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
-        return GPU_UNAVAILABLE;
-    }
-    vkCmdBindPipeline(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelines[gpuCores]);
-    vkCmdBindDescriptorSets(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelineLayout, 0, 1, &g_descriptorSet, 0, NULL);
-    vkCmdDispatch(g_commandBuffer, groupCountX, 1, 1);
-    res = vkEndCommandBuffer(g_commandBuffer);
-    if (res != VK_SUCCESS) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkEndCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
-        return GPU_UNAVAILABLE;
-    }
-    VkSubmitInfo submitInfo = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &g_commandBuffer,
-    };
-    if (g_first_dispatch_state == 0) {
-        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch submitted");
-        g_first_dispatch_state = 1;
-    }
-    res = vkQueueSubmit(g_queue, 1, &submitInfo, g_fence);
-    if (res != VK_SUCCESS) {
-        if (g_first_dispatch_state < 2) {
-            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
-            g_first_dispatch_state = 2;
-        }
-        if (res == VK_ERROR_DEVICE_LOST) {
-            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkQueueSubmit");
-            cleanup_vulkan();
-        } else {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkQueueSubmit failed: %s (%d)", vk_result_str(res), (int)res);
-        }
-        return GPU_UNAVAILABLE;
-    }
-    for (;;) {
-        res = vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 1000000000ull);
-        if (res == VK_SUCCESS)
-            break;
-        if (res == VK_TIMEOUT) {
-            if (atomic_exchange_explicit(&g_interrupt_requested, 0, memory_order_acq_rel)) {
-                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU scan interrupted by watchdog");
-                return GPU_UNAVAILABLE;
-            }
-            continue;
-        }
-        if (g_first_dispatch_state < 2) {
-            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
-            g_first_dispatch_state = 2;
-        }
-        if (res == VK_ERROR_DEVICE_LOST) {
-            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkWaitForFences");
-            cleanup_vulkan();
-        } else {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkWaitForFences failed: %s (%d)", vk_result_str(res), (int)res);
-        }
-        return GPU_UNAVAILABLE;
-    }
-    if (g_first_dispatch_state == 1) {
-        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch completed");
-        g_first_dispatch_state = 2;
-    }
+
+    uint32_t noWin = 0xFFFFFFFFu;
     mapRes = vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr);
     if (mapRes != VK_SUCCESS) {
         if (mapRes == VK_ERROR_DEVICE_LOST) {
@@ -699,6 +905,7 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         }
         return GPU_UNAVAILABLE;
     }
+    host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
     memcpy(&noWin, ptr, sizeof(noWin));
     vkUnmapMemory(g_device, g_resultMemory);
     if (noWin == 0xFFFFFFFFu)
@@ -741,7 +948,8 @@ Java_com_btcminer_android_mining_NativeMiner_getMaxComputeWorkGroupSize(JNIEnv *
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclass clazz, jint gpuCores) {
+Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclass clazz, jint gpuCores,
+                                                              jint gpuSha256Mode) {
     (void)env;
     (void)clazz;
 #ifdef __ANDROID__
@@ -755,11 +963,29 @@ Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclas
         gpuCores = (int)maxSteps;
     if (!ensure_compute_resources())
         return JNI_FALSE;
-    if (!create_compute_pipeline((uint32_t)gpuCores))
+    (void)gpuSha256Mode;
+    if (!ensure_mining_pipeline((uint32_t)gpuCores))
         return JNI_FALSE;
     return JNI_TRUE;
 #else
     (void)gpuCores;
+    (void)gpuSha256Mode;
+    return JNI_FALSE;
+#endif
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, jclass clazz, jint useMidstate) {
+    (void)env;
+    (void)clazz;
+#ifdef __ANDROID__
+    if (!try_init_vulkan())
+        return JNI_FALSE;
+    if (!ensure_compute_resources())
+        return JNI_FALSE;
+    return gpu_sha_vulkan_selftest_inner(useMidstate != 0) ? JNI_TRUE : JNI_FALSE;
+#else
+    (void)useMidstate;
     return JNI_FALSE;
 #endif
 }
@@ -770,7 +996,8 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNonces(JNIEnv *env, jclass c
                                                            jbyteArray header76Java,
                                                            jint nonceStart, jint nonceEnd,
                                                            jbyteArray targetJava,
-                                                           jint gpuCores) {
+                                                           jint gpuCores,
+                                                           jint gpuSha256Mode) {
     (void)env;
     (void)clazz;
     if (!header76Java || !targetJava ||
@@ -788,12 +1015,15 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNonces(JNIEnv *env, jclass c
     }
     (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
     (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
-    int result = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuCores);
+    int useMid = (gpuSha256Mode != 0);
+    int result =
+        run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuCores, useMid);
     return (jint)result;
 #else
     (void)nonceStart;
     (void)nonceEnd;
     (void)gpuCores;
+    (void)gpuSha256Mode;
     return (jint)GPU_UNAVAILABLE;
 #endif
 }

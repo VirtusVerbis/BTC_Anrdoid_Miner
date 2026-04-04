@@ -1,13 +1,11 @@
 // Bitcoin block header nonce scan: double-SHA256(header80) <= target.
-// Unique work: nonce = nonceStart + gl_GlobalInvocationID.x; early-out if nonce > nonceEnd.
+// Spec constant 0: local_size_x only. Midstate/self-test use UBO (avoids broken multi-spec paths on some drivers).
 #version 450
 
-// Host sets workgroup size via specialization constant ID 0 at pipeline creation (LocalSizeId).
 layout(local_size_x_id = 0) in;
 
-// UBO: 76 bytes header, 4 nonceStart, 4 nonceEnd, 32 target (pad to 128)
 layout(set = 0, binding = 0) uniform Uniforms {
-    uint header_0_3;   // bytes 0-3
+    uint header_0_3;
     uint header_4_7;
     uint header_8_11;
     uint header_12_15;
@@ -25,7 +23,15 @@ layout(set = 0, binding = 0) uniform Uniforms {
     uint header_60_63;
     uint header_64_67;
     uint header_68_71;
-    uint header_72_75; // bytes 72-75 (76th byte onwards = nonce)
+    uint header_72_75;
+    uint mid_0_3;
+    uint mid_4_7;
+    uint mid_8_11;
+    uint mid_12_15;
+    uint mid_16_19;
+    uint mid_20_23;
+    uint mid_24_27;
+    uint mid_28_31;
     uint nonceStart;
     uint nonceEnd;
     uint target_0_3;
@@ -36,13 +42,16 @@ layout(set = 0, binding = 0) uniform Uniforms {
     uint target_20_23;
     uint target_24_27;
     uint target_28_31;
+    uint gpu_use_midstate;
+    uint gpu_selftest_write_digest;
 };
 
 layout(set = 0, binding = 1) buffer Result {
-    coherent uint resultNonce; // 0xFFFFFFFF = no win; first winner writes nonce
+    coherent uint resultNonce;
+    uint first_hash[8];
+    uint final_hash[8];
 };
 
-// SHA-256 K constants (first 16)
 const uint K[64] = uint[64](
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
     0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
@@ -77,12 +86,11 @@ void sha256_transform(inout uint s[8], uint w[64]) {
     s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;
 }
 
-// First SHA-256: 80-byte input (one 64-byte block + one padded block)
 void sha256_80bytes(uint header0_3, uint header4_7, uint header8_11, uint header12_15,
     uint header16_19, uint header20_23, uint header24_27, uint header28_31,
     uint header32_35, uint header36_39, uint header40_43, uint header44_47,
     uint header48_51, uint header52_55, uint header56_59, uint header60_63,
-    uint header64_67, uint header68_71, uint header72_75, uint nonceLE,
+    uint header64_67, uint header68_71, uint header72_75, uint nonceW_sha_be,
     out uint out0, out uint out1, out uint out2, out uint out3,
     out uint out4, out uint out5, out uint out6, out uint out7) {
     uint s[8] = uint[8](0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au, 0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u);
@@ -92,27 +100,43 @@ void sha256_80bytes(uint header0_3, uint header4_7, uint header8_11, uint header
     w[8] = header32_35; w[9] = header36_39; w[10] = header40_43; w[11] = header44_47;
     w[12] = header48_51; w[13] = header52_55; w[14] = header56_59; w[15] = header60_63;
     sha256_transform(s, w);
-    // Second block: header64_67, header68_71, header72_75, nonceLE, 0x80, zeros, length 640
-    w[0] = header64_67; w[1] = header68_71; w[2] = header72_75; w[3] = nonceLE;
+    w[0] = header64_67; w[1] = header68_71; w[2] = header72_75; w[3] = nonceW_sha_be;
     w[4] = 0x80000000u; w[5] = 0u; w[6] = 0u; w[7] = 0u; w[8] = 0u; w[9] = 0u; w[10] = 0u; w[11] = 0u;
-    w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000280u; // length 640 bits (big-endian last 8 bytes)
+    w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000280u;
     sha256_transform(s, w);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3]; out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }
 
-// Second SHA-256: 32-byte input (one padded block)
+void sha256_first_mid(uint m0, uint m1, uint m2, uint m3, uint m4, uint m5, uint m6, uint m7,
+    uint header64_67, uint header68_71, uint header72_75, uint nonceW_sha_be,
+    out uint out0, out uint out1, out uint out2, out uint out3,
+    out uint out4, out uint out5, out uint out6, out uint out7) {
+    uint s[8] = uint[8](m0, m1, m2, m3, m4, m5, m6, m7);
+    uint w[64];
+    w[0] = header64_67; w[1] = header68_71; w[2] = header72_75; w[3] = nonceW_sha_be;
+    w[4] = 0x80000000u; w[5] = 0u; w[6] = 0u; w[7] = 0u; w[8] = 0u; w[9] = 0u; w[10] = 0u; w[11] = 0u;
+    w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000280u;
+    sha256_transform(s, w);
+    out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3]; out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
+}
+
 void sha256_32bytes(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uint h6, uint h7,
     out uint out0, out uint out1, out uint out2, out uint out3,
     out uint out4, out uint out5, out uint out6, out uint out7) {
     uint s[8] = uint[8](0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au, 0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u);
     uint w[64];
     w[0] = h0; w[1] = h1; w[2] = h2; w[3] = h3; w[4] = h4; w[5] = h5; w[6] = h6; w[7] = h7;
-    w[8] = 0x80000000u; w[9] = 0u; w[10] = 0u; w[11] = 0u; w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000100u; // 256 bits
+    w[8] = 0x80000000u; w[9] = 0u; w[10] = 0u; w[11] = 0u; w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000100u;
     sha256_transform(s, w);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3]; out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }
 
-// Compare 32-byte hash (8 uints big-endian) <= target (8 uints big-endian)
+/* Last 32-bit word of the 80-byte Bitcoin header: bytes 76-79 are little-endian nonce on the wire;
+ * SHA-256 schedules big-endian words, so word = bswap32(nonce) (e.g. nonce 1 -> 0x01000000). */
+uint nonce_sha_word(uint nonce) {
+    return ((nonce & 0xffu) << 24) | (((nonce >> 8) & 0xffu) << 16) | (((nonce >> 16) & 0xffu) << 8) | ((nonce >> 24) & 0xffu);
+}
+
 bool hash_meets_target(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uint h6, uint h7) {
     if (h0 != target_0_3)  return h0 < target_0_3;
     if (h1 != target_4_7)  return h1 < target_4_7;
@@ -125,21 +149,50 @@ bool hash_meets_target(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uin
 }
 
 void main() {
+    if (gpu_selftest_write_digest != 0u) {
+        if (gl_GlobalInvocationID.x != 0u)
+            return;
+        uint nonce = nonceStart;
+        uint nword = nonce_sha_word(nonce);
+        uint o0, o1, o2, o3, o4, o5, o6, o7;
+        if (gpu_use_midstate != 0u) {
+            sha256_first_mid(mid_0_3, mid_4_7, mid_8_11, mid_12_15, mid_16_19, mid_20_23, mid_24_27, mid_28_31,
+                header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
+        } else {
+            sha256_80bytes(header_0_3, header_4_7, header_8_11, header_12_15,
+                header_16_19, header_20_23, header_24_27, header_28_31,
+                header_32_35, header_36_39, header_40_43, header_44_47,
+                header_48_51, header_52_55, header_56_59, header_60_63,
+                header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
+        }
+        uint f0, f1, f2, f3, f4, f5, f6, f7;
+        sha256_32bytes(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
+        resultNonce = 0xFFFFFFFFu;
+        first_hash[0] = o0; first_hash[1] = o1; first_hash[2] = o2; first_hash[3] = o3;
+        first_hash[4] = o4; first_hash[5] = o5; first_hash[6] = o6; first_hash[7] = o7;
+        final_hash[0] = f0; final_hash[1] = f1; final_hash[2] = f2; final_hash[3] = f3;
+        final_hash[4] = f4; final_hash[5] = f5; final_hash[6] = f6; final_hash[7] = f7;
+        return;
+    }
+
     uint global_id = gl_GlobalInvocationID.x;
     uint nonce = nonceStart + global_id;
     if (nonce > nonceEnd)
         return;
 
-    // Nonce as 4 bytes little-endian in the 80-byte header (bytes 76-79)
-    uint nonceLE = (nonce & 0xffu) | ((nonce >> 8) & 0xffu) << 8 | ((nonce >> 16) & 0xffu) << 16 | (nonce >> 24) << 24;
+    uint nword = nonce_sha_word(nonce);
 
     uint o0, o1, o2, o3, o4, o5, o6, o7;
-    sha256_80bytes(header_0_3, header_4_7, header_8_11, header_12_15,
-        header_16_19, header_20_23, header_24_27, header_28_31,
-        header_32_35, header_36_39, header_40_43, header_44_47,
-        header_48_51, header_52_55, header_56_59, header_60_63,
-        header_64_67, header_68_71, header_72_75, nonceLE,
-        o0, o1, o2, o3, o4, o5, o6, o7);
+    if (gpu_use_midstate != 0u) {
+        sha256_first_mid(mid_0_3, mid_4_7, mid_8_11, mid_12_15, mid_16_19, mid_20_23, mid_24_27, mid_28_31,
+            header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
+    } else {
+        sha256_80bytes(header_0_3, header_4_7, header_8_11, header_12_15,
+            header_16_19, header_20_23, header_24_27, header_28_31,
+            header_32_35, header_36_39, header_40_43, header_44_47,
+            header_48_51, header_52_55, header_56_59, header_60_63,
+            header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
+    }
 
     uint f0, f1, f2, f3, f4, f5, f6, f7;
     sha256_32bytes(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);

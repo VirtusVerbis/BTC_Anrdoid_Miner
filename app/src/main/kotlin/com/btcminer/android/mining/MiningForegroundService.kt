@@ -479,10 +479,12 @@ class MiningForegroundService : Service() {
                 val err = engine.getStatus().lastError ?: "Mining failed"
                 AppLog.e(LOG_TAG) { "Mining start failed: $err" }
                 Handler(Looper.getMainLooper()).post {
-                    val toastText = if (err == NativeMiningEngine.SHA256_SELFTEST_LAST_ERROR) {
-                        getString(R.string.mining_start_fail_sha_selftest)
-                    } else {
-                        getString(R.string.mining_failed, err)
+                    val toastText = when (err) {
+                        NativeMiningEngine.SHA256_SELFTEST_LAST_ERROR ->
+                            getString(R.string.mining_start_fail_sha_selftest)
+                        NativeMiningEngine.GPU_SHA256_SELFTEST_LAST_ERROR ->
+                            getString(R.string.mining_start_fail_gpu_sha_selftest)
+                        else -> getString(R.string.mining_failed, err)
                     }
                     Toast.makeText(applicationContext, toastText, Toast.LENGTH_LONG).show()
                     stopForeground(STOP_FOREGROUND_REMOVE)

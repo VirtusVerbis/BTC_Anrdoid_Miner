@@ -31,6 +31,12 @@ object NativeMiner {
     /** Verify double-SHA256 for [flavor] against scalar reference on fixed test vectors. */
     external fun nativeSelfTestCpuSha256Flavor(flavor: Int): Boolean
 
+    /** Host-only: midstate vs full double-SHA for test header; logs GPU_SHA_SelfTest. */
+    external fun gpuShaHostSelftest(): Boolean
+
+    /** Vulkan SSBO readback vs CPU first/final SHA for test header. [useMidstate] 0 = full, 1 = midstate path. */
+    external fun gpuShaVulkanSelftest(useMidstate: Int): Boolean
+
     /**
      * Scan nonce range for a block header prefix. Returns winning nonce, -1 if none meets target (or JNI
      * validation error), **-3** ([CPU_INTERRUPTED]) when interrupted, **-4** ([CPU_SHA_FLAVOR_ERROR])
@@ -69,13 +75,22 @@ object NativeMiner {
      * True only when the Vulkan compute pipeline for the given [gpuCores] can be created
      * (SPIR-V present and pipeline creation succeeds). When false, [gpuScanNonces] would return -2;
      * use this to fail fast at mining start instead of on first chunk.
+     * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
-    external fun gpuPipelineReady(gpuCores: Int): Boolean
+    external fun gpuPipelineReady(gpuCores: Int, gpuSha256Mode: Int): Boolean
 
     /**
      * Scan nonce range on GPU path. Returns winning nonce, -1 if no solution in chunk, or -2 if
      * GPU path is unavailable (Vulkan/SPIR-V or dispatch failed; no CPU fallback). [gpuCores] (1..N)
      * sets local workgroup size (32 * gpuCores, capped by device max) for parallelism.
+     * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
-    external fun gpuScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray, gpuCores: Int): Int
+    external fun gpuScanNonces(
+        header76: ByteArray,
+        nonceStart: Int,
+        nonceEnd: Int,
+        target: ByteArray,
+        gpuCores: Int,
+        gpuSha256Mode: Int,
+    ): Int
 }

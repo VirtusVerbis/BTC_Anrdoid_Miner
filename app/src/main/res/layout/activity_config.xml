@@ -457,6 +457,32 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:text="@string/config_gpu_sha_section"
+            android:textColor="?attr/colorOnSurface" />
+
+        <RadioGroup
+            android:id="@+id/config_radio_group_gpu_sha"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp">
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_gpu_sha_mid"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_gpu_sha_midstate" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_gpu_sha_full"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_gpu_sha_full" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
             android:text="@string/config_status_update_interval"
             android:textColor="?attr/colorOnSurface" />
 

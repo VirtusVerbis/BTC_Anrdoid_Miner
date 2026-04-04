@@ -63,6 +63,9 @@ class MiningConfigRepository(context: Context) {
             val raw = CpuSha256Flavor.fromOrdinal(rawOrd) ?: CpuSha256Flavor.SCALAR
             CpuShaCapabilities.coerceToSupported(raw)
         },
+        gpuSha256Mode = GpuSha256Mode.fromOrdinal(
+            storage.getInt(SecureConfigStorage.KEY_GPU_SHA256_MODE, GpuSha256Mode.GPU_FULL.ordinal)
+        ),
     )
 
     /** Returns the stored stratum cert pin for the given host, or null if none. Host should be normalized (no scheme, first segment). */
@@ -133,6 +136,7 @@ class MiningConfigRepository(context: Context) {
                 SecureConfigStorage.KEY_CPU_SHA256_FLAVOR,
                 config.cpuSha256Flavor.ordinal
             )
+            edit.putInt(SecureConfigStorage.KEY_GPU_SHA256_MODE, config.gpuSha256Mode.ordinal)
         }
     }
 }

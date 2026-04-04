@@ -46,7 +46,7 @@ else()
     message(FATAL_ERROR "glslangValidator or glslc required for GPU path. Install Vulkan SDK or shaderc and add to PATH.")
 endif()
 
-set(MINER_SRCS miner.c sha256.c sha256_scan.c vulkan_miner.c)
+set(MINER_SRCS miner.c sha256.c sha256_scan.c btc_header_sha256.c vulkan_miner.c)
 if(ANDROID_ABI STREQUAL "arm64-v8a")
     list(APPEND MINER_SRCS sha256_arm_sha2.c sha256_neon_4way.c)
 endif()

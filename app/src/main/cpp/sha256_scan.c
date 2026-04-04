@@ -10,9 +10,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(SHA256_SELFTEST_DIAG)
 #include <android/log.h>
-#endif
 
 #define HEADER_PREFIX_SIZE 76
 #define BLOCK_HEADER_SIZE 80
@@ -343,6 +341,30 @@ void cpu_sha256_double_flavor(int flavor, const uint8_t *header76, uint32_t nonc
     }
 }
 
+static void sha256_bytes_to_hex(const uint8_t b[HASH_SIZE], char out[HASH_SIZE * 2 + 1]) {
+    static const char *const hex = "0123456789abcdef";
+    for (int i = 0; i < (int)HASH_SIZE; i++) {
+        out[i * 2] = hex[b[i] >> 4];
+        out[i * 2 + 1] = hex[b[i] & 0x0f];
+    }
+    out[HASH_SIZE * 2] = '\0';
+}
+
+/** Must match [com.btcminer.android.config.CpuSha256Flavor] ordinal order. */
+static const char *cpu_sha_flavor_label(int flavor) {
+    static const char *const names[] = {
+        "HW_SHA2_MIDSTATE",
+        "HW_SHA2",
+        "NEON4_MIDSTATE",
+        "NEON4",
+        "SCALAR_MIDSTATE",
+        "SCALAR",
+    };
+    if (flavor < 0 || flavor > 5)
+        return "?";
+    return names[flavor];
+}
+
 /* Fixed test header (76 bytes); tweak bytes for regression vectors. */
 static const uint8_t kSelftestHeader76[HEADER_PREFIX_SIZE] = {
     1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
@@ -373,7 +395,21 @@ int cpu_sha_selftest_flavor(int flavor) {
 #endif
         sha256_double(h80, BLOCK_HEADER_SIZE, ref);
         cpu_sha256_double_flavor(flavor, kSelftestHeader76, nonce, got);
-        if (memcmp(ref, got, 32) != 0) return 0;
+        char ref_hex[HASH_SIZE * 2 + 1];
+        char got_hex[HASH_SIZE * 2 + 1];
+        sha256_bytes_to_hex(ref, ref_hex);
+        sha256_bytes_to_hex(got, got_hex);
+        const int same = (memcmp(ref, got, 32) == 0);
+        __android_log_print(ANDROID_LOG_INFO, "SHA256_SelfTest",
+            "nonce=%u flavor=%d (%s) ref=%s got=%s same=%d", (unsigned)nonce, flavor,
+            cpu_sha_flavor_label(flavor), ref_hex, got_hex, same);
+        if (!same) {
+            __android_log_print(ANDROID_LOG_INFO, "SHA256_SelfTest",
+                "flavor=%d (%s) all_nonces_ok=0", flavor, cpu_sha_flavor_label(flavor));
+            return 0;
+        }
     }
+    __android_log_print(ANDROID_LOG_INFO, "SHA256_SelfTest",
+        "flavor=%d (%s) all_nonces_ok=1", flavor, cpu_sha_flavor_label(flavor));
     return 1;
 }

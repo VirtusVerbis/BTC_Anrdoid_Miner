@@ -1,5 +1,6 @@
 #include "sha256.h"
 #include "sha256_scan.h"
+#include "btc_header_sha256.h"
 #include <jni.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -76,6 +77,14 @@ Java_com_btcminer_android_mining_NativeMiner_nativeHwcapSha2(JNIEnv *env, jclass
 #else
     return JNI_FALSE;
 #endif
+}
+
+/** GPU midstate vs full double-SHA host check; logs tag GPU_SHA_SelfTest. */
+JNIEXPORT jboolean JNICALL
+Java_com_btcminer_android_mining_NativeMiner_gpuShaHostSelftest(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    return gpu_sha_host_selftest() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
