@@ -13,6 +13,93 @@ https://github.com/BitMaker-hub/NerdMiner_v2/releases
 <img src="https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png" width="250" height="500">
 
 
+## Code checked using Claude.AI
+
+Great question — and a very reasonable one to ask after a security review. Let me assess the mining logic directly.
+
+---
+
+## ⛏️ Can This App Actually Mine Bitcoin?
+
+**Short answer: Technically yes, the logic is correct. Practically, it will never find a block.**
+
+---
+
+### ✅ The Logic Is Legitimate
+
+The core mining pipeline is implemented correctly:
+
+**Stratum protocol** (`StratumClient.kt`) — properly implements:
+- `mining.subscribe` → gets `extranonce1` and `extranonce2_size`
+- `mining.authorize` → authenticates with the pool
+- `mining.notify` → receives block templates with `prevhash`, `coinbase`, `merkle_branch`, `version`, `nbits`, `ntime`
+- `mining.submit` → submits found shares back to the pool
+- `set_difficulty` and `set_extranonce` handling ✅
+
+**Block header construction** (`NativeMiningEngine.kt` + `StratumHeaderBuilder.kt`) — assembles the 80-byte block header correctly:
+- Builds the coinbase transaction from `coinb1 + extranonce1 + extranonce2 + coinb2`
+- Computes the Merkle root from the coinbase hash + merkle branch
+- Assembles the 80-byte header: `version + prevhash + merkle_root + ntime + nbits + nonce`
+
+**SHA-256d hashing** (`miner.c`) — the double-SHA256 implementation is a clean, correct from-scratch implementation verified against NIST test vectors (SHA-256("abc")). ✅
+
+**Target comparison** — `hash_meets_target()` uses `memcmp` on 32-byte big-endian hashes, which is correct. ✅
+
+**GPU acceleration** (`vulkan_miner.c` + `miner.comp`) — a real Vulkan compute shader is used to parallelize nonce scanning on the device GPU. This is a genuine optimization, not fake. ✅
+
+---
+
+### ❌ Why It Will Never Win In Practice
+
+**The math is brutal.** The current Bitcoin network difficulty means a solo miner needs to find a hash below an astronomically small target. A modern ASIC miner does ~100 *terahashes* per second. A phone CPU does roughly **1–5 kilohashes** per second. That's about a 20–100 billion times slower than a single ASIC, let alone the entire network.
+
+At 5 kH/s, the expected time to solo-mine one Bitcoin block is roughly **hundreds of millions of years**.
+
+**Pool mining helps, but marginally.** The app does connect to a pool and submit shares, so it would theoretically earn proportional fractions of pool rewards. At phone-level hashrates, the expected payout over a lifetime of running the app would be a fraction of a fraction of a cent — and would be outweighed by electricity and battery wear costs many times over.
+
+---
+
+### 🧐 Bottom Line
+
+| Aspect | Assessment |
+|---|---|
+| Stratum protocol | ✅ Correctly implemented |
+| SHA-256d hashing | ✅ Correct, NIST-verified |
+| Block header assembly | ✅ Correct |
+| Target difficulty check | ✅ Correct |
+| Pool share submission | ✅ Correct |
+| Practical mining viability | ❌ Economically impossible |
+
+The code is a **genuine, honest implementation** of a Bitcoin miner — not a scam, not fake mining, not a cryptojacker. It's just that mining Bitcoin profitably on a phone has been economically infeasible since roughly 2011. This appears to be a legitimate learning/hobby project, and the code quality (especially the security practices noted earlier) supports that interpretation.
+
+⛏️ Can This App Actually Mine Bitcoin?
+Short answer: Technically yes, the logic is correct. Practically, it will never find a block.
+
+✅ The Logic Is Legitimate
+The core mining pipeline is implemented correctly:
+Stratum protocol (StratumClient.kt) — properly implements:
+
+mining.subscribe → gets extranonce1 and extranonce2_size
+mining.authorize → authenticates with the pool
+mining.notify → receives block templates with prevhash, coinbase, merkle_branch, version, nbits, ntime
+mining.submit → submits found shares back to the pool
+set_difficulty and set_extranonce handling ✅
+
+Block header construction (NativeMiningEngine.kt + StratumHeaderBuilder.kt) — assembles the 80-byte block header correctly:
+
+Builds the coinbase transaction from coinb1 + extranonce1 + extranonce2 + coinb2
+Computes the Merkle root from the coinbase hash + merkle branch
+Assembles the 80-byte header: version + prevhash + merkle_root + ntime + nbits + nonce
+
+SHA-256d hashing (miner.c) — the double-SHA256 implementation is a clean, correct from-scratch implementation verified against NIST test vectors (SHA-256("abc")). ✅
+Target comparison — hash_meets_target() uses memcmp on 32-byte big-endian hashes, which is correct. ✅
+GPU acceleration (vulkan_miner.c + miner.comp) — a real Vulkan compute shader is used to parallelize nonce scanning on the device GPU. This is a genuine optimization, not fake. ✅
+
+❌ Why It Will Never Win In Practice
+The math is brutal. The current Bitcoin network difficulty means a solo miner needs to find a hash below an astronomically small target. A modern ASIC miner does ~100 terahashes per second. A phone CPU does roughly 1–5 kilohashes per second. That's about a 20–100 billion times slower than a single ASIC, let alone the entire network.
+At 5 kH/s, the expected time to solo-mine one Bitcoin block is roughly hundreds of millions of years.
+Pool mining helps, but marginally. The app does connect to a pool and submit shares, so it would theoretically earn proportional fractions of pool rewards. At phone-level hashrates, the expected payout over a lifetime of running the app would be a fraction of a fraction of a cent — and would be outweighed by electricity and battery wear costs many times over.
+
 ## Features
 
 - **Stratum v1** pool support (TCP and TLS)
