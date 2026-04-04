@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingTop="12dp"
+        android:paddingBottom="8dp">
+
+        <TextView
+            android:id="@+id/lifetime_total_hash_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:text="0"
+            android:textColor="@color/bitcoin_orange"
+            android:textSize="22sp" />
+
+        <TextView
+            android:id="@+id/lifetime_total_hash_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:text="@string/lifetime_total_hash_label"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/lifetime_cpu_hash_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center_horizontal"
+            android:text="0"
+            android:textColor="@color/bitcoin_orange"
+            android:textSize="20sp" />
+
+        <TextView
+            android:id="@+id/lifetime_cpu_hash_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:text="@string/lifetime_total_cpu_hash_label"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/lifetime_gpu_hash_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center_horizontal"
+            android:text="0"
+            android:textColor="@color/bitcoin_orange"
+            android:textSize="20sp" />
+
+        <TextView
+            android:id="@+id/lifetime_gpu_hash_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:text="@string/lifetime_total_gpu_hash_label"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/lifetime_nonces_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center_horizontal"
+            android:text="0"
+            android:textColor="@color/bitcoin_orange"
+            android:textSize="20sp" />
+
+        <TextView
+            android:id="@+id/lifetime_nonces_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:text="@string/lifetime_total_nonces_label"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>

@@ -359,6 +359,56 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/config_cpu_sha_section"
+            android:textColor="?attr/colorOnSurface" />
+
+        <RadioGroup
+            android:id="@+id/config_radio_group_cpu_sha"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp">
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_cpu_sha_0"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_cpu_sha_hw_mid" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_cpu_sha_1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_cpu_sha_hw" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_cpu_sha_2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_cpu_sha_neon_mid" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_cpu_sha_3"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_cpu_sha_neon" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_cpu_sha_4"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_cpu_sha_scalar_mid" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_cpu_sha_5"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_cpu_sha_scalar" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="@string/config_gpu_cores"
             android:textColor="?attr/colorOnSurface" />

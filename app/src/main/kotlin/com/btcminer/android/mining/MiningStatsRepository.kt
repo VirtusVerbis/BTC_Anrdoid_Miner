@@ -8,6 +8,9 @@ import android.content.SharedPreferences
  * to a plain SharedPreferences file, separate from the encrypted config vault.
  * Nonces are not persisted (per-round only). Values are only written when
  * current is greater than stored (monotonic), except on reset which writes zeros.
+ *
+ * Also persists **lifetime** aggregates (sum of per-session average CPU/GPU hash rates and cumulative
+ * session nonces), updated when a mining session ends; cleared only via [saveZeros].
  */
 class MiningStatsRepository(context: Context) {
 
@@ -87,10 +90,45 @@ class MiningStatsRepository(context: Context) {
             .putLong(KEY_IDENTIFIED_SHARES, 0L)
             .putLong(KEY_BEST_DIFFICULTY, 0.0.toRawBits())
             .putLong(KEY_BLOCK_TEMPLATES, 0L)
+            .putLong(KEY_LIFETIME_SUM_SESSION_AVG_CPU_HS, 0.0.toRawBits())
+            .putLong(KEY_LIFETIME_SUM_SESSION_AVG_GPU_HS, 0.0.toRawBits())
+            .putLong(KEY_LIFETIME_TOTAL_NONCES, 0L)
             .apply()
     }
 
+    /** Lifetime aggregates shown on dashboard page 2. */
+    fun getLifetimeStats(): LifetimeMiningStats {
+        return LifetimeMiningStats(
+            sumSessionAvgCpuHs = Double.fromBits(prefs.getLong(KEY_LIFETIME_SUM_SESSION_AVG_CPU_HS, 0L)),
+            sumSessionAvgGpuHs = Double.fromBits(prefs.getLong(KEY_LIFETIME_SUM_SESSION_AVG_GPU_HS, 0L)),
+            totalNonces = prefs.getLong(KEY_LIFETIME_TOTAL_NONCES, 0L),
+        )
+    }
+
+    /**
+     * Called when a mining session ends. Adds [sessionNonces] to the lifetime nonce total.
+     * Adds [sessionAvgCpuHs] / [sessionAvgGpuHs] to lifetime sums only if greater than [LIFETIME_HASHRATE_EPSILON].
+     */
+    fun addLifetimeSessionContribution(sessionNonces: Long, sessionAvgCpuHs: Double, sessionAvgGpuHs: Double) {
+        val ed = prefs.edit()
+        if (sessionNonces > 0) {
+            ed.putLong(KEY_LIFETIME_TOTAL_NONCES, prefs.getLong(KEY_LIFETIME_TOTAL_NONCES, 0L) + sessionNonces)
+        }
+        if (sessionAvgCpuHs > LIFETIME_HASHRATE_EPSILON) {
+            val cur = Double.fromBits(prefs.getLong(KEY_LIFETIME_SUM_SESSION_AVG_CPU_HS, 0L))
+            ed.putLong(KEY_LIFETIME_SUM_SESSION_AVG_CPU_HS, (cur + sessionAvgCpuHs).toRawBits())
+        }
+        if (sessionAvgGpuHs > LIFETIME_HASHRATE_EPSILON) {
+            val cur = Double.fromBits(prefs.getLong(KEY_LIFETIME_SUM_SESSION_AVG_GPU_HS, 0L))
+            ed.putLong(KEY_LIFETIME_SUM_SESSION_AVG_GPU_HS, (cur + sessionAvgGpuHs).toRawBits())
+        }
+        ed.apply()
+    }
+
     companion object {
+        /** Ignore negligible averages when accumulating lifetime hash-rate sums. */
+        const val LIFETIME_HASHRATE_EPSILON = 1e-6
+
         private const val PREFS_NAME = "mining_stats"
         private const val KEY_ACCEPTED_SHARES = "accepted_shares"
         private const val KEY_REJECTED_SHARES = "rejected_shares"
@@ -98,5 +136,16 @@ class MiningStatsRepository(context: Context) {
         private const val KEY_BEST_DIFFICULTY = "best_difficulty"
         private const val KEY_BLOCK_TEMPLATES = "block_templates"
         private const val KEY_LAST_RUN_DURATION_MS = "last_run_duration_ms"
+        private const val KEY_LIFETIME_SUM_SESSION_AVG_CPU_HS = "lifetime_sum_session_avg_cpu_hs"
+        private const val KEY_LIFETIME_SUM_SESSION_AVG_GPU_HS = "lifetime_sum_session_avg_gpu_hs"
+        private const val KEY_LIFETIME_TOTAL_NONCES = "lifetime_total_nonces"
     }
+}
+
+data class LifetimeMiningStats(
+    val sumSessionAvgCpuHs: Double,
+    val sumSessionAvgGpuHs: Double,
+    val totalNonces: Long,
+) {
+    val sumSessionAvgTotalHs: Double get() = sumSessionAvgCpuHs + sumSessionAvgGpuHs
 }

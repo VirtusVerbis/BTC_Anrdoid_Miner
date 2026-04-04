@@ -19,11 +19,12 @@ import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.FragmentManager
 import com.btcminer.android.config.ConfigActivity
 import com.btcminer.android.config.MiningConfigRepository
 import com.btcminer.android.databinding.ActivityMainBinding
@@ -60,6 +61,28 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var configRepository: MiningConfigRepository
+    private val statsRepository by lazy { MiningStatsRepository(applicationContext) }
+
+    private var page1Fragment: DashboardStatsPage1Fragment? = null
+    private var page2Fragment: DashboardStatsPage2Fragment? = null
+
+    private val dashboardFragmentCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
+        override fun onFragmentViewCreated(fm: FragmentManager, f: Fragment, v: View, savedInstanceState: Bundle?) {
+            when (f) {
+                is DashboardStatsPage1Fragment -> page1Fragment = f
+                is DashboardStatsPage2Fragment -> page2Fragment = f
+                else -> return
+            }
+            refreshDashboardFromPoll()
+        }
+
+        override fun onFragmentViewDestroyed(fm: FragmentManager, f: Fragment) {
+            when (f) {
+                is DashboardStatsPage1Fragment -> if (page1Fragment === f) page1Fragment = null
+                is DashboardStatsPage2Fragment -> if (page2Fragment === f) page2Fragment = null
+            }
+        }
+    }
 
     /** Full-screen dimensions saved before entering PIP; used to scale root to fit in PIP. */
     private var pipFullWidth = 0
@@ -90,38 +113,16 @@ class MainActivity : AppCompatActivity() {
             val batteryThrottle = service?.isBatteryThrottleActive() == true
             val orange = ContextCompat.getColor(this@MainActivity, R.color.bitcoin_orange)
             val throttleSecondary = ContextCompat.getColor(this@MainActivity, R.color.throttle_secondary)
-            binding.hashRateValue.setTextColor(if (hashrateThrottle) if (flashPhase) Color.RED else throttleSecondary else orange)
-            binding.batteryTempValue.setTextColor(if (batteryThrottle) if (flashPhase) Color.RED else throttleSecondary else orange)
+            val p1 = page1Fragment?.pageBinding
+            p1?.hashRateValue?.setTextColor(if (hashrateThrottle) if (flashPhase) Color.RED else throttleSecondary else orange)
+            p1?.batteryTempValue?.setTextColor(if (batteryThrottle) if (flashPhase) Color.RED else throttleSecondary else orange)
             flashPhase = !flashPhase
             handler.postDelayed(this, THROTTLE_FLASH_PERIOD_MS / 2)
         }
     }
     private val pollRunnable = object : Runnable {
         override fun run() {
-            updateBatteryTempUi()
-            val service = miningService
-            if (service != null) {
-                val status = service.getStatus()
-                updateStatsUi(status, service)
-                updateChart(service.getHashrateHistoryCpu(), service.getHashrateHistoryGpu())
-            } else {
-                val status = MiningStatsRepository(applicationContext).get()
-                updateStatsUi(status, null)
-            }
-            val config = configRepository.getConfig()
-            if (config.autoTuningByBatteryTemp && service != null) {
-                binding.autoTuneBlock.visibility = View.VISIBLE
-                binding.autoTuneValue.text = "${service.getAutoTuningThrottleSleepMs() / 1000}"
-                val dir = service.getAutoTuningDirection()
-                val color = when (dir) {
-                    MiningForegroundService.AUTO_TUNING_DIRECTION_DECREASING -> ContextCompat.getColor(this@MainActivity, R.color.auto_tune_decreasing)
-                    MiningForegroundService.AUTO_TUNING_DIRECTION_INCREASING -> ContextCompat.getColor(this@MainActivity, R.color.bitcoin_orange)
-                    else -> ContextCompat.getColor(this@MainActivity, R.color.white)
-                }
-                binding.autoTuneValue.setTextColor(color)
-            } else {
-                binding.autoTuneBlock.visibility = View.GONE
-            }
+            refreshDashboardFromPoll()
             handler.postDelayed(this, 1000L)
         }
     }
@@ -192,7 +193,8 @@ class MainActivity : AppCompatActivity() {
             miningService = null
             // Keep poll running so dashboard shows persisted counters; show persisted stats and clear chart only
             handler.post {
-                updateStatsUi(MiningStatsRepository(applicationContext).get(), null)
+                updateStatsUi(statsRepository.get(), null)
+                updateLifetimeUi()
                 binding.hashRateChart.data = null
                 binding.hashRateChart.invalidate()
             }
@@ -225,9 +227,17 @@ class MainActivity : AppCompatActivity() {
         binding.buttonStartMining.setOnClickListener { onStartMiningClicked() }
         binding.buttonStopMining.setOnClickListener { onStopMiningClicked() }
 
+        supportFragmentManager.registerFragmentLifecycleCallbacks(dashboardFragmentCallbacks, true)
+        binding.dashboardPager.adapter = MainPagerAdapter(this)
+
         setupChart()
         // Initialize lastBitcoinAddress to detect changes when returning from Config
         lastBitcoinAddress = configRepository.getConfig().bitcoinAddress.trim()
+    }
+
+    override fun onDestroy() {
+        supportFragmentManager.unregisterFragmentLifecycleCallbacks(dashboardFragmentCallbacks)
+        super.onDestroy()
     }
 
     override fun onResume() {
@@ -271,8 +281,9 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(pollRunnable)
         handler.removeCallbacks(flashRunnable)
         handler.removeCallbacks(mempoolFetchRunnable)
-        binding.hashRateValue.setTextColor(ContextCompat.getColor(this, R.color.bitcoin_orange))
-        binding.batteryTempValue.setTextColor(ContextCompat.getColor(this, R.color.bitcoin_orange))
+        val orange = ContextCompat.getColor(this, R.color.bitcoin_orange)
+        page1Fragment?.pageBinding?.hashRateValue?.setTextColor(orange)
+        page1Fragment?.pageBinding?.batteryTempValue?.setTextColor(orange)
     }
 
     override fun onUserLeaveHint() {
@@ -379,46 +390,83 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateStatsUi(status: MiningStatus, service: MiningForegroundService?) {
-        val hashrateStr = if (status.state == MiningStatus.State.Mining) {
-            "${NumberFormatUtils.formatHashrateWithSpaces(status.hashrateHs)} H/s"
-        } else {
-            "— H/s"
-        }
-        binding.hashRateValue.text = hashrateStr
-        val gpuHashrateStr = when {
-            !status.gpuAvailable -> "----"
-            status.state == MiningStatus.State.Mining -> "${NumberFormatUtils.formatHashrateWithSpaces(status.gpuHashrateHs)} H/s"
-            else -> "—"
-        }
-        binding.gpuHashRateValue.text = gpuHashrateStr
-        val config = configRepository.getConfig()
-        val gpuCores = config.gpuCores.coerceAtLeast(0)
-        val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize().coerceAtLeast(32)
-        val effectiveWorkgroupSize = if (gpuCores > 0) (32 * gpuCores).coerceAtMost(maxWorkGroupSize) else 0
-        binding.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuCores > 0) " - $effectiveWorkgroupSize" else ""
-        val cpuPct = service?.getLastCpuUtilizationPercent()
-        binding.cpuUtilizationValue.text = if (cpuPct != null) String.format(Locale.US, "%.1f%%", cpuPct) else "—"
-        binding.noncesValue.text = NumberFormatUtils.formatWithSpaces(status.noncesScanned)
-        binding.acceptedSharesValue.text = status.acceptedShares.toString()
-        binding.rejectedSharesValue.text = status.rejectedShares.toString()
-        binding.root.findViewById<TextView>(R.id.identified_shares_value).text = status.identifiedShares.toString()
-        binding.bestDifficultyValue.text = if (status.bestDifficulty > 0.0) String.format(Locale.US, "%.6f", status.bestDifficulty) else "—"
-        binding.blockTemplateValue.text = status.blockTemplates.toString()
-        val startMs = service?.getMiningStartTimeMillis()
-        val (timerStr, timerLabel) = if (status.state == MiningStatus.State.Mining && startMs != null) {
-            formatElapsed(System.currentTimeMillis() - startMs) to getString(R.string.mining_timer_label)
-        } else {
-            val lastRunMs = MiningStatsRepository(applicationContext).getLastRunDurationMs()
-            if (lastRunMs > 0) {
-                formatElapsed(lastRunMs) to getString(R.string.mining_timer_last_run)
+        page1Fragment?.pageBinding?.let { p1 ->
+            val hashrateStr = if (status.state == MiningStatus.State.Mining) {
+                "${NumberFormatUtils.formatHashrateWithSpaces(status.hashrateHs)} H/s"
             } else {
-                "00:00:00:00" to getString(R.string.mining_timer_label)
+                "— H/s"
             }
+            p1.hashRateValue.text = hashrateStr
+            val gpuHashrateStr = when {
+                !status.gpuAvailable -> "----"
+                status.state == MiningStatus.State.Mining -> "${NumberFormatUtils.formatHashrateWithSpaces(status.gpuHashrateHs)} H/s"
+                else -> "—"
+            }
+            p1.gpuHashRateValue.text = gpuHashrateStr
+            val config = configRepository.getConfig()
+            val gpuCores = config.gpuCores.coerceAtLeast(0)
+            val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize().coerceAtLeast(32)
+            val effectiveWorkgroupSize = if (gpuCores > 0) (32 * gpuCores).coerceAtMost(maxWorkGroupSize) else 0
+            p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuCores > 0) " - $effectiveWorkgroupSize" else ""
+            val cpuPct = service?.getLastCpuUtilizationPercent()
+            p1.cpuUtilizationValue.text = if (cpuPct != null) String.format(Locale.US, "%.1f%%", cpuPct) else "—"
+            p1.noncesValue.text = NumberFormatUtils.formatWithSpaces(status.noncesScanned)
+            p1.acceptedSharesValue.text = status.acceptedShares.toString()
+            p1.rejectedSharesValue.text = status.rejectedShares.toString()
+            p1.identifiedSharesValue.text = status.identifiedShares.toString()
+            p1.bestDifficultyValue.text = if (status.bestDifficulty > 0.0) String.format(Locale.US, "%.6f", status.bestDifficulty) else "—"
+            p1.blockTemplateValue.text = status.blockTemplates.toString()
+            val startMs = service?.getMiningStartTimeMillis()
+            val (timerStr, timerLabel) = if (status.state == MiningStatus.State.Mining && startMs != null) {
+                formatElapsed(System.currentTimeMillis() - startMs) to getString(R.string.mining_timer_label)
+            } else {
+                val lastRunMs = statsRepository.getLastRunDurationMs()
+                if (lastRunMs > 0) {
+                    formatElapsed(lastRunMs) to getString(R.string.mining_timer_last_run)
+                } else {
+                    "00:00:00:00" to getString(R.string.mining_timer_label)
+                }
+            }
+            p1.miningTimerValue.text = timerStr
+            p1.miningTimerLabel.text = timerLabel
+            p1.stratumConnectionIcon.alpha = if (status.state == MiningStatus.State.Mining && !status.connectionLost) 1f else 0.3f
         }
-        binding.miningTimerValue.text = timerStr
-        binding.miningTimerLabel.text = timerLabel
         binding.reconnectingBanner.visibility = if (MiningConstraints.isBothWifiAndDataUnavailable(this) && status.connectionLost) View.VISIBLE else View.GONE
-        binding.stratumConnectionIcon.alpha = if (status.state == MiningStatus.State.Mining && !status.connectionLost) 1f else 0.3f
+    }
+
+    private fun refreshDashboardFromPoll() {
+        updateBatteryTempUi()
+        val service = miningService
+        if (service != null) {
+            updateStatsUi(service.getStatus(), service)
+            updateChart(service.getHashrateHistoryCpu(), service.getHashrateHistoryGpu())
+        } else {
+            updateStatsUi(statsRepository.get(), null)
+        }
+        updateLifetimeUi()
+        val config = configRepository.getConfig()
+        if (config.autoTuningByBatteryTemp && service != null) {
+            binding.autoTuneBlock.visibility = View.VISIBLE
+            binding.autoTuneValue.text = "${service.getAutoTuningThrottleSleepMs() / 1000}"
+            val dir = service.getAutoTuningDirection()
+            val color = when (dir) {
+                MiningForegroundService.AUTO_TUNING_DIRECTION_DECREASING -> ContextCompat.getColor(this, R.color.auto_tune_decreasing)
+                MiningForegroundService.AUTO_TUNING_DIRECTION_INCREASING -> ContextCompat.getColor(this, R.color.bitcoin_orange)
+                else -> ContextCompat.getColor(this, R.color.white)
+            }
+            binding.autoTuneValue.setTextColor(color)
+        } else {
+            binding.autoTuneBlock.visibility = View.GONE
+        }
+    }
+
+    private fun updateLifetimeUi() {
+        val p2 = page2Fragment?.pageBinding ?: return
+        val s = statsRepository.getLifetimeStats()
+        p2.lifetimeTotalHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgTotalHs)} H/s"
+        p2.lifetimeCpuHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgCpuHs)} H/s"
+        p2.lifetimeGpuHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgGpuHs)} H/s"
+        p2.lifetimeNoncesValue.text = NumberFormatUtils.formatWithSpaces(s.totalNonces)
     }
 
     private fun formatElapsed(elapsedMs: Long): String {
@@ -434,7 +482,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateBatteryTempUi() {
         val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: run {
-            binding.batteryTempValue.text = "—"
+            page1Fragment?.pageBinding?.batteryTempValue?.text = "—"
             return
         }
         val tempTenthsC = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
@@ -448,17 +496,19 @@ class MainActivity : AppCompatActivity() {
                 String.format(Locale.US, "%.1f °C", tempC)
             }
         }
-        binding.batteryTempValue.text = text
+        page1Fragment?.pageBinding?.batteryTempValue?.text = text
     }
 
     private fun clearStatsUi() {
-        binding.hashRateValue.text = "0.00 H/s"
-        binding.gpuHashRateValue.text = "0.00 H/s"
-        binding.cpuUtilizationValue.text = "—"
-        binding.miningTimerValue.text = "00:00:00:00"
-        binding.batteryTempValue.text = "—"
-        binding.bestDifficultyValue.text = "—"
-        binding.blockTemplateValue.text = "—"
+        page1Fragment?.pageBinding?.let { p1 ->
+            p1.hashRateValue.text = "0.00 H/s"
+            p1.gpuHashRateValue.text = "0.00 H/s"
+            p1.cpuUtilizationValue.text = "—"
+            p1.miningTimerValue.text = "00:00:00:00"
+            p1.batteryTempValue.text = "—"
+            p1.bestDifficultyValue.text = "—"
+            p1.blockTemplateValue.text = "—"
+        }
         binding.walletBalanceValue.text = "—"
         binding.walletBalanceNote.visibility = View.GONE
         binding.hashRateChart.data = null

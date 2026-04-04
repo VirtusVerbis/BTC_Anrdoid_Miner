@@ -21,7 +21,29 @@ static const uint32_t K[64] = {
 #define SIG0(x) (ROTR(x, 7) ^ ROTR(x, 18) ^ ((x) >> 3))
 #define SIG1(x) (ROTR(x, 17) ^ ROTR(x, 19) ^ ((x) >> 10))
 
-static void sha256_transform(uint32_t state[8], const uint8_t block[64]) {
+void sha256_initial_state(uint32_t state[8]) {
+    state[0] = 0x6a09e667;
+    state[1] = 0xbb67ae85;
+    state[2] = 0x3c6ef372;
+    state[3] = 0xa54ff53a;
+    state[4] = 0x510e527f;
+    state[5] = 0x9b05688c;
+    state[6] = 0x1f83d9ab;
+    state[7] = 0x5be0cd19;
+}
+
+void sha256_pad_second_block_80(const uint8_t last16[16], uint8_t block[64]) {
+    size_t len = 16;
+    memcpy(block, last16, 16);
+    block[len++] = 0x80;
+    memset(block + len, 0, 56 - len);
+    uint64_t bitlen = (uint64_t)80 * 8u;
+    for (size_t i = 0; i < 8; i++) {
+        block[63 - i] = (uint8_t)(bitlen >> (i * 8));
+    }
+}
+
+void sha256_compress(uint32_t state[8], const uint8_t block[64]) {
     uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
     uint32_t e = state[4], f = state[5], g = state[6], h = state[7];
     uint32_t w[64];
@@ -46,17 +68,15 @@ static void sha256_transform(uint32_t state[8], const uint8_t block[64]) {
 }
 
 void sha256(const uint8_t *data, size_t len, uint8_t *out) {
-    uint32_t state[8] = {
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-    };
+    uint32_t state[8];
+    sha256_initial_state(state);
     uint8_t block[64];
     size_t i;
     uint64_t bitlen = len * 8;
 
     while (len >= 64) {
         memcpy(block, data, 64);
-        sha256_transform(state, block);
+        sha256_compress(state, block);
         data += 64;
         len -= 64;
     }
@@ -64,14 +84,14 @@ void sha256(const uint8_t *data, size_t len, uint8_t *out) {
     block[len++] = 0x80;
     if (len > 56) {
         memset(block + len, 0, 64 - len);
-        sha256_transform(state, block);
+        sha256_compress(state, block);
         len = 0;
     }
     memset(block + len, 0, 56 - len);
     for (i = 0; i < 8; i++) {
         block[63 - i] = (uint8_t)(bitlen >> (i * 8));
     }
-    sha256_transform(state, block);
+    sha256_compress(state, block);
 
     for (i = 0; i < 8; i++) {
         out[i*4 + 0] = (uint8_t)(state[i] >> 24);

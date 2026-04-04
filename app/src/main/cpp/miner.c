@@ -1,19 +1,20 @@
 #include "sha256.h"
+#include "sha256_scan.h"
 #include <jni.h>
 #include <stdint.h>
 #include <string.h>
+
+#if defined(__aarch64__)
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
+#endif
 
 #define BLOCK_HEADER_SIZE 80
 #define HEADER_PREFIX_SIZE 76
 #define HASH_SIZE 32
 
-/* Set by cpuRequestInterrupt; checked every 64k iterations in nativeScanNonces. */
-static volatile int g_cpu_interrupt_requested = 0;
-
-/* Compare hash and target as 32-byte big-endian; return 1 if hash <= target, 0 otherwise. */
-static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
-    return memcmp(hash, target, HASH_SIZE) <= 0;
-}
+/* Set by cpuRequestInterrupt; checked every 64k iterations in nonce scan. */
+volatile int g_cpu_interrupt_requested = 0;
 
 /* NIST test vector: SHA-256("abc") = 0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad */
 static const uint8_t TEST_ABC_HASH[HASH_SIZE] = {
@@ -64,40 +65,50 @@ Java_com_btcminer_android_mining_NativeMiner_cpuRequestInterrupt(JNIEnv *env, jc
     g_cpu_interrupt_requested = 1;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_btcminer_android_mining_NativeMiner_nativeHwcapSha2(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+#if defined(__aarch64__)
+    unsigned long hw = getauxval(AT_HWCAP);
+    return ((hw & HWCAP_SHA2) != 0) ? JNI_TRUE : JNI_FALSE;
+#else
+    return JNI_FALSE;
+#endif
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_btcminer_android_mining_NativeMiner_nativeSelfTestCpuSha256Flavor(JNIEnv *env, jclass clazz,
+                                                                           jint flavor) {
+    (void)env;
+    (void)clazz;
+    if (flavor < 0 || flavor > 5) {
+        return JNI_FALSE;
+    }
+    return cpu_sha_selftest_flavor((int)flavor) ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_btcminer_android_mining_NativeMiner_nativeScanNonces(JNIEnv *env, jclass clazz,
                                                              jbyteArray header76Java,
                                                              jint nonceStart, jint nonceEnd,
-                                                             jbyteArray targetJava) {
-    (void)env;
+                                                             jbyteArray targetJava, jint flavor) {
     (void)clazz;
     if (!header76Java || !targetJava ||
         (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
         (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
         return (jint)-1;
     }
-    uint8_t header80[BLOCK_HEADER_SIZE];
+    if (flavor < 0 || flavor > 5) {
+        return (jint)-4;
+    }
+    uint8_t header76[HEADER_PREFIX_SIZE];
     uint8_t target[HASH_SIZE];
-    uint8_t hash[HASH_SIZE];
-    (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header80);
+    (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
     (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
 
     uint32_t start = (uint32_t)nonceStart;
     uint32_t end = (uint32_t)nonceEnd;
     g_cpu_interrupt_requested = 0;
-    for (uint32_t nonce = start; nonce <= end; nonce++) {
-        if (((nonce - start) & 0xFFFF) == 0 && g_cpu_interrupt_requested) {
-            g_cpu_interrupt_requested = 0;
-            return (jint)-3;
-        }
-        header80[76] = (uint8_t)(nonce);
-        header80[77] = (uint8_t)(nonce >> 8);
-        header80[78] = (uint8_t)(nonce >> 16);
-        header80[79] = (uint8_t)(nonce >> 24);
-        sha256_double(header80, BLOCK_HEADER_SIZE, hash);
-        if (hash_meets_target(hash, target)) {
-            return (jint)nonce;
-        }
-    }
-    return (jint)-1;
+    return (jint)scan_nonces_dispatch((int)flavor, header76, start, end, target);
 }

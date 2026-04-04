@@ -80,5 +80,6 @@ class SecureConfigStorage(context: Context) {
         const val KEY_USE_LEGACY_ALARM = "use_legacy_alarm"
         const val KEY_MINING_THREAD_PRIORITY = "mining_thread_priority"
         const val KEY_ALARM_WAKE_INTERVAL_SEC = "alarm_wake_interval_sec"
+        const val KEY_CPU_SHA256_FLAVOR = "cpu_sha256_flavor"
     }
 }

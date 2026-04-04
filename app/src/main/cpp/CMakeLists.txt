@@ -46,9 +46,24 @@ else()
     message(FATAL_ERROR "glslangValidator or glslc required for GPU path. Install Vulkan SDK or shaderc and add to PATH.")
 endif()
 
-add_library(miner SHARED miner.c sha256.c vulkan_miner.c)
+set(MINER_SRCS miner.c sha256.c sha256_scan.c vulkan_miner.c)
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    list(APPEND MINER_SRCS sha256_arm_sha2.c sha256_neon_4way.c)
+endif()
+
+add_library(miner SHARED ${MINER_SRCS})
 target_include_directories(miner PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 add_dependencies(miner miner_shader)
+
+# Optional native self-test logs: pass -DSHA256_SELFTEST_DIAG=1 in Gradle cmake arguments, e.g.
+# android { defaultConfig { externalNativeBuild { cmake { arguments += "-DSHA256_SELFTEST_DIAG=1" } } } }
+if(SHA256_SELFTEST_DIAG)
+    target_compile_definitions(miner PRIVATE SHA256_SELFTEST_DIAG=1)
+endif()
+
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    target_compile_options(miner PRIVATE -march=armv8-a+crypto)
+endif()
 
 find_library(LOG_LIB log)
 target_link_libraries(miner ${LOG_LIB})

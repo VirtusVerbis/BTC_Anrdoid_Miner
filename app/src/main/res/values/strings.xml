@@ -65,6 +65,14 @@
     <string name="config_status_update_interval">Status update interval (ms)</string>
     <string name="config_status_update_interval_summary">Update hashrate every X ms (dashboard)</string>
     <string name="config_saved">Configuration saved</string>
+    <string name="config_cpu_sha_section">CPU SHA-256 (nonce hashing)</string>
+    <string name="config_cpu_sha_hw_mid">ARM SHA2 + midstate</string>
+    <string name="config_cpu_sha_hw">ARM SHA2</string>
+    <string name="config_cpu_sha_neon_mid">NEON 4-way + midstate</string>
+    <string name="config_cpu_sha_neon">NEON 4-way</string>
+    <string name="config_cpu_sha_scalar_mid">Scalar + midstate</string>
+    <string name="config_cpu_sha_scalar">Scalar (compatibility)</string>
+    <string name="config_cpu_sha_unsupported_suffix">\u0020(not on this device)</string>
 
     <!-- Mining service -->
     <string name="mining_notification_channel_name">Mining</string>
@@ -79,6 +87,7 @@
     <string name="mining_started">Mining started</string>
     <string name="mining_restarted">Mining restarted with new settings</string>
     <string name="mining_failed">Mining failed: %s</string>
+    <string name="mining_start_fail_sha_selftest">Mining failed: CPU SHA-256 self-test did not match the reference implementation. Try Scalar or reinstall the app.</string>
     <string name="gpu_not_available">GPU not available</string>
     <string name="pool_redirect_notification_title">Pool requested redirect</string>
     <string name="pool_redirect_notification_text">Pool requested redirect to %1$s:%2$d (not applied). Dismiss when done.</string>
@@ -99,10 +108,16 @@
     <string name="best_difficulty_label">Best difficulty</string>
     <string name="block_template_label">Block template</string>
 
+    <!-- Lifetime stats (dashboard page 2): sum of per-session average hash rates (H/s), not time-weighted. -->
+    <string name="lifetime_total_hash_label">All-time total hash rate (sum of session avgs)</string>
+    <string name="lifetime_total_cpu_hash_label">All-time total CPU hash rate (sum of session avgs)</string>
+    <string name="lifetime_total_gpu_hash_label">All-time total GPU hash rate (sum of session avgs)</string>
+    <string name="lifetime_total_nonces_label">All-time total nonces</string>
+
     <!-- Reset counters (Config) -->
     <string name="reset_all_ui_counters">Reset All UI Counters</string>
     <string name="reset_counters_dialog_title">Reset counters?</string>
-    <string name="reset_counters_dialog_message">Do you want to reset all counters? (Accepted, Rejected, Identified shares, Block templates, Best difficulty, Nonces)</string>
+    <string name="reset_counters_dialog_message">Do you want to reset all counters? This includes accepted, rejected, and identified shares, block templates, best difficulty, session nonces, and all-time lifetime stats (sum of session-average hash rates and cumulative nonces).</string>
     <string name="reset_counters_yes">Yes</string>
     <string name="reset_counters_no">No</string>
 

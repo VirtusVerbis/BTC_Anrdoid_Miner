@@ -1,0 +1,9 @@
+Third-party notices for native SHA-256 implementations in this directory:
+
+- Bitcoin Core `src/crypto/sha256_arm_shani.cpp` (MIT License). Copyright (c) 2022 The Bitcoin Core developers. Used as the algorithmic reference for ARMv8 SHA2 round scheduling (`sha256_arm_sha2.c`). See https://github.com/bitcoin/bitcoin/blob/v28.0/COPYING
+
+- Bitcoin Core `src/crypto/sha256_sse4.cpp` (MIT License). Used as the reference for multi-lane (4-way) message schedule layout, re-expressed with ARM NEON in `sha256_neon_4way.c`.
+
+- Jeffrey Walton / SHA-Intrinsics and mbedTLS contributors (public domain / permissive), as credited in Bitcoin Core’s `sha256_arm_shani.cpp` header.
+
+The scalar reference implementation remains `sha256.c` / `sha256_double` for validation and JNI block hashing.

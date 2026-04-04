@@ -30,12 +30,17 @@ class NativeMiningEngine(
     private val onGpuUnavailable: (() -> Unit)? = null,
 ) : MiningEngine {
 
-    private companion object {
+    companion object {
         private const val LOG_TAG = "Mining"
         /** Returned by gpuScanNonces when GPU path is unavailable (no CPU fallback). */
         private const val GPU_UNAVAILABLE = -2
         /** Returned by nativeScanNonces when CPU worker was interrupted by stuck watchdog. */
         private const val CPU_INTERRUPTED = -3
+        /** Returned when native CPU SHA flavor path fails; same handling as [CPU_INTERRUPTED] in workers. */
+        private const val CPU_SHA_FLAVOR_ERROR = NativeMiner.CPU_SHA_FLAVOR_ERROR
+
+        /** [MiningStatus.lastError] marker for SHA self-test failure (dedicated Toast in service). */
+        const val SHA256_SELFTEST_LAST_ERROR = "CPU_SHA256_SELFTEST"
         private const val CHUNK_SIZE = 2L * 1024 * 1024
         private const val MAX_NONCE = 0xFFFFFFFFL
         /** CPU nonce range end; GPU uses CPU_NONCE_END to MAX_NONCE. */
@@ -123,6 +128,16 @@ class NativeMiningEngine(
             running.set(false)
             return
         }
+
+        val flavor = config.cpuSha256Flavor
+        if (!NativeMiner.nativeSelfTestCpuSha256Flavor(flavor.ordinal)) {
+            AppLog.e(LOG_TAG) { "CPU SHA-256 self-test failed for flavor=${flavor.name}" }
+            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = SHA256_SELFTEST_LAST_ERROR))
+            running.set(false)
+            return
+        }
+        AppLog.d(LOG_TAG) { "CPU SHA-256 flavor active: ${flavor.name}" }
+
         val port = config.stratumPort.coerceIn(1, 65535)
         val username = config.stratumUser.trim()
         val password = config.stratumPass
@@ -287,10 +302,20 @@ class NativeMiningEngine(
                     val nonceEndL = minOf(start + CHUNK_SIZE - 1, CPU_NONCE_END)
                     val nonceEnd = nonceEndL.toInt()
                     val t0 = System.currentTimeMillis()
-                    val n = NativeMiner.nativeScanNonces(ctx.header76, start.toInt(), nonceEnd, ctx.target)
+                    val n = NativeMiner.nativeScanNonces(
+                        ctx.header76,
+                        start.toInt(),
+                        nonceEnd,
+                        ctx.target,
+                        config.cpuSha256Flavor.ordinal,
+                    )
                     val workMs = System.currentTimeMillis() - t0
-                    if (n == CPU_INTERRUPTED) {
-                        AppLog.d(LOG_TAG) { "CPU worker interrupted (stuck watchdog)" }
+                    if (n == CPU_INTERRUPTED || n == CPU_SHA_FLAVOR_ERROR) {
+                        if (n == CPU_SHA_FLAVOR_ERROR) {
+                            AppLog.e(LOG_TAG) { "CPU SHA flavor error in worker (flavor=${config.cpuSha256Flavor.name})" }
+                        } else {
+                            AppLog.d(LOG_TAG) { "CPU worker interrupted (stuck watchdog)" }
+                        }
                         break
                     }
                     val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)

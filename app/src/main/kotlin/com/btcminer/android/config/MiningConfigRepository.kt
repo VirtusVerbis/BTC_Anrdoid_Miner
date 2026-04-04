@@ -55,6 +55,14 @@ class MiningConfigRepository(context: Context) {
             .coerceIn(MiningConfig.MINING_THREAD_PRIORITY_MIN, MiningConfig.MINING_THREAD_PRIORITY_MAX),
         alarmWakeIntervalSec = storage.getInt(SecureConfigStorage.KEY_ALARM_WAKE_INTERVAL_SEC, 60)
             .coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX),
+        cpuSha256Flavor = run {
+            val rawOrd = storage.getInt(
+                SecureConfigStorage.KEY_CPU_SHA256_FLAVOR,
+                CpuSha256Flavor.SCALAR.ordinal
+            )
+            val raw = CpuSha256Flavor.fromOrdinal(rawOrd) ?: CpuSha256Flavor.SCALAR
+            CpuShaCapabilities.coerceToSupported(raw)
+        },
     )
 
     /** Returns the stored stratum cert pin for the given host, or null if none. Host should be normalized (no scheme, first segment). */
@@ -120,6 +128,10 @@ class MiningConfigRepository(context: Context) {
             edit.putInt(
                 SecureConfigStorage.KEY_ALARM_WAKE_INTERVAL_SEC,
                 config.alarmWakeIntervalSec.coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX)
+            )
+            edit.putInt(
+                SecureConfigStorage.KEY_CPU_SHA256_FLAVOR,
+                config.cpuSha256Flavor.ordinal
             )
         }
     }

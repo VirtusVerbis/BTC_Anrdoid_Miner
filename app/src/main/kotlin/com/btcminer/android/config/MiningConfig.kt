@@ -28,6 +28,7 @@ data class MiningConfig(
     val useLegacyAlarm: Boolean = false,
     val miningThreadPriority: Int = 0,
     val alarmWakeIntervalSec: Int = 60,
+    val cpuSha256Flavor: CpuSha256Flavor = CpuSha256Flavor.SCALAR,
 ) {
     fun isValidForMining(): Boolean =
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()

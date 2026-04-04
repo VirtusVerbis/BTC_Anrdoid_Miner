@@ -224,7 +224,46 @@ class ConfigActivity : AppCompatActivity() {
         val statusMs = c.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
         binding.configSliderStatusInterval.value = statusMs.toFloat()
         binding.configStatusIntervalValue.text = "$statusMs ms"
+        applyCpuShaFlavorRadios()
+        binding.configRadioGroupCpuSha.check(radioIdForFlavor(c.cpuSha256Flavor))
         loadedConfig = c
+    }
+
+    private fun radioIdForFlavor(f: CpuSha256Flavor): Int = when (f) {
+        CpuSha256Flavor.HW_SHA2_MIDSTATE -> R.id.config_radio_cpu_sha_0
+        CpuSha256Flavor.HW_SHA2 -> R.id.config_radio_cpu_sha_1
+        CpuSha256Flavor.NEON4_MIDSTATE -> R.id.config_radio_cpu_sha_2
+        CpuSha256Flavor.NEON4 -> R.id.config_radio_cpu_sha_3
+        CpuSha256Flavor.SCALAR_MIDSTATE -> R.id.config_radio_cpu_sha_4
+        CpuSha256Flavor.SCALAR -> R.id.config_radio_cpu_sha_5
+    }
+
+    private fun flavorForCheckedRadio(): CpuSha256Flavor = when (binding.configRadioGroupCpuSha.checkedRadioButtonId) {
+        R.id.config_radio_cpu_sha_0 -> CpuSha256Flavor.HW_SHA2_MIDSTATE
+        R.id.config_radio_cpu_sha_1 -> CpuSha256Flavor.HW_SHA2
+        R.id.config_radio_cpu_sha_2 -> CpuSha256Flavor.NEON4_MIDSTATE
+        R.id.config_radio_cpu_sha_3 -> CpuSha256Flavor.NEON4
+        R.id.config_radio_cpu_sha_4 -> CpuSha256Flavor.SCALAR_MIDSTATE
+        R.id.config_radio_cpu_sha_5 -> CpuSha256Flavor.SCALAR
+        else -> CpuSha256Flavor.SCALAR
+    }
+
+    private fun applyCpuShaFlavorRadios() {
+        val caps = CpuShaCapabilities
+        val suffix = getString(R.string.config_cpu_sha_unsupported_suffix)
+        fun applyRb(rb: com.google.android.material.radiobutton.MaterialRadioButton, flavor: CpuSha256Flavor, label: String) {
+            val ok = caps.isSelectable(flavor)
+            rb.isEnabled = ok
+            rb.isClickable = ok
+            rb.alpha = if (ok) 1f else 0.55f
+            rb.text = if (ok) label else label + suffix
+        }
+        applyRb(binding.configRadioCpuSha0, CpuSha256Flavor.HW_SHA2_MIDSTATE, getString(R.string.config_cpu_sha_hw_mid))
+        applyRb(binding.configRadioCpuSha1, CpuSha256Flavor.HW_SHA2, getString(R.string.config_cpu_sha_hw))
+        applyRb(binding.configRadioCpuSha2, CpuSha256Flavor.NEON4_MIDSTATE, getString(R.string.config_cpu_sha_neon_mid))
+        applyRb(binding.configRadioCpuSha3, CpuSha256Flavor.NEON4, getString(R.string.config_cpu_sha_neon))
+        applyRb(binding.configRadioCpuSha4, CpuSha256Flavor.SCALAR_MIDSTATE, getString(R.string.config_cpu_sha_scalar_mid))
+        applyRb(binding.configRadioCpuSha5, CpuSha256Flavor.SCALAR, getString(R.string.config_cpu_sha_scalar))
     }
 
     private fun saveConfig() {
@@ -233,6 +272,11 @@ class ConfigActivity : AppCompatActivity() {
         val portCoerced = port.coerceIn(1, 65535)
         val useTls = stratumUrlRaw.lowercase().contains("ssl") || portCoerced == 443
         val pinThisPoolChecked = binding.configPinThisPool.isChecked
+
+        val requestedFlavor = flavorForCheckedRadio()
+        val cpuShaFlavor =
+            if (CpuShaCapabilities.isSelectable(requestedFlavor)) requestedFlavor
+            else CpuShaCapabilities.coerceToSupported(requestedFlavor)
 
         val config = MiningConfig(
             stratumUrl = MiningConfig.sanitize(stratumUrlRaw, MiningConfig.MAX_STRATUM_URL_LEN),
@@ -276,6 +320,7 @@ class ConfigActivity : AppCompatActivity() {
                 MiningConfig.GPU_UTILIZATION_MIN,
                 MiningConfig.GPU_UTILIZATION_MAX
             ),
+            cpuSha256Flavor = cpuShaFlavor,
         )
 
         if (pinThisPoolChecked && config.stratumUrl.isNotBlank() && useTls) {

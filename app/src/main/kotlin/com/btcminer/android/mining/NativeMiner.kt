@@ -25,14 +25,22 @@ object NativeMiner {
      */
     external fun nativeHashBlockHeader(header: ByteArray): ByteArray?
 
+    /** True when AArch64 reports SHA256 hardware support (AT_HWCAP HWCAP_SHA2). */
+    external fun nativeHwcapSha2(): Boolean
+
+    /** Verify double-SHA256 for [flavor] against scalar reference on fixed test vectors. */
+    external fun nativeSelfTestCpuSha256Flavor(flavor: Int): Boolean
+
     /**
-     * Scan nonce range for a block header prefix. Returns winning nonce or -1 if none meets target.
-     * @param header76 76-byte block header (version, prevhash, merkle_root, ntime, nbits; no nonce).
-     * @param nonceStart first nonce (inclusive).
-     * @param nonceEnd last nonce (inclusive).
-     * @param target 32-byte pool target (big-endian); hash must be <= target.
+     * Scan nonce range for a block header prefix. Returns winning nonce, -1 if none meets target (or JNI
+     * validation error), **-3** ([CPU_INTERRUPTED]) when interrupted, **-4** ([CPU_SHA_FLAVOR_ERROR])
+     * when flavor/dispatch fails — treat -4 like -3 for worker exit and do not count full chunk scanned.
+     * @param flavor [com.btcminer.android.config.CpuSha256Flavor.ordinal], 0..5.
      */
-    external fun nativeScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray): Int
+    external fun nativeScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray, flavor: Int): Int
+
+    /** Returned when CPU SHA flavor path fails in native (invalid flavor, ARM/NEON error). See [nativeScanNonces]. */
+    const val CPU_SHA_FLAVOR_ERROR = -4
 
     /**
      * Requests the GPU worker to interrupt. When set, [gpuScanNonces] will return -2 on its next

@@ -424,6 +424,10 @@ class MiningForegroundService : Service() {
         handler.removeCallbacks(saveStatsRunnable)
         sampleExecutor.shutdown()
         stopThrottleThread()
+        // If the service is destroyed without [stopMining] (e.g. killed), still record lifetime once while data exists.
+        if (engine.isRunning()) {
+            finalizeLifetimeStatsForEndedSession()
+        }
         statsRepository.save(engine.getStatus())
         unregisterConstraintReceiver()
         cancelAlarm()
@@ -463,7 +467,12 @@ class MiningForegroundService : Service() {
                 val err = engine.getStatus().lastError ?: "Mining failed"
                 AppLog.e(LOG_TAG) { "Mining start failed: $err" }
                 Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(applicationContext, getString(R.string.mining_failed, err), Toast.LENGTH_LONG).show()
+                    val toastText = if (err == NativeMiningEngine.SHA256_SELFTEST_LAST_ERROR) {
+                        getString(R.string.mining_start_fail_sha_selftest)
+                    } else {
+                        getString(R.string.mining_failed, err)
+                    }
+                    Toast.makeText(applicationContext, toastText, Toast.LENGTH_LONG).show()
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
@@ -679,6 +688,46 @@ class MiningForegroundService : Service() {
         }
     }
 
+    /**
+     * Session-end average for lifetime stats: mean of per-chunk averages (~10 min of samples at ~1 Hz).
+     * If [history] is empty, uses [fallbackHs] once when above [MiningStatsRepository.LIFETIME_HASHRATE_EPSILON].
+     */
+    private fun sessionAverageHashrateForLifetime(history: List<Double>, fallbackHs: Double): Double {
+        if (history.isNotEmpty()) {
+            val chunk = LIFETIME_SESSION_AVG_CHUNK_SAMPLES
+            if (history.size <= chunk) return history.average()
+            val chunkAvgs = mutableListOf<Double>()
+            var i = 0
+            while (i + chunk <= history.size) {
+                chunkAvgs.add(history.subList(i, i + chunk).average())
+                i += chunk
+            }
+            if (i < history.size) {
+                chunkAvgs.add(history.subList(i, history.size).average())
+            }
+            return chunkAvgs.average()
+        }
+        return if (kotlin.math.abs(fallbackHs) > MiningStatsRepository.LIFETIME_HASHRATE_EPSILON) fallbackHs else 0.0
+    }
+
+    /**
+     * Persists this session's nonces and sum-of-session-average CPU/GPU hash rates.
+     * Must run while [engine] status and hashrate histories are still meaningful, **before** histories are cleared.
+     *
+     * Process kill / crash may skip this — acceptable per product note.
+     */
+    private fun finalizeLifetimeStatsForEndedSession() {
+        val status = engine.getStatus()
+        val cpuHist = synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.toList() }
+        val gpuHist = synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.toList() }
+        val avgCpu = sessionAverageHashrateForLifetime(cpuHist, status.hashrateHs)
+        val avgGpu = sessionAverageHashrateForLifetime(
+            gpuHist,
+            if (status.gpuAvailable) status.gpuHashrateHs else 0.0,
+        )
+        statsRepository.addLifetimeSessionContribution(status.noncesScanned, avgCpu, avgGpu)
+    }
+
     private fun stopMining() {
         AppLog.d(LOG_TAG) { "stopMining()" }
         miningStartTimeMillis?.let { start ->
@@ -690,6 +739,7 @@ class MiningForegroundService : Service() {
         handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
         stopThrottleThread()
+        finalizeLifetimeStatsForEndedSession()
         statsRepository.save(engine.getStatus())
         synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
         synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
@@ -813,7 +863,7 @@ class MiningForegroundService : Service() {
         const val AUTO_TUNING_STEP_DOWN_MS = 5_000L
         const val AUTO_TUNING_SLEEP_MAX = 240_000L //120_000L //60_000L
         /** Default throttle sleep (ms) when auto-tuning starts; no persistence. */
-        const val AUTO_TUNING_DEFAULT_SLEEP_MS = 30_000L
+        const val AUTO_TUNING_DEFAULT_SLEEP_MS = 0L // 30_000L
         /** Fraction of max battery temp for auto-tune band low bound (below this → decrease delay). */
         const val AUTO_TUNING_TARGET_LO_RATIO: Double = 0.90 // 0.85 //0.70
         /** Fraction of max battery temp for auto-tune band high bound (above this up to 100% → increase delay). */
@@ -824,6 +874,8 @@ class MiningForegroundService : Service() {
         /** Rolling window (seconds) for CPU utilization %; samples older than this are dropped. */
         const val CPU_UTILIZATION_ROLLING_WINDOW_SEC = 60
         private const val STATS_SAVE_INTERVAL_MS = 60_000L
+        /** ~1 dashboard sample/s; chunk session averages into ~10 min segments, then mean of chunk means. */
+        private const val LIFETIME_SESSION_AVG_CHUNK_SAMPLES = 10 * 60
         private const val LOG_TAG = "Mining"
         const val ACTION_START = "com.btcminer.android.mining.START"
         const val ACTION_STOP = "com.btcminer.android.mining.STOP"
