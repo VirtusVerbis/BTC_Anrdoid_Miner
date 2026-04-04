@@ -71,55 +71,30 @@ At 5 kH/s, the expected time to solo-mine one Bitcoin block is roughly **hundred
 
 The code is a **genuine, honest implementation** of a Bitcoin miner — not a scam, not fake mining, not a cryptojacker. It's just that mining Bitcoin profitably on a phone has been economically infeasible since roughly 2011. This appears to be a legitimate learning/hobby project, and the code quality (especially the security practices noted earlier) supports that interpretation.
 
-⛏️ Can This App Actually Mine Bitcoin?
-Short answer: Technically yes, the logic is correct. Practically, it will never find a block.
-
-✅ The Logic Is Legitimate
-The core mining pipeline is implemented correctly:
-Stratum protocol (StratumClient.kt) — properly implements:
-
-mining.subscribe → gets extranonce1 and extranonce2_size
-mining.authorize → authenticates with the pool
-mining.notify → receives block templates with prevhash, coinbase, merkle_branch, version, nbits, ntime
-mining.submit → submits found shares back to the pool
-set_difficulty and set_extranonce handling ✅
-
-Block header construction (NativeMiningEngine.kt + StratumHeaderBuilder.kt) — assembles the 80-byte block header correctly:
-
-Builds the coinbase transaction from coinb1 + extranonce1 + extranonce2 + coinb2
-Computes the Merkle root from the coinbase hash + merkle branch
-Assembles the 80-byte header: version + prevhash + merkle_root + ntime + nbits + nonce
-
-SHA-256d hashing (miner.c) — the double-SHA256 implementation is a clean, correct from-scratch implementation verified against NIST test vectors (SHA-256("abc")). ✅
-Target comparison — hash_meets_target() uses memcmp on 32-byte big-endian hashes, which is correct. ✅
-GPU acceleration (vulkan_miner.c + miner.comp) — a real Vulkan compute shader is used to parallelize nonce scanning on the device GPU. This is a genuine optimization, not fake. ✅
-
-❌ Why It Will Never Win In Practice
-The math is brutal. The current Bitcoin network difficulty means a solo miner needs to find a hash below an astronomically small target. A modern ASIC miner does ~100 terahashes per second. A phone CPU does roughly 1–5 kilohashes per second. That's about a 20–100 billion times slower than a single ASIC, let alone the entire network.
-At 5 kH/s, the expected time to solo-mine one Bitcoin block is roughly hundreds of millions of years.
-Pool mining helps, but marginally. The app does connect to a pool and submit shares, so it would theoretically earn proportional fractions of pool rewards. At phone-level hashrates, the expected payout over a lifetime of running the app would be a fraction of a fraction of a cent — and would be outweighed by electricity and battery wear costs many times over.
-
 ## Features
 
 - **Stratum v1** pool support (TCP and TLS)
-- Configurable pool URL/port, username/password, wallet and worker name
+- Configurable pool URL/port, username/password, Bitcoin wallet address, Lightning (optional), and worker name
+- **Bitcoin address validation:** Base58Check (P2PKH/P2SH) plus Bech32 / Bech32m (SegWit / Taproot) checksums before saving configuration. The stratum username is checked when the segment before the first `.` looks like a payout address (`address.worker`); non-address pool usernames are not forced through address rules.
+- **Wallet balance (main screen):** If a valid Bitcoin address is configured, the app can show an approximate on-chain balance using the [mempool.space](https://mempool.space) address UTXO API (refreshed about once per hour). Optional certificate pins apply when configured. Local validation errors and network/TLS failures surface different helper text under the balance.
 - **CPU and GPU** mining: configurable CPU cores and intensity (1–100%), GPU workgroups (0 = off) and GPU intensity. **GPU uses Vulkan compute (SPIR-V) only**—no CPU fallback; if the GPU path is unavailable, the dashboard shows "----" for GPU hashrate and a one-time toast "GPU not available". Build requires Vulkan SDK (or glslc) so the shader compiles to SPIR-V.
 - **GPU workgroup size:** chosen at runtime as min(32 × GPU cores, device max); dashboard label shows "Hash Rate (GPU) - {size}" when GPU is enabled.
 - **WiFi only** and **mine only when charging** options
-- **Battery temp** throttling: throttle above configured max, resume when 10% below; **auto-tuning** option keeps temp in a target band; **hard stop** at 43°C with notification. Optional display in **Celsius or Fahrenheit** (Config).
+- **Battery temp** throttling: throttle above configured max, resume when 10% below; **auto-tuning** option keeps temp in a target band; **hard stop** at 43°C with notification. On hard stop the service sets throttle state for overheat, requests **native GPU and CPU interrupts** (`NativeMiner`) so Vulkan/compute and CPU paths wind down quickly, then stops the engine. Optional display in **Celsius or Fahrenheit** (Config).
 - **Hashrate target (H/s):** optional cap—when current hashrate (CPU+GPU) exceeds target, mining is throttled; leave empty for no cap
 - **Partial Wake Lock** and **alarm wake interval (0–900 s):** keep mining active when screen is off; interval 0 = hold wake lock for the session, 1–900 = repeating alarm-driven wake lock (up to 15 minutes)
 - **Mining thread priority (0 to -20):** slider for CPU priority when screen is off (0 = default, -20 = highest)
 - **Battery optimization** in Config: "Request Don't optimize" (system dialog) and "Open battery optimization settings" so you can whitelist the app from battery optimization
-- **Certificate pinning** for the mining pool (TLS); **encrypted config** (credentials stored with EncryptedSharedPreferences and Android Keystore)
-- **Dashboard:** CPU and GPU hash rate (GPU shows "----" when unavailable), mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, battery temp (left), GPU hashrate (right with workgroup size in label), hashrate chart; red/white indicators when throttle is active. **Reset All UI Counters** in Config clears persisted counters (accepted/rejected/identified shares, block templates, best difficulty).
+- **Certificate pinning:** TLS connections to the pool can use a per-host SPKI pin captured from **Config → Pin Mining Pool Certificate** (required on connect when no pin is stored for that host). Separate optional pins can be used for **mempool.space** when querying balance. **Encrypted config:** credentials stored with EncryptedSharedPreferences and Android Keystore.
+- **Dashboard (swipeable pages):** **Page 1** — CPU and GPU hash rate (GPU shows "----" when unavailable), mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, battery temp (left), GPU hashrate (right with workgroup size in label), hashrate chart; red/white indicators when throttle is active. **Page 2 — lifetime stats:** running totals of session-average CPU/GPU/total hash rates and cumulative nonces, updated when a mining session ends (or if the service is stopped without a normal session teardown). **Reset All UI Counters** in Config clears session counters and can reset lifetime aggregates (see in-app dialog).
+- **Picture-in-picture** support on the main activity (where supported by the device)
 - Runs as a **foreground service** so mining continues in the background until you stop it (notification permission required on Android 13+)
 
 ### Security (OWASP MASVS)
 
 The app is aligned with [OWASP Mobile Application Security Verification Standard (MASVS)](https://mas.owasp.org/MASVS/) where applicable.
 
-- **Passed / implemented:** Secure storage of sensitive data (M2.1; EncryptedSharedPreferences + Keystore); secure communication (M3.1; TLS for Stratum); certificate pinning for pool (M3.5); no sensitive data in logs (M2.2); input validation/sanitization for config strings.
+- **Passed / implemented:** Secure storage of sensitive data (M2.1; EncryptedSharedPreferences + Keystore); secure communication (M3.1; TLS for Stratum); certificate pinning for pool and optional mempool API host (M3.5); no sensitive data in logs (M2.2); input validation/sanitization for config strings, including **checksum-verified Bitcoin addresses** where applicable (wallet field and plausible `address.worker` payout prefixes).
 - **Not covered / out of scope:** User authentication (no login); biometrics; root/jailbreak detection; code obfuscation; anti-tampering.
 
 ### Screen-off mining
