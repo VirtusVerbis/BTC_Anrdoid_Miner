@@ -15,7 +15,6 @@ https://github.com/BitMaker-hub/NerdMiner_v2/releases
 
 ## Code checked using Claude.AI
 
-Great question — and a very reasonable one to ask after a security review. Let me assess the mining logic directly.
 
 ---
 
