@@ -166,6 +166,4 @@ The first build runs CMake/NDK and requires **Vulkan SDK** (or `glslc`) to be in
 
 If the Vulkan SDK installer set the `VULKAN_SDK` environment variable, you can add `%VULKAN_SDK%\Bin` to PATH instead of a fixed versioned path.
 
-## License
 
-App code license to be set. The native miner (C) is part of this repository.
