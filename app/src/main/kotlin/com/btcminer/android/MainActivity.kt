@@ -44,6 +44,7 @@ import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
+import java.math.BigDecimal
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.Scanner
@@ -395,6 +396,18 @@ class MainActivity : AppCompatActivity() {
         binding.hashRateChart.axisRight.isEnabled = false
     }
 
+    /** Pool `mining.set_difficulty` for dashboard (not best share difficulty). */
+    private fun formatStratumDifficultyDisplay(status: MiningStatus): String {
+        if (status.state != MiningStatus.State.Mining) return "—"
+        val d = status.stratumDifficulty ?: return "—"
+        if (!d.isFinite() || d <= 0.0) return "—"
+        return if (d in 1e-12..1e15) {
+            BigDecimal.valueOf(d).stripTrailingZeros().toPlainString()
+        } else {
+            String.format(Locale.US, "%.6g", d)
+        }
+    }
+
     private fun updateStatsUi(status: MiningStatus, service: MiningForegroundService?) {
         page1Fragment?.pageBinding?.let { p1 ->
             val hashrateStr = if (status.state == MiningStatus.State.Mining) {
@@ -414,8 +427,7 @@ class MainActivity : AppCompatActivity() {
             val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize().coerceAtLeast(32)
             val effectiveWorkgroupSize = if (gpuCores > 0) (32 * gpuCores).coerceAtMost(maxWorkGroupSize) else 0
             p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuCores > 0) " - $effectiveWorkgroupSize" else ""
-            val cpuPct = service?.getLastCpuUtilizationPercent()
-            p1.cpuUtilizationValue.text = if (cpuPct != null) String.format(Locale.US, "%.1f%%", cpuPct) else "—"
+            p1.cpuUtilizationValue.text = formatStratumDifficultyDisplay(status)
             p1.noncesValue.text = NumberFormatUtils.formatWithSpaces(status.noncesScanned)
             p1.acceptedSharesValue.text = status.acceptedShares.toString()
             p1.rejectedSharesValue.text = status.rejectedShares.toString()

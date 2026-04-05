@@ -104,6 +104,7 @@
     <string name="stratum_connection_icon_content_description">Stratum connection status: lit when connected, dim when disconnected</string>
     <string name="hash_rate_gpu_label">Hash Rate (GPU)</string>
     <string name="cpu_utilization_label">CPU Util %</string>
+    <string name="stratum_difficulty_label">Stratum Difficulty</string>
     <string name="nonces_label">Nonces</string>
     <string name="mining_timer_label">Mining Timer</string>
     <string name="mining_timer_last_run">Last run</string>

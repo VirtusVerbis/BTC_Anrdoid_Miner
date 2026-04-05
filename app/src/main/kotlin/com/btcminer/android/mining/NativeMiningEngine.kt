@@ -201,6 +201,7 @@ class NativeMiningEngine(
             identifiedShares = identifiedShares.get(),
             bestDifficulty = bestDifficultyRef.get(),
             blockTemplates = blockTemplatesCount.get(),
+            stratumDifficulty = client.getCurrentDifficulty(),
         ))
 
         val minerThread = Thread {
@@ -639,6 +640,7 @@ class NativeMiningEngine(
                 bestDifficulty = bestDifficultyRef.get(),
                 blockTemplates = blockTemplatesCount.get(),
                 connectionLost = !client.isConnected(),
+                stratumDifficulty = client.getCurrentDifficulty(),
             ))
             if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
                 AppLog.d(LOG_TAG) {

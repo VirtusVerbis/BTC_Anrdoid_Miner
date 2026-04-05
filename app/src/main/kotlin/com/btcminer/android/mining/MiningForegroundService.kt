@@ -77,8 +77,6 @@ class MiningForegroundService : Service() {
     private var lastHashrateThrottleActive = false
     @Volatile
     private var lastCpuThrottleActive = false
-    @Volatile
-    private var lastCpuUtilizationPercent: Float? = null
     /** CPU throttle delay (ms) when CPU usage target is set and over target. */
     @Volatile
     private var cpuThrottleSleepMs: Long = 0L
@@ -269,7 +267,6 @@ class MiningForegroundService : Service() {
                         if (systemDelta > 0L) {
                             val processDelta = latest.second - oldest.second
                             val pct = 100f * processDelta / systemDelta
-                            lastCpuUtilizationPercent = pct
                             AppLog.d(LOG_TAG) { "CPU util: pct=${"%.1f".format(pct)}% samples=${cpuUtilizationSamples.size}" }
                             val target = config.cpuUsageTargetPercent
                             if (target != null) {
@@ -390,9 +387,6 @@ class MiningForegroundService : Service() {
     /** 0 = NONE, 1 = DECREASING, 2 = INCREASING. For dashboard color. */
     fun getAutoTuningDirection(): Int = autoTuningDirection
 
-    /** Last computed app CPU utilization % (rolling window), or null if not yet available. */
-    fun getLastCpuUtilizationPercent(): Float? = lastCpuUtilizationPercent
-
     override fun onCreate() {
         super.onCreate()
         configRepository = MiningConfigRepository(applicationContext)
@@ -504,7 +498,6 @@ class MiningForegroundService : Service() {
                     lastCpuThrottleActive = false
                     synchronized(cpuUtilizationSamples) { cpuUtilizationSamples.clear() }
                 }
-                lastCpuUtilizationPercent = null
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
@@ -575,7 +568,6 @@ class MiningForegroundService : Service() {
                     lastCpuThrottleActive = false
                     synchronized(cpuUtilizationSamples) { cpuUtilizationSamples.clear() }
                 }
-                lastCpuUtilizationPercent = null
                 throttleStateRef.set(ThrottleState(c.maxIntensityPercent, false, 0L, c.gpuUtilizationPercent))
                 lastBatteryThrottleActive = false
                 lastHashrateThrottleActive = false
