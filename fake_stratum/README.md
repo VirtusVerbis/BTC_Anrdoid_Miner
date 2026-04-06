@@ -1,5 +1,10 @@
 # Fake Stratum Server
 
+Note: A more valid approach to testing would be to use Public-Pool with Signet support:
+https://github.com/VirtusVerbis/BTC_Public_Pool_Signet
+
+This "Fake Stratum" is no longer supported and maybe outdated due to changes made to app code.
+
 USED FOR TESTING APP BEHAVIOUR ONLY!  Runs separate from app as Python executable.
 
 
