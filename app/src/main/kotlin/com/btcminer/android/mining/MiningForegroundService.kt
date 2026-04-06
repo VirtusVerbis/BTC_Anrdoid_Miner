@@ -461,7 +461,7 @@ class MiningForegroundService : Service() {
         AppLog.d(LOG_TAG) { "startForeground done, starting engine on background thread" }
         Thread {
             val host = StratumPinCapture.normalizeHost(config.stratumUrl)
-            val useTls = config.stratumUrl.trim().lowercase().contains("ssl") || config.stratumPort == 443
+            val useTls = StratumPinCapture.indicatesTls(config.stratumUrl, config.stratumPort)
             if (useTls && configRepository.getStratumPin(host) == null) {
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(applicationContext, R.string.security_reminder_defaulting_to_trust, Toast.LENGTH_SHORT).show()
@@ -544,7 +544,7 @@ class MiningForegroundService : Service() {
                 return@Thread
             }
             val host = StratumPinCapture.normalizeHost(config.stratumUrl)
-            val useTls = config.stratumUrl.trim().lowercase().contains("ssl") || config.stratumPort == 443
+            val useTls = StratumPinCapture.indicatesTls(config.stratumUrl, config.stratumPort)
             if (useTls && configRepository.getStratumPin(host) == null) {
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(applicationContext, R.string.security_reminder_defaulting_to_trust, Toast.LENGTH_SHORT).show()

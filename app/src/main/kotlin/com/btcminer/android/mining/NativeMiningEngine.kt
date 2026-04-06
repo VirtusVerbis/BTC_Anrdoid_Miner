@@ -3,6 +3,7 @@ package com.btcminer.android.mining
 import android.os.Process
 import com.btcminer.android.AppLog
 import com.btcminer.android.config.MiningConfig
+import com.btcminer.android.network.StratumPinCapture
 import com.btcminer.android.util.NumberFormatUtils
 import java.util.Locale
 import java.util.Collections
@@ -120,9 +121,7 @@ class NativeMiningEngine(
         // Persistent counters (acceptedShares, rejectedShares, identifiedShares, bestDifficultyRef, blockTemplatesCount) are not reset here; nonces are per-round only
 
         val urlTrimmed = config.stratumUrl.trim()
-        val host = urlTrimmed
-            .removePrefix("stratum+tcp://").removePrefix("stratum+ssl://").removePrefix("tcp://")
-            .split("/").first().trim()
+        val host = StratumPinCapture.normalizeHost(urlTrimmed)
         if (host.isBlank()) {
             val msg = "Invalid pool URL"
             AppLog.e(LOG_TAG) { "Error: $msg" }
@@ -163,12 +162,12 @@ class NativeMiningEngine(
             }
         }
 
-        val port = config.stratumPort.coerceIn(1, 65535)
         val username = config.stratumUser.trim()
         val password = config.stratumPass
 
         statusRef.set(MiningStatus(MiningStatus.State.Connecting))
-        val useTls = config.stratumUrl.trim().lowercase().contains("ssl") || config.stratumPort == 443
+        val port = config.stratumPort.coerceIn(1, 65535)
+        val useTls = StratumPinCapture.indicatesTls(config.stratumUrl, port)
         val stratumPin = getStratumPin(host)
 
         // First connect on this thread so the service sees correct isRunning() when start() returns.

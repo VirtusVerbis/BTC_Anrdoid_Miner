@@ -275,7 +275,7 @@ class ConfigActivity : AppCompatActivity() {
         val stratumUrlRaw = binding.configStratumUrl.editText?.text?.toString()?.trim() ?: ""
         val port = binding.configStratumPort.editText?.text?.toString()?.toIntOrNull() ?: MiningConfig.DEFAULT_STRATUM_PORT
         val portCoerced = port.coerceIn(1, 65535)
-        val useTls = stratumUrlRaw.lowercase().contains("ssl") || portCoerced == 443
+        val useTls = StratumPinCapture.indicatesTls(stratumUrlRaw, portCoerced)
         val pinThisPoolChecked = binding.configPinThisPool.isChecked
 
         val requestedFlavor = flavorForCheckedRadio()

@@ -15,14 +15,39 @@ import javax.net.ssl.SNIHostName
  */
 object StratumPinCapture {
 
+    private val STRATUM_SCHEME_PREFIXES: List<String> = listOf(
+        "stratum+tcp://",
+        "stratum+tls://",
+        "stratum+ssl://",
+        "tcp://",
+    )
+
     /**
-     * Normalize stratum URL to host only: strip stratum+tcp://, stratum+ssl://, tcp://, take first segment.
-     * Must match NativeMiningEngine host derivation for consistent storage key.
+     * Normalize stratum URL to host only: strip known schemes (case-insensitive), take first path segment.
+     * Must match [com.btcminer.android.mining.NativeMiningEngine] host derivation for consistent storage key.
      */
-    fun normalizeHost(stratumUrl: String): String =
-        stratumUrl.trim()
-            .removePrefix("stratum+tcp://").removePrefix("stratum+ssl://").removePrefix("tcp://")
-            .split("/").first().trim()
+    fun normalizeHost(stratumUrl: String): String {
+        var s = stratumUrl.trim()
+        if (s.isEmpty()) return ""
+        val lower = s.lowercase()
+        for (prefix in STRATUM_SCHEME_PREFIXES) {
+            if (lower.startsWith(prefix)) {
+                s = s.substring(prefix.length)
+                break
+            }
+        }
+        return s.split("/", limit = 2).first().substringBefore("?").trim()
+    }
+
+    /**
+     * Whether the Stratum socket should use TLS. [stratumUrl] may include `stratum+tls://` / `stratum+ssl://`;
+     * [stratumPort] 443 also implies TLS (legacy pools).
+     */
+    fun indicatesTls(stratumUrl: String, stratumPort: Int): Boolean {
+        val u = stratumUrl.trim().lowercase()
+        if (stratumPort == 443) return true
+        return u.contains("+ssl") || u.contains("+tls")
+    }
 
     /**
      * Connect to host:port over TLS, read the leaf certificate's SPKI, return pin string "sha256/...".
