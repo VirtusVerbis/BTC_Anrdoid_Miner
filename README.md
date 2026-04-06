@@ -16,7 +16,10 @@ https://github.com/VirtusVerbis/BTC_Public_Pool_Signet
 
 
 
+
+
 <img src="https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png" width="250" height="500">
+
 
 
 ## Code checked using Claude.AI
