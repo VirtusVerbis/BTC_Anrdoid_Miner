@@ -10,6 +10,7 @@ https://github.com/BitMaker-hub/NerdMiner_v2/releases
 
 
 Note: This app can be tested against the Public-Pool with Signet support - found here:
+
 https://github.com/VirtusVerbis/BTC_Public_Pool_Signet
 
 
