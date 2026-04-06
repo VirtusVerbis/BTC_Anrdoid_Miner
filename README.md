@@ -71,9 +71,15 @@ At 5 kH/s, the expected time to solo-mine one Bitcoin block is roughly **hundred
 
 The code is a **genuine, honest implementation** of a Bitcoin miner — not a scam, not fake mining, not a cryptojacker. It's just that mining Bitcoin profitably on a phone has been economically infeasible since roughly 2011. This appears to be a legitimate learning/hobby project, and the code quality (especially the security practices noted earlier) supports that interpretation.
 
+## Recent updates (2026)
+
+- **Dashboard — Stratum difficulty:** The main dashboard (page 1) shows **Stratum Difficulty** from the pool’s `mining.set_difficulty` message (replacing the former CPU utilization % on that row). CPU jiffies sampling for **CPU usage target** throttling in Config is unchanged; only the on-screen metric changed.
+- **TLS pool URLs:** The pool host field supports `stratum+tcp://`, `stratum+ssl://`, and `stratum+tls://`. TLS is used when the URL indicates SSL/TLS (`+ssl` / `+tls` in the scheme) or when the configured port is **443**. Enter the port separately (e.g. `stratum+tls://public-pool.example` with port **4333** per the pool).
+- **Reset All UI Counters:** Config → **Reset All UI Counters** clears persisted dashboard counters including block templates, shares, best difficulty, and related stats (see in-app dialog).
+
 ## Features
 
-- **Stratum v1** pool support (TCP and TLS)
+- **Stratum v1** pool support: plain TCP, or TLS when using `stratum+ssl://` / `stratum+tls://` or port **443**
 - Configurable pool URL/port, username/password, Bitcoin wallet address, Lightning (optional), and worker name
 - **Bitcoin address validation:** Base58Check (P2PKH/P2SH) plus Bech32 / Bech32m (SegWit / Taproot) checksums before saving configuration. The stratum username is checked when the segment before the first `.` looks like a payout address (`address.worker`); non-address pool usernames are not forced through address rules.
 - **Wallet balance (main screen):** If a valid Bitcoin address is configured, the app can show an approximate on-chain balance using the [mempool.space](https://mempool.space) address UTXO API (refreshed about once per hour). Optional certificate pins apply when configured. Local validation errors and network/TLS failures surface different helper text under the balance.
@@ -86,7 +92,7 @@ The code is a **genuine, honest implementation** of a Bitcoin miner — not a sc
 - **Mining thread priority (0 to -20):** slider for CPU priority when screen is off (0 = default, -20 = highest)
 - **Battery optimization** in Config: "Request Don't optimize" (system dialog) and "Open battery optimization settings" so you can whitelist the app from battery optimization
 - **Certificate pinning:** TLS connections to the pool can use a per-host SPKI pin captured from **Config → Pin Mining Pool Certificate** (required on connect when no pin is stored for that host). Separate optional pins can be used for **mempool.space** when querying balance. **Encrypted config:** credentials stored with EncryptedSharedPreferences and Android Keystore.
-- **Dashboard (swipeable pages):** **Page 1** — CPU and GPU hash rate (GPU shows "----" when unavailable), mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, battery temp (left), GPU hashrate (right with workgroup size in label), hashrate chart; red/white indicators when throttle is active. **Page 2 — lifetime stats:** running totals of session-average CPU/GPU/total hash rates and cumulative nonces, updated when a mining session ends (or if the service is stopped without a normal session teardown). **Reset All UI Counters** in Config clears session counters and can reset lifetime aggregates (see in-app dialog).
+- **Dashboard (swipeable pages):** **Page 1** — CPU and GPU hash rate (GPU shows "----" when unavailable), mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, **Stratum Difficulty** (pool share difficulty while mining), best difficulty, block template, battery temp (left), GPU hashrate (right with workgroup size in label), hashrate chart; red/white indicators when throttle is active. **Page 2 — lifetime stats:** running totals of session-average CPU/GPU/total hash rates and cumulative nonces, updated when a mining session ends (or if the service is stopped without a normal session teardown). **Reset All UI Counters** in Config clears session counters and can reset lifetime aggregates (see in-app dialog).
 - **Picture-in-picture** support on the main activity (where supported by the device)
 - Runs as a **foreground service** so mining continues in the background until you stop it (notification permission required on Android 13+)
 
