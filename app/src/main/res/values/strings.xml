@@ -111,12 +111,15 @@
     <string name="accepted_shares_label">Accepted Shares</string>
     <string name="rejected_shares_label">Rejected Shares</string>
     <string name="identified_shares_label">Identified Shares</string>
+    <string name="queued_shares_label">Queued Shares</string>
     <string name="auto_tune_on">Auto-Tune ON</string>
     <string name="battery_temp_label">Battery temp</string>
     <string name="best_difficulty_label">Best difficulty</string>
     <string name="block_template_label">Block template</string>
 
     <!-- Lifetime stats (dashboard page 2): sum of per-session average hash rates (H/s), not time-weighted. -->
+    <string name="dashboard_panel2_lifetime_shares_title">Lifetime shares (all sessions)</string>
+    <string name="dashboard_panel2_lifetime_records_title">All-time records</string>
     <string name="lifetime_total_hash_label">All-time total hash rate (sum of session avgs)</string>
     <string name="lifetime_total_cpu_hash_label">All-time total CPU hash rate (sum of session avgs)</string>
     <string name="lifetime_total_gpu_hash_label">All-time total GPU hash rate (sum of session avgs)</string>

@@ -82,6 +82,12 @@ class MiningForegroundService : Service() {
     private var cpuThrottleSleepMs: Long = 0L
     private var miningStartTimeMillis: Long? = null
 
+    /** Engine totals at session start; [getSessionShareDisplayedCounts] subtracts these for dashboard page 1. */
+    private var sessionBaselineAcceptedShares = 0L
+    private var sessionBaselineRejectedShares = 0L
+    private var sessionBaselineIdentifiedShares = 0L
+    private var sessionBaselineBlockTemplates = 0L
+
     /** Current throttle sleep (ms) when auto-tuning is ON. 0–60_000. */
     @Volatile
     private var autoTuningThrottleSleepMs: Long = 0L
@@ -368,10 +374,52 @@ class MiningForegroundService : Service() {
 
     fun getStatus(): MiningStatus = engine.getStatus()
 
+    /**
+     * Accepted / rejected / identified counts for the current mining session only (since last successful start).
+     * Zeros when not mining. Aligns with [miningStartTimeMillis] being set.
+     */
+    fun getSessionShareDisplayedCounts(): Triple<Long, Long, Long> {
+        if (miningStartTimeMillis == null) return Triple(0L, 0L, 0L)
+        val s = engine.getStatus()
+        return Triple(
+            (s.acceptedShares - sessionBaselineAcceptedShares).coerceAtLeast(0L),
+            (s.rejectedShares - sessionBaselineRejectedShares).coerceAtLeast(0L),
+            (s.identifiedShares - sessionBaselineIdentifiedShares).coerceAtLeast(0L),
+        )
+    }
+
+    private fun recordShareSessionBaselines() {
+        statsRepository.saveLastStoppedSessionShareDisplay(0L, 0L, 0L)
+        statsRepository.saveLastStoppedSessionBestBlockDisplay(0.0, 0L)
+        engine.resetSessionScopeDisplay()
+        val s = engine.getStatus()
+        sessionBaselineAcceptedShares = s.acceptedShares
+        sessionBaselineRejectedShares = s.rejectedShares
+        sessionBaselineIdentifiedShares = s.identifiedShares
+        sessionBaselineBlockTemplates = s.blockTemplates
+    }
+
+    /** Panel #1: max share difficulty this session while mining; last-stopped snapshot when idle. */
+    fun getSessionBestDifficultyForDisplay(): Double =
+        if (miningStartTimeMillis != null) engine.getSessionBestShareDifficulty()
+        else statsRepository.getLastStoppedSessionBestBlockDisplay().first
+
+    /** Panel #1: block templates this session (delta) while mining; last-stopped snapshot when idle. */
+    fun getSessionBlockTemplateDisplayedCount(): Long =
+        if (miningStartTimeMillis != null) {
+            val s = engine.getStatus()
+            (s.blockTemplates - sessionBaselineBlockTemplates).coerceAtLeast(0L)
+        } else {
+            statsRepository.getLastStoppedSessionBestBlockDisplay().second
+        }
+
     /** Reset persistent UI counters (accepted/rejected/identified shares, block templates, best difficulty, nonces). */
     fun resetAllCounters() {
         engine.resetAllCounters()
         statsRepository.saveZeros()
+        if (miningStartTimeMillis != null) {
+            recordShareSessionBaselines()
+        }
     }
 
     fun getHashrateHistoryCpu(): List<Double> = synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.toList() }
@@ -434,11 +482,12 @@ class MiningForegroundService : Service() {
         if (engine.isRunning()) {
             finalizeLifetimeStatsForEndedSession()
         }
+        // stop() refreshes statusRef from atomics before save — otherwise save() could re-persist stale share counts after resetAllCounters + saveZeros (idle bind path).
+        engine.stop()
         statsRepository.save(engine.getStatus())
         unregisterConstraintReceiver()
         cancelAlarm()
         releaseWakeLock()
-        engine.stop()
         super.onDestroy()
     }
 
@@ -488,6 +537,7 @@ class MiningForegroundService : Service() {
             }
             Handler(Looper.getMainLooper()).post {
                 miningStartTimeMillis = System.currentTimeMillis()
+                recordShareSessionBaselines()
                 val c = configRepository.getConfig()
                 if (c.autoTuningByBatteryTemp) {
                     autoTuningThrottleSleepMs = AUTO_TUNING_DEFAULT_SLEEP_MS
@@ -558,6 +608,7 @@ class MiningForegroundService : Service() {
             }
             Handler(Looper.getMainLooper()).post {
                 miningStartTimeMillis = System.currentTimeMillis()
+                recordShareSessionBaselines()
                 val c = configRepository.getConfig()
                 if (c.autoTuningByBatteryTemp) {
                     autoTuningThrottleSleepMs = AUTO_TUNING_DEFAULT_SLEEP_MS
@@ -738,6 +789,10 @@ class MiningForegroundService : Service() {
         AppLog.d(LOG_TAG) { "stopMining()" }
         miningStartTimeMillis?.let { start ->
             statsRepository.saveLastRunDuration(System.currentTimeMillis() - start)
+            val c = getSessionShareDisplayedCounts()
+            statsRepository.saveLastStoppedSessionShareDisplay(c.first, c.second, c.third)
+            val blockDelta = (engine.getStatus().blockTemplates - sessionBaselineBlockTemplates).coerceAtLeast(0L)
+            statsRepository.saveLastStoppedSessionBestBlockDisplay(engine.getSessionBestShareDifficulty(), blockDelta)
         }
         miningStartTimeMillis = null
         cancelAlarm()

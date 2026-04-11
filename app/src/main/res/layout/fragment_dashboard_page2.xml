@@ -7,83 +7,167 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:paddingTop="12dp"
-        android:paddingBottom="8dp">
+        android:paddingTop="16dp"
+        android:paddingBottom="16dp">
 
         <TextView
-            android:id="@+id/lifetime_total_hash_value"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_horizontal"
-            android:text="0"
-            android:textColor="@color/bitcoin_orange"
-            android:textSize="22sp" />
-
-        <TextView
-            android:id="@+id/lifetime_total_hash_label"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_horizontal"
-            android:text="@string/lifetime_total_hash_label"
+            android:text="@string/dashboard_panel2_lifetime_shares_title"
             android:textColor="?attr/colorOnSurface"
-            android:textSize="12sp" />
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/lifetime_accepted_shares_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/lifetime_accepted_shares_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/accepted_shares_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="9sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/lifetime_rejected_shares_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/lifetime_rejected_shares_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/rejected_shares_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="9sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/lifetime_identified_shares_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/lifetime_identified_shares_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/identified_shares_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="9sp" />
+            </LinearLayout>
+        </LinearLayout>
 
         <TextView
-            android:id="@+id/lifetime_cpu_hash_value"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
             android:gravity="center_horizontal"
-            android:text="0"
-            android:textColor="@color/bitcoin_orange"
-            android:textSize="20sp" />
-
-        <TextView
-            android:id="@+id/lifetime_cpu_hash_label"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_horizontal"
-            android:text="@string/lifetime_total_cpu_hash_label"
+            android:text="@string/dashboard_panel2_lifetime_records_title"
             android:textColor="?attr/colorOnSurface"
-            android:textSize="12sp" />
+            android:textSize="13sp" />
 
-        <TextView
-            android:id="@+id/lifetime_gpu_hash_value"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:gravity="center_horizontal"
-            android:text="0"
-            android:textColor="@color/bitcoin_orange"
-            android:textSize="20sp" />
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:orientation="horizontal">
 
-        <TextView
-            android:id="@+id/lifetime_gpu_hash_label"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_horizontal"
-            android:text="@string/lifetime_total_gpu_hash_label"
-            android:textColor="?attr/colorOnSurface"
-            android:textSize="12sp" />
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/lifetime_nonces_value"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:gravity="center_horizontal"
-            android:text="0"
-            android:textColor="@color/bitcoin_orange"
-            android:textSize="20sp" />
+                <TextView
+                    android:id="@+id/lifetime_best_difficulty_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="—"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="15sp" />
 
-        <TextView
-            android:id="@+id/lifetime_nonces_label"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_horizontal"
-            android:text="@string/lifetime_total_nonces_label"
-            android:textColor="?attr/colorOnSurface"
-            android:textSize="12sp" />
+                <TextView
+                    android:id="@+id/lifetime_best_difficulty_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/best_difficulty_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="9sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/lifetime_block_template_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/lifetime_block_template_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/block_template_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="9sp" />
+            </LinearLayout>
+        </LinearLayout>
     </LinearLayout>
 </ScrollView>

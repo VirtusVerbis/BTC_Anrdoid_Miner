@@ -11,9 +11,15 @@ import android.content.SharedPreferences
  *
  * Also persists **lifetime** aggregates (sum of per-session average CPU/GPU hash rates and cumulative
  * session nonces), updated when a mining session ends; cleared only via [saveZeros].
+ *
+ * **Last stopped session** accepted/rejected/identified (dashboard page 1 while idle): written when
+ * mining stops, cleared when a new session starts or via [saveZeros].
+ *
+ * **Last stopped session** best share difficulty and block-template delta (panel #1 while idle): same lifecycle.
  */
 class MiningStatsRepository(context: Context) {
 
+    private val appContext: Context = context.applicationContext
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /**
@@ -21,12 +27,14 @@ class MiningStatsRepository(context: Context) {
      * Nonces are not persisted; noncesScanned is always 0.
      */
     fun get(): MiningStatus {
+        val repoQueued = PendingSharesRepository(appContext).getAll().size.toLong()
         return MiningStatus(
             state = MiningStatus.State.Idle,
             noncesScanned = 0L,
             acceptedShares = prefs.getLong(KEY_ACCEPTED_SHARES, 0L),
             rejectedShares = prefs.getLong(KEY_REJECTED_SHARES, 0L),
             identifiedShares = prefs.getLong(KEY_IDENTIFIED_SHARES, 0L),
+            queuedShares = repoQueued,
             bestDifficulty = Double.fromBits(prefs.getLong(KEY_BEST_DIFFICULTY, 0L)),
             blockTemplates = prefs.getLong(KEY_BLOCK_TEMPLATES, 0L),
         )
@@ -80,6 +88,33 @@ class MiningStatsRepository(context: Context) {
         prefs.edit().putLong(KEY_LAST_RUN_DURATION_MS, durationMs).apply()
     }
 
+    /** Panel #1 idle display: last session share deltas when mining is not active (survives service destroy). */
+    fun getLastStoppedSessionShareDisplay(): Triple<Long, Long, Long> = Triple(
+        prefs.getLong(KEY_LAST_STOPPED_SESSION_DISPLAY_ACCEPTED, 0L),
+        prefs.getLong(KEY_LAST_STOPPED_SESSION_DISPLAY_REJECTED, 0L),
+        prefs.getLong(KEY_LAST_STOPPED_SESSION_DISPLAY_IDENTIFIED, 0L),
+    )
+
+    fun saveLastStoppedSessionShareDisplay(accepted: Long, rejected: Long, identified: Long) {
+        prefs.edit()
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_ACCEPTED, accepted)
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_REJECTED, rejected)
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_IDENTIFIED, identified)
+            .apply()
+    }
+
+    fun getLastStoppedSessionBestBlockDisplay(): Pair<Double, Long> = Pair(
+        Double.fromBits(prefs.getLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY, 0L)),
+        prefs.getLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA, 0L),
+    )
+
+    fun saveLastStoppedSessionBestBlockDisplay(bestDifficulty: Double, blockTemplatesDelta: Long) {
+        prefs.edit()
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY, bestDifficulty.toRawBits())
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA, blockTemplatesDelta)
+            .apply()
+    }
+
     /**
      * Writes zeros for the five persisted counters. Used only when user resets via Config.
      */
@@ -93,6 +128,11 @@ class MiningStatsRepository(context: Context) {
             .putLong(KEY_LIFETIME_SUM_SESSION_AVG_CPU_HS, 0.0.toRawBits())
             .putLong(KEY_LIFETIME_SUM_SESSION_AVG_GPU_HS, 0.0.toRawBits())
             .putLong(KEY_LIFETIME_TOTAL_NONCES, 0L)
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_ACCEPTED, 0L)
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_REJECTED, 0L)
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_IDENTIFIED, 0L)
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY, 0.0.toRawBits())
+            .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA, 0L)
             .apply()
     }
 
@@ -139,6 +179,11 @@ class MiningStatsRepository(context: Context) {
         private const val KEY_LIFETIME_SUM_SESSION_AVG_CPU_HS = "lifetime_sum_session_avg_cpu_hs"
         private const val KEY_LIFETIME_SUM_SESSION_AVG_GPU_HS = "lifetime_sum_session_avg_gpu_hs"
         private const val KEY_LIFETIME_TOTAL_NONCES = "lifetime_total_nonces"
+        private const val KEY_LAST_STOPPED_SESSION_DISPLAY_ACCEPTED = "last_stopped_session_display_accepted"
+        private const val KEY_LAST_STOPPED_SESSION_DISPLAY_REJECTED = "last_stopped_session_display_rejected"
+        private const val KEY_LAST_STOPPED_SESSION_DISPLAY_IDENTIFIED = "last_stopped_session_display_identified"
+        private const val KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY = "last_stopped_session_display_best_difficulty"
+        private const val KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA = "last_stopped_session_display_block_templates_delta"
     }
 }
 

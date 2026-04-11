@@ -66,12 +66,14 @@ class MainActivity : AppCompatActivity() {
 
     private var page1Fragment: DashboardStatsPage1Fragment? = null
     private var page2Fragment: DashboardStatsPage2Fragment? = null
+    private var page3Fragment: DashboardStatsPage3Fragment? = null
 
     private val dashboardFragmentCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(fm: FragmentManager, f: Fragment, v: View, savedInstanceState: Bundle?) {
             when (f) {
                 is DashboardStatsPage1Fragment -> page1Fragment = f
                 is DashboardStatsPage2Fragment -> page2Fragment = f
+                is DashboardStatsPage3Fragment -> page3Fragment = f
                 else -> return
             }
             refreshDashboardFromPoll()
@@ -81,6 +83,7 @@ class MainActivity : AppCompatActivity() {
             when (f) {
                 is DashboardStatsPage1Fragment -> if (page1Fragment === f) page1Fragment = null
                 is DashboardStatsPage2Fragment -> if (page2Fragment === f) page2Fragment = null
+                is DashboardStatsPage3Fragment -> if (page3Fragment === f) page3Fragment = null
             }
         }
     }
@@ -202,6 +205,7 @@ class MainActivity : AppCompatActivity() {
             handler.post {
                 updateStatsUi(statsRepository.get(), null)
                 updateLifetimeUi()
+                updateLifetimePanel2Ui()
                 binding.hashRateChart.data = null
                 binding.hashRateChart.invalidate()
             }
@@ -429,11 +433,27 @@ class MainActivity : AppCompatActivity() {
             p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuCores > 0) " - $effectiveWorkgroupSize" else ""
             p1.cpuUtilizationValue.text = formatStratumDifficultyDisplay(status)
             p1.noncesValue.text = NumberFormatUtils.formatWithSpaces(status.noncesScanned)
-            p1.acceptedSharesValue.text = status.acceptedShares.toString()
-            p1.rejectedSharesValue.text = status.rejectedShares.toString()
-            p1.identifiedSharesValue.text = status.identifiedShares.toString()
-            p1.bestDifficultyValue.text = if (status.bestDifficulty > 0.0) String.format(Locale.US, "%.6f", status.bestDifficulty) else "—"
-            p1.blockTemplateValue.text = status.blockTemplates.toString()
+            val (sessionAcc, sessionRej, sessionId) = if (service != null && service.getMiningStartTimeMillis() != null) {
+                service.getSessionShareDisplayedCounts()
+            } else {
+                statsRepository.getLastStoppedSessionShareDisplay()
+            }
+            p1.acceptedSharesValue.text = sessionAcc.toString()
+            p1.rejectedSharesValue.text = sessionRej.toString()
+            p1.identifiedSharesValue.text = sessionId.toString()
+            p1.queuedSharesValue.text = status.queuedShares.toString()
+            val sessionBestDiff = if (service != null && service.getMiningStartTimeMillis() != null) {
+                service.getSessionBestDifficultyForDisplay()
+            } else {
+                statsRepository.getLastStoppedSessionBestBlockDisplay().first
+            }
+            p1.bestDifficultyValue.text = if (sessionBestDiff > 0.0) String.format(Locale.US, "%.6f", sessionBestDiff) else "—"
+            val sessionBlockTemplates = if (service != null && service.getMiningStartTimeMillis() != null) {
+                service.getSessionBlockTemplateDisplayedCount()
+            } else {
+                statsRepository.getLastStoppedSessionBestBlockDisplay().second
+            }
+            p1.blockTemplateValue.text = sessionBlockTemplates.toString()
             val startMs = service?.getMiningStartTimeMillis()
             val (timerStr, timerLabel) = if (status.state == MiningStatus.State.Mining && startMs != null) {
                 formatElapsed(System.currentTimeMillis() - startMs) to getString(R.string.mining_timer_label)
@@ -462,6 +482,7 @@ class MainActivity : AppCompatActivity() {
             updateStatsUi(statsRepository.get(), null)
         }
         updateLifetimeUi()
+        updateLifetimePanel2Ui()
         val config = configRepository.getConfig()
         if (config.autoTuningByBatteryTemp && service != null) {
             binding.autoTuneBlock.visibility = View.VISIBLE
@@ -479,12 +500,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateLifetimeUi() {
-        val p2 = page2Fragment?.pageBinding ?: return
+        val p3 = page3Fragment?.pageBinding ?: return
         val s = statsRepository.getLifetimeStats()
-        p2.lifetimeTotalHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgTotalHs)} H/s"
-        p2.lifetimeCpuHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgCpuHs)} H/s"
-        p2.lifetimeGpuHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgGpuHs)} H/s"
-        p2.lifetimeNoncesValue.text = NumberFormatUtils.formatWithSpaces(s.totalNonces)
+        p3.lifetimeTotalHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgTotalHs)} H/s"
+        p3.lifetimeCpuHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgCpuHs)} H/s"
+        p3.lifetimeGpuHashValue.text = "${NumberFormatUtils.formatHashrateWithSpaces(s.sumSessionAvgGpuHs)} H/s"
+        p3.lifetimeNoncesValue.text = NumberFormatUtils.formatWithSpaces(s.totalNonces)
+    }
+
+    private fun updateLifetimePanel2Ui() {
+        val p2 = page2Fragment?.pageBinding ?: return
+        val idle = statsRepository.get()
+        p2.lifetimeAcceptedSharesValue.text = idle.acceptedShares.toString()
+        p2.lifetimeRejectedSharesValue.text = idle.rejectedShares.toString()
+        p2.lifetimeIdentifiedSharesValue.text = idle.identifiedShares.toString()
+        p2.lifetimeBestDifficultyValue.text = if (idle.bestDifficulty > 0.0) String.format(Locale.US, "%.6f", idle.bestDifficulty) else "—"
+        p2.lifetimeBlockTemplateValue.text = idle.blockTemplates.toString()
     }
 
     private fun formatElapsed(elapsedMs: Long): String {
@@ -531,7 +562,7 @@ class MainActivity : AppCompatActivity() {
         binding.walletBalanceNote.visibility = View.GONE
         binding.hashRateChart.data = null
         binding.hashRateChart.invalidate()
-        // Persistent counters (nonces, accepted/rejected/identified shares, block template, best difficulty) are not zeroed here; they reset only via Config "Reset All UI Counters"
+        // Persistent counters (nonces) are not zeroed here; accepted/rejected/identified and best/block on page 1 are live per-session while mining, then last-stopped snapshots from prefs until the next start; lifetime stats on panels 2–3 reset only via Config "Reset All UI Counters"
     }
 
     private fun updateChart(historyCpu: List<Double>, historyGpu: List<Double>) {

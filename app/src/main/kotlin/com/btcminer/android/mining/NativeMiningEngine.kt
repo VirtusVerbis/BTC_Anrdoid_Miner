@@ -71,6 +71,8 @@ class NativeMiningEngine(
     private val totalNoncesScanned = AtomicLong(0)
     private val bestDifficultyRef = AtomicReference(0.0)
     private val blockTemplatesCount = AtomicLong(0)
+    /** Max share difficulty observed in the current mining session (panel #1); not persisted as lifetime. */
+    private val sessionBestShareDifficultyRef = AtomicReference(0.0)
     private val gpuNoncesScanned = AtomicLong(0)
     private val gpuUnavailable = AtomicBoolean(false)
     /** Background thread that periodically retries GPU init while GPU is unavailable. */
@@ -125,7 +127,7 @@ class NativeMiningEngine(
         if (host.isBlank()) {
             val msg = "Invalid pool URL"
             AppLog.e(LOG_TAG) { "Error: $msg" }
-            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = msg))
+            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = msg, queuedShares = queuedSharesCount(null)))
             running.set(false)
             return
         }
@@ -133,7 +135,7 @@ class NativeMiningEngine(
         val flavor = config.cpuSha256Flavor
         if (!NativeMiner.nativeSelfTestCpuSha256Flavor(flavor.ordinal)) {
             AppLog.e(LOG_TAG) { "CPU SHA-256 self-test failed for flavor=${flavor.name}" }
-            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = SHA256_SELFTEST_LAST_ERROR))
+            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
             running.set(false)
             return
         }
@@ -142,20 +144,20 @@ class NativeMiningEngine(
         if (config.gpuCores > 0) {
             if (!NativeMiner.gpuShaHostSelftest()) {
                 AppLog.e(LOG_TAG) { "GPU SHA-256 host self-test failed" }
-                statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR))
+                statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                 running.set(false)
                 return
             }
             if (NativeMiner.gpuIsAvailable()) {
                 if (!NativeMiner.gpuShaVulkanSelftest(0)) {
                     AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (full path)" }
-                    statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR))
+                    statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                     running.set(false)
                     return
                 }
                 if (!NativeMiner.gpuShaVulkanSelftest(1)) {
                     AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (midstate path)" }
-                    statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR))
+                    statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                     running.set(false)
                     return
                 }
@@ -165,7 +167,7 @@ class NativeMiningEngine(
         val username = config.stratumUser.trim()
         val password = config.stratumPass
 
-        statusRef.set(MiningStatus(MiningStatus.State.Connecting))
+        statusRef.set(MiningStatus(MiningStatus.State.Connecting, queuedShares = queuedSharesCount(null)))
         val port = config.stratumPort.coerceIn(1, 65535)
         val useTls = StratumPinCapture.indicatesTls(config.stratumUrl, port)
         val stratumPin = getStratumPin(host)
@@ -180,14 +182,15 @@ class NativeMiningEngine(
         val err = client.connect()
         if (err != null) {
             AppLog.e(LOG_TAG) { "Connect failed: $err" }
-            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = err))
+            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = err, queuedShares = queuedSharesCount(null)))
             running.set(false)
             return
         }
         if (stratumPin != null) {
             onPinVerified?.invoke()
         }
-        AppLog.d(LOG_TAG) { "Connected, flushing pending shares then starting mining" }
+        AppLog.d(LOG_TAG) { "Connected, draining deferred submits then flushing pending shares" }
+        client.drainDeferredSubmitsAfterConnect()
         flushPendingShares(client)
         clientRef.set(client)
         statusRef.set(MiningStatus(
@@ -198,6 +201,7 @@ class NativeMiningEngine(
             acceptedShares = acceptedShares.get(),
             rejectedShares = rejectedShares.get(),
             identifiedShares = identifiedShares.get(),
+            queuedShares = queuedSharesCount(client),
             bestDifficulty = bestDifficultyRef.get(),
             blockTemplates = blockTemplatesCount.get(),
             stratumDifficulty = client.getCurrentDifficulty(),
@@ -220,6 +224,7 @@ class NativeMiningEngine(
                 acceptedShares = acceptedShares.get(),
                 rejectedShares = rejectedShares.get(),
                 identifiedShares = identifiedShares.get(),
+                queuedShares = queuedSharesCount(null),
                 bestDifficulty = bestDifficultyRef.get(),
                 blockTemplates = blockTemplatesCount.get(),
             ))
@@ -245,6 +250,7 @@ class NativeMiningEngine(
             acceptedShares = acceptedShares.get(),
             rejectedShares = rejectedShares.get(),
             identifiedShares = identifiedShares.get(),
+            queuedShares = queuedSharesCount(null),
             bestDifficulty = bestDifficultyRef.get(),
             blockTemplates = blockTemplatesCount.get(),
         ))
@@ -257,6 +263,30 @@ class NativeMiningEngine(
         totalNoncesScanned.set(0)
         bestDifficultyRef.set(0.0)
         blockTemplatesCount.set(0)
+        sessionBestShareDifficultyRef.set(0.0)
+        syncResetCounterFieldsIntoStatusRef()
+    }
+
+    override fun getSessionBestShareDifficulty(): Double = sessionBestShareDifficultyRef.get()
+
+    override fun resetSessionScopeDisplay() {
+        sessionBestShareDifficultyRef.set(0.0)
+    }
+
+    /** Merges atomics/refs into [statusRef] so [getStatus] matches counters immediately after [resetAllCounters] (mid-session safe: preserves state, hashrates, Stratum fields). */
+    private fun syncResetCounterFieldsIntoStatusRef() {
+        val cur = statusRef.get()
+        statusRef.set(
+            cur.copy(
+                acceptedShares = acceptedShares.get(),
+                rejectedShares = rejectedShares.get(),
+                identifiedShares = identifiedShares.get(),
+                noncesScanned = totalNoncesScanned.get() + gpuNoncesScanned.get(),
+                queuedShares = queuedSharesCount(clientRef.get()),
+                bestDifficulty = bestDifficultyRef.get(),
+                blockTemplates = blockTemplatesCount.get(),
+            ),
+        )
     }
 
     /**
@@ -269,12 +299,20 @@ class NativeMiningEngine(
         identifiedShares.set(status.identifiedShares)
         bestDifficultyRef.set(status.bestDifficulty)
         blockTemplatesCount.set(status.blockTemplates)
+        sessionBestShareDifficultyRef.set(0.0)
         statusRef.set(status)
     }
 
     override fun isRunning(): Boolean = running.get()
 
     override fun getStatus(): MiningStatus = statusRef.get()
+
+    /** Disk-backed pending shares plus Stratum reconnect queue and in-flight submit RPCs. */
+    private fun queuedSharesCount(stratum: StratumClient?): Long {
+        val repo = pendingSharesRepository?.getAll()?.size ?: 0
+        val st = stratum?.stratumInternalQueuedCount() ?: 0
+        return (repo + st).toLong()
+    }
 
     private fun flushPendingShares(client: StratumClient) {
         val repo = pendingSharesRepository ?: return
@@ -287,7 +325,7 @@ class NativeMiningEngine(
                 if (accepted) acceptedShares.incrementAndGet() else rejectedShares.incrementAndGet()
                 latch.countDown()
             }
-            latch.await(10, TimeUnit.SECONDS)
+            latch.await(180, TimeUnit.SECONDS)
         }
         repo.clear()
     }
@@ -572,7 +610,8 @@ class NativeMiningEngine(
                 AppLog.d(LOG_TAG) { "Stopping due to battery overheat" }
                 statusRef.set(MiningStatus(MiningStatus.State.Idle, gpuHashrateHs = 0.0,
                     acceptedShares = acceptedShares.get(), rejectedShares = rejectedShares.get(),
-                    identifiedShares = identifiedShares.get(), bestDifficulty = bestDifficultyRef.get(),
+                    identifiedShares = identifiedShares.get(), queuedShares = queuedSharesCount(client),
+                    bestDifficulty = bestDifficultyRef.get(),
                     blockTemplates = blockTemplatesCount.get(), noncesScanned = totalNoncesScanned.get() + gpuNoncesScanned.get()))
                 return
             }
@@ -589,6 +628,7 @@ class NativeMiningEngine(
                     lastReconnectAttemptMs = now
                     AppLog.d(LOG_TAG) { "Disconnected: calling tryReconnect()" }
                     if (client.tryReconnect()) {
+                        client.drainDeferredSubmitsAfterConnect()
                         flushPendingShares(client)
                         activeJobId.set(null)
                     }
@@ -600,6 +640,7 @@ class NativeMiningEngine(
                 val header80 = StratumHeaderBuilder.header76WithNonce(found.header76, found.nonce)
                 val diff = StratumHeaderBuilder.difficultyFromHeader80(header80)
                 bestDifficultyRef.updateAndGet { maxOf(it, diff) }
+                sessionBestShareDifficultyRef.updateAndGet { maxOf(it, diff) }
                 identifiedShares.incrementAndGet()
                 val nonceHex = String.format("%08x", (found.nonce.toLong() and 0xFFFFFFFFL))
                 if (client.isConnected()) {
@@ -636,6 +677,7 @@ class NativeMiningEngine(
                 acceptedShares = acceptedShares.get(),
                 rejectedShares = rejectedShares.get(),
                 identifiedShares = identifiedShares.get(),
+                queuedShares = queuedSharesCount(client),
                 bestDifficulty = bestDifficultyRef.get(),
                 blockTemplates = blockTemplatesCount.get(),
                 connectionLost = !client.isConnected(),

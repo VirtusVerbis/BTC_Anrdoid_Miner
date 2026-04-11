@@ -12,20 +12,29 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 import java.lang.reflect.Method
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Minimal Stratum v1 TCP client. Supports optional TLS.
  * Sends subscribe (id 1), authorize (id 2), submit (id 3+); parses notify, set_difficulty,
  * set_extranonce, client.reconnect, and RPC responses.
+ *
+ * Each logical share submit is tracked with a response timeout and bounded resubmits (new JSON-RPC id).
+ * In-flight submits on connection loss are deferred to [reconnectSubmitQueue] and drained after reconnect.
+ * On [disconnect], pending submits are finalized with "client stopped" and the scheduler is shut down.
  */
 class StratumClient(
     private val host: String,
@@ -52,19 +61,46 @@ class StratumClient(
     private val authorizeResultRef = AtomicReference<Boolean?>(null)
     private val authorizeErrorRef = AtomicReference<String?>(null)
     private val cleanJobsInvalidation = AtomicBoolean(false)
-    private val pendingSubmitCallbacks = ConcurrentHashMap<Int, (Boolean, String?) -> Unit>()
+
+    /** Maps current JSON-RPC submit id to in-flight logical submit. */
+    private val pendingByRpcId = ConcurrentHashMap<Int, PendingLogicalSubmit>()
+
+    /** Submits deferred when connection drops while [running] is still true. */
+    private val reconnectSubmitQueue = ConcurrentLinkedQueue<DeferredSubmit>()
 
     private val requestId = AtomicInteger(2) // 1=subscribe, 2=authorize, 3+=submit
+
+    private val submitScheduler = AtomicReference<ScheduledExecutorService?>(null)
+    private val submitStateLock = Any()
+
+    private data class DeferredSubmit(
+        val jobId: String,
+        val extranonce2Hex: String,
+        val ntimeHex: String,
+        val nonceHex: String,
+        val onResultOnce: (Boolean, String?) -> Unit,
+    )
+
+    private class PendingLogicalSubmit(
+        val jobId: String,
+        val extranonce2Hex: String,
+        val ntimeHex: String,
+        val nonceHex: String,
+        val onResultOnce: (Boolean, String?) -> Unit,
+        var currentRpcId: Int,
+        var attempt: Int,
+        @Volatile var timeoutFuture: ScheduledFuture<*>?,
+    )
 
     private companion object {
         private const val LOG_TAG = "Stratum"
         /** Connect timeout (ms) to avoid indefinite block when network is unavailable during reconnect. */
         private const val CONNECT_TIMEOUT_MS = 15_000
+        private const val SUBMIT_RESPONSE_TIMEOUT_MS = 30_000L
+        private const val MAX_SUBMIT_RETRIES = 5
+        private const val MSG_CLIENT_STOPPED = "client stopped"
+        private const val MSG_NO_RESPONSE = "no response after retries"
 
-        /**
-         * [SSLSocketFactory.createSocket] for an existing [Socket] is **protected** on the JVM; Kotlin cannot
-         * call it directly. Reflection performs timeout-bound TCP connect then TLS handshake.
-         */
         private val sslSocketOverPlainMethod: Method = SSLSocketFactory::class.java.getDeclaredMethod(
             "createSocket",
             Socket::class.java,
@@ -93,6 +129,31 @@ class StratumClient(
                     }
                 }
             }
+
+        private fun wrapOnce(user: (Boolean, String?) -> Unit): (Boolean, String?) -> Unit {
+            val done = AtomicBoolean(false)
+            return { accepted, msg ->
+                if (done.compareAndSet(false, true)) {
+                    user(accepted, msg)
+                }
+            }
+        }
+    }
+
+    private fun ensureScheduler(): ScheduledExecutorService {
+        submitScheduler.get()?.let { return it }
+        val created = Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "stratum-submit-timeout").apply { isDaemon = true }
+        }
+        if (submitScheduler.compareAndSet(null, created)) {
+            return created
+        }
+        created.shutdown()
+        return submitScheduler.get()!!
+    }
+
+    private fun shutdownSubmitScheduler() {
+        submitScheduler.getAndSet(null)?.shutdownNow()
     }
 
     fun getCurrentJob(): StratumJob? = currentJob.get()
@@ -103,11 +164,30 @@ class StratumClient(
     /** True when socket is open and subscribe+authorize have succeeded. */
     fun isConnected(): Boolean = connected.get()
 
+    /**
+     * Count of Stratum-side submit work not yet finished: deferred reconnect queue plus in-flight JSON-RPC
+     * submits awaiting a pool response ([pendingByRpcId] holds one entry per logical share during retries).
+     */
+    fun stratumInternalQueuedCount(): Int =
+        reconnectSubmitQueue.size + pendingByRpcId.size
+
     /** Returns true if the last mining.notify had cleanJobs=true (caller should abort current job). */
     fun consumeCleanJobsInvalidation(): Boolean = cleanJobsInvalidation.getAndSet(false)
 
     /** True if the last mining.notify had cleanJobs=true. Does not clear the flag (use consumeCleanJobsInvalidation for that). */
     fun hasCleanJobsInvalidation(): Boolean = cleanJobsInvalidation.get()
+
+    /**
+     * After subscribe+authorize succeed, drain submits that were deferred during a prior connection loss.
+     * Does not increment [com.btcminer.android.mining.NativeMiningEngine] identified share counts.
+     */
+    fun drainDeferredSubmitsAfterConnect() {
+        while (true) {
+            val d = reconnectSubmitQueue.poll() ?: break
+            AppLog.d(LOG_TAG) { "Draining deferred submit jobId=${d.jobId}" }
+            sendSubmitInternal(d.jobId, d.extranonce2Hex, d.ntimeHex, d.nonceHex, d.onResultOnce)
+        }
+    }
 
     /**
      * Connect, subscribe, authorize. Returns error message or null on success.
@@ -120,6 +200,7 @@ class StratumClient(
             return err
         }
         connected.set(true)
+        drainDeferredSubmitsAfterConnect()
         return null
     }
 
@@ -137,12 +218,30 @@ class StratumClient(
         }
         connected.set(true)
         AppLog.d(LOG_TAG) { "tryReconnect OK" }
+        drainDeferredSubmitsAfterConnect()
         return true
     }
 
     /** Closes socket and reader; sets [connected] false. Does not set [running] false. */
     private fun closeConnectionOnly() {
         connected.set(false)
+        synchronized(submitStateLock) {
+            val seen = HashSet<PendingLogicalSubmit>()
+            pendingByRpcId.forEach { (_, p) -> seen.add(p) }
+            pendingByRpcId.clear()
+            for (p in seen) {
+                p.timeoutFuture?.cancel(false)
+                p.timeoutFuture = null
+                if (running.get()) {
+                    reconnectSubmitQueue.offer(
+                        DeferredSubmit(p.jobId, p.extranonce2Hex, p.ntimeHex, p.nonceHex, p.onResultOnce),
+                    )
+                    AppLog.d(LOG_TAG) { "Deferred submit for reconnect jobId=${p.jobId} rpcId=${p.currentRpcId}" }
+                } else {
+                    p.onResultOnce(false, MSG_CLIENT_STOPPED)
+                }
+            }
+        }
         try {
             socketRef.getAndSet(null)?.close()
         } catch (_: Exception) { }
@@ -158,7 +257,6 @@ class StratumClient(
                 if (useTls) "Connecting (TLS) $host:$connectPort" else "Connecting (plain) $host:$connectPort"
             }
             val socket = if (useTls) {
-                // SSLContext.getSocketFactory() is typed as SocketFactory; both branches are SSLSocketFactory at runtime.
                 val factory: SSLSocketFactory = if (stratumPin != null) {
                     val ctx = SSLContext.getInstance("TLS")
                     ctx.init(null, arrayOf<TrustManager>(stratumPinningTrustManager(stratumPin)), null)
@@ -166,7 +264,6 @@ class StratumClient(
                 } else {
                     SSLSocketFactory.getDefault() as SSLSocketFactory
                 }
-                // Bound TCP connect like plain path; then TLS handshake on the connected socket.
                 val plain = Socket()
                 try {
                     plain.connect(InetSocketAddress(host, connectPort), CONNECT_TIMEOUT_MS)
@@ -180,7 +277,6 @@ class StratumClient(
             } else {
                 Socket().apply { connect(InetSocketAddress(host, connectPort), CONNECT_TIMEOUT_MS) }
             }
-            // Timeout so we detect dead/half-open connections and set connected=false for reconnect logic.
             socket.soTimeout = 90_000
             socketRef.set(socket)
             val writer = PrintWriter(socket.getOutputStream(), true)
@@ -234,7 +330,14 @@ class StratumClient(
     fun disconnect() {
         running.set(false)
         closeConnectionOnly()
+        synchronized(submitStateLock) {
+            while (true) {
+                val d = reconnectSubmitQueue.poll() ?: break
+                d.onResultOnce(false, MSG_CLIENT_STOPPED)
+            }
+        }
         currentJob.set(null)
+        shutdownSubmitScheduler()
     }
 
     private fun handleLine(line: String) {
@@ -299,12 +402,17 @@ class StratumClient(
         } else {
             AppLog.e(LOG_TAG) { "Submit result: rejected: ${errorMessage ?: "unknown"}" }
         }
-        val callback = pendingSubmitCallbacks.remove(id)
-        if (callback != null) {
-            callback(accepted, errorMessage)
-        } else {
-            AppLog.e(LOG_TAG) { "Submit result for unknown id $id" }
+        val pending: PendingLogicalSubmit?
+        synchronized(submitStateLock) {
+            pending = pendingByRpcId.remove(id)
+            pending?.timeoutFuture?.cancel(false)
+            pending?.timeoutFuture = null
         }
+        if (pending == null) {
+            AppLog.e(LOG_TAG) { "Submit result for unknown id $id" }
+            return
+        }
+        pending.onResultOnce(accepted, errorMessage)
     }
 
     private fun parseNotify(params: JSONArray?) {
@@ -380,9 +488,70 @@ class StratumClient(
         writerRef.get()?.println(req.toString())
     }
 
+    private fun onSubmitResponseTimeout(expectedRpcId: Int) {
+        var pending: PendingLogicalSubmit? = null
+        synchronized(submitStateLock) {
+            val p = pendingByRpcId[expectedRpcId] ?: return
+            if (p.currentRpcId != expectedRpcId) return
+            p.timeoutFuture?.cancel(false)
+            p.timeoutFuture = null
+            if (pendingByRpcId.remove(expectedRpcId, p)) {
+                pending = p
+            }
+        }
+        val p = pending ?: return
+
+        val writer = writerRef.get()
+        val stillRunning = running.get()
+        val isConnected = connected.get() && writer != null
+
+        if (p.attempt >= MAX_SUBMIT_RETRIES || !isConnected || !stillRunning) {
+            val msg = when {
+                !stillRunning -> MSG_CLIENT_STOPPED
+                !isConnected -> "disconnected"
+                else -> MSG_NO_RESPONSE
+            }
+            p.onResultOnce(false, msg)
+            return
+        }
+
+        p.attempt += 1
+        val newId = requestId.incrementAndGet()
+        p.currentRpcId = newId
+        val req = JSONObject().apply {
+            put("id", newId)
+            put("method", "mining.submit")
+            put("params", JSONArray()
+                .put(username)
+                .put(p.jobId)
+                .put(p.extranonce2Hex)
+                .put(p.ntimeHex)
+                .put(p.nonceHex))
+        }
+        synchronized(submitStateLock) {
+            if (!connected.get() || writerRef.get() == null) {
+                reconnectSubmitQueue.offer(
+                    DeferredSubmit(p.jobId, p.extranonce2Hex, p.ntimeHex, p.nonceHex, p.onResultOnce),
+                )
+                return
+            }
+            pendingByRpcId[newId] = p
+            p.timeoutFuture = scheduleSubmitTimeoutLocked(newId)
+        }
+        writer!!.println(req.toString())
+        AppLog.d(LOG_TAG) { "Resubmit attempt ${p.attempt}/$MAX_SUBMIT_RETRIES id=$newId jobId=${p.jobId}" }
+    }
+
+    private fun scheduleSubmitTimeoutLocked(rpcId: Int): ScheduledFuture<*> {
+        val exec = ensureScheduler()
+        return exec.schedule({
+            onSubmitResponseTimeout(rpcId)
+        }, SUBMIT_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    }
+
     /**
      * Send mining.submit. Params: username, job_id, extranonce2 (hex), ntime (hex), nonce (hex).
-     * onResult is invoked when the pool responds, keyed by request id.
+     * onResult is invoked at most once when the pool responds, retries exhaust, or the client stops.
      */
     fun sendSubmit(
         jobId: String,
@@ -391,8 +560,32 @@ class StratumClient(
         nonceHex: String,
         onResult: (accepted: Boolean, errorMessage: String?) -> Unit,
     ) {
-        val id = requestId.incrementAndGet() // 3, 4, 5, ...
-        pendingSubmitCallbacks[id] = onResult
+        sendSubmitInternal(jobId, extranonce2Hex, ntimeHex, nonceHex, wrapOnce(onResult))
+    }
+
+    private fun sendSubmitInternal(
+        jobId: String,
+        extranonce2Hex: String,
+        ntimeHex: String,
+        nonceHex: String,
+        onResultOnce: (Boolean, String?) -> Unit,
+    ) {
+        val writer = writerRef.get()
+        if (writer == null || !connected.get()) {
+            onResultOnce(false, "not connected")
+            return
+        }
+        val id = requestId.incrementAndGet()
+        val pending = PendingLogicalSubmit(
+            jobId = jobId,
+            extranonce2Hex = extranonce2Hex,
+            ntimeHex = ntimeHex,
+            nonceHex = nonceHex,
+            onResultOnce = onResultOnce,
+            currentRpcId = id,
+            attempt = 1,
+            timeoutFuture = null,
+        )
         val req = JSONObject().apply {
             put("id", id)
             put("method", "mining.submit")
@@ -403,6 +596,14 @@ class StratumClient(
                 .put(ntimeHex)
                 .put(nonceHex))
         }
-        writerRef.get()?.println(req.toString())
+        synchronized(submitStateLock) {
+            if (!connected.get() || writerRef.get() == null) {
+                onResultOnce(false, "not connected")
+                return
+            }
+            pendingByRpcId[id] = pending
+            pending.timeoutFuture = scheduleSubmitTimeoutLocked(id)
+        }
+        writer.println(req.toString())
     }
 }
