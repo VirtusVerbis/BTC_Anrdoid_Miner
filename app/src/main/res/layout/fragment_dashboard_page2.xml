@@ -169,5 +169,39 @@
                     android:textSize="9sp" />
             </LinearLayout>
         </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center_horizontal"
+            android:text="@string/dashboard_panel2_network_title"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/lifetime_network_difficulty_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="—"
+                android:textColor="@color/bitcoin_orange"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/lifetime_network_difficulty_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_horizontal"
+                android:text="@string/network_difficulty_label"
+                android:textColor="?attr/colorOnSurface"
+                android:textSize="9sp" />
+        </LinearLayout>
     </LinearLayout>
 </ScrollView>

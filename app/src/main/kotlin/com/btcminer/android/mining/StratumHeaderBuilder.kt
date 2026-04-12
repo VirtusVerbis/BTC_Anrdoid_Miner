@@ -4,6 +4,7 @@ import java.math.BigDecimal
 import java.math.BigInteger
 import java.math.RoundingMode
 import java.security.MessageDigest
+import kotlin.math.pow
 
 /**
  * Builds 76-byte block header prefix and 32-byte target from Stratum job + difficulty.
@@ -33,8 +34,31 @@ object StratumHeaderBuilder {
     fun bytesToHex(bytes: ByteArray): String =
         bytes.joinToString("") { "%02x".format(it) }
 
-    /** Reverse byte order (for Bitcoin prevhash/merkle in header). */
-    private fun reverseBytes(b: ByteArray): ByteArray = b.reversedArray()
+    /**
+     * Stratum / public-pool `swapEndianWords`: for each 4-byte word, swap byte order (notify `prevhash` param).
+     */
+    internal fun swapEndianWords32(b: ByteArray): ByteArray {
+        require(b.size == 32) { "prevhash must be 32 bytes" }
+        val out = b.copyOf()
+        var i = 0
+        while (i < 32) {
+            val t0 = out[i]
+            val t1 = out[i + 1]
+            out[i] = out[i + 3]
+            out[i + 1] = out[i + 2]
+            out[i + 2] = t1
+            out[i + 3] = t0
+            i += 4
+        }
+        return out
+    }
+
+    /** Left-pad Stratum hex fields to 8 nibbles (4 bytes LE on wire). */
+    internal fun normalize8Hex(hex: String): String {
+        val s = hex.replace(" ", "").lowercase()
+        require(s.length % 2 == 0) { "Even length hex required" }
+        return s.padStart(8, '0')
+    }
 
     /**
      * Build merkle root: coinbase = coinb1 + extranonce1 + extranonce2 + coinb2,
@@ -61,7 +85,7 @@ object StratumHeaderBuilder {
         return hash
     }
 
-    /** Pad or trim to 4 bytes little-endian from hex. */
+    /** Pad or trim to 4 bytes little-endian from hex (use [normalize8Hex] for pool-style short strings). */
     private fun hexTo4BytesLE(hex: String): ByteArray {
         val b = hexToBytes(hex).reversedArray()
         return when {
@@ -78,10 +102,10 @@ object StratumHeaderBuilder {
         merkleRoot: ByteArray,
     ): ByteArray {
         require(merkleRoot.size == 32) { "Merkle root must be 32 bytes" }
-        val version = hexTo4BytesLE(job.versionHex)
-        val prevhash = reverseBytes(hexToBytes(job.prevhashHex)).copyOf(32)
-        val ntime = hexTo4BytesLE(job.ntimeHex)
-        val nbits = hexTo4BytesLE(job.nbitsHex)
+        val version = hexTo4BytesLE(normalize8Hex(job.versionHex))
+        val prevhash = swapEndianWords32(hexToBytes(job.prevhashHex))
+        val ntime = hexTo4BytesLE(normalize8Hex(job.ntimeHex))
+        val nbits = hexTo4BytesLE(normalize8Hex(job.nbitsHex))
         return version + prevhash + merkleRoot + ntime + nbits
     }
 
@@ -128,22 +152,51 @@ object StratumHeaderBuilder {
 
     /**
      * Compute share difficulty from 80-byte block header (double-SHA256 hash, then truediffone / hash).
-     * The digest is interpreted as an unsigned 256-bit **big-endian** integer (digest[0] = MSB), matching
-     * public-pool `DifficultyUtils` (digest MSB-first) and typical Stratum share scoring
-     * (not block-explorer reversed hex display).
+     * Matches public-pool `DifficultyUtils` / bitcoinjs PoW integer: digest bytes as **little-endian** uint256
+     * (MSB = `digest[31]`), same as `BigInteger(1, hash.reversedArray())`.
      */
     fun difficultyFromHeader80(header80: ByteArray): Double {
         require(header80.size == 80) { "Header must be 80 bytes" }
         val hash = doubleSha256(header80)
-        val hashValue = uint256BeFromDigest(hash)
+        val hashValue = uint256LeBufferAsBigInteger(hash)
         if (hashValue.signum() == 0) return TRUEDIFFONE
         val diff = BigDecimal(TRUEDIFFONE.toString()).divide(BigDecimal(hashValue), 16, RoundingMode.HALF_UP)
         return diff.toDouble()
     }
 
-    /** 32-byte SHA256d digest as unsigned 256-bit big-endian (same ordering as [BigInteger](1, magnitude)). */
-    private fun uint256BeFromDigest(hash: ByteArray): BigInteger {
+    /** 32-byte SHA256d digest as unsigned 256-bit integer (LE buffer: index 0 = LSB). */
+    private fun uint256LeBufferAsBigInteger(hash: ByteArray): BigInteger {
         require(hash.size == 32)
-        return BigInteger(1, hash)
+        return BigInteger(1, hash.reversedArray())
+    }
+
+    /**
+     * Chain network difficulty from Stratum `nbits` (notify param 6), same compact formula as public-pool
+     * `calculateNetworkDifficulty`: `maxTarget / (mantissa * 256^(exponent-3))`.
+     */
+    fun networkDifficultyFromNbitsHex(nbitsHex: String): Double? {
+        val n = nbitsHexToUInt32(nbitsHex) ?: return null
+        val mantissa = n and 0x007fffffL
+        val exponent = ((n shr 24) and 0xffL).toInt()
+        if (mantissa == 0L) return null
+        val target = mantissa.toDouble() * 256.0.pow(exponent - 3)
+        if (!target.isFinite() || target <= 0.0) return null
+        val maxTarget = 2.0.pow(208) * 65535.0
+        return maxTarget / target
+    }
+
+    /** Parse Stratum `nbits` hex as unsigned 32-bit (at most 8 hex digits after normalize). */
+    private fun nbitsHexToUInt32(hex: String): Long? {
+        val s = hex.replace(" ", "").lowercase()
+        if (s.isEmpty() || s.length % 2 != 0) return null
+        val eight = when {
+            s.length <= 8 -> s.padStart(8, '0')
+            else -> s.takeLast(8)
+        }
+        return try {
+            java.lang.Long.parseUnsignedLong(eight, 16)
+        } catch (_: NumberFormatException) {
+            null
+        }
     }
 }

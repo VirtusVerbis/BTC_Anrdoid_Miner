@@ -137,15 +137,38 @@ uint nonce_sha_word(uint nonce) {
     return ((nonce & 0xffu) << 24) | (((nonce >> 8) & 0xffu) << 16) | (((nonce >> 16) & 0xffu) << 8) | ((nonce >> 24) & 0xffu);
 }
 
+/* memcmp(reverse(digest_bytes), target_bytes) <= 0; digest words are SHA big-endian per word; target words from UBO are LE per word (memcpy). */
 bool hash_meets_target(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uint h6, uint h7) {
-    if (h0 != target_0_3)  return h0 < target_0_3;
-    if (h1 != target_4_7)  return h1 < target_4_7;
-    if (h2 != target_8_11) return h2 < target_8_11;
-    if (h3 != target_12_15) return h3 < target_12_15;
-    if (h4 != target_16_19) return h4 < target_16_19;
-    if (h5 != target_20_23) return h5 < target_20_23;
-    if (h6 != target_24_27) return h6 < target_24_27;
-    return h7 <= target_28_31;
+    uint dw[8];
+    dw[0] = h0;
+    dw[1] = h1;
+    dw[2] = h2;
+    dw[3] = h3;
+    dw[4] = h4;
+    dw[5] = h5;
+    dw[6] = h6;
+    dw[7] = h7;
+    uint tw[8];
+    tw[0] = target_0_3;
+    tw[1] = target_4_7;
+    tw[2] = target_8_11;
+    tw[3] = target_12_15;
+    tw[4] = target_16_19;
+    tw[5] = target_20_23;
+    tw[6] = target_24_27;
+    tw[7] = target_28_31;
+    for (uint i = 0u; i < 32u; i++) {
+        uint k = 31u - i;
+        uint wi = k / 4u;
+        uint bo = k % 4u;
+        uint dbyte = (dw[wi] >> (24u - 8u * bo)) & 0xffu;
+        uint wi_t = i / 4u;
+        uint bo_t = i % 4u;
+        uint tbyte = (tw[wi_t] >> (8u * bo_t)) & 0xffu;
+        if (dbyte != tbyte)
+            return dbyte < tbyte;
+    }
+    return true;
 }
 
 void main() {

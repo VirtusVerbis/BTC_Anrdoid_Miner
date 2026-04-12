@@ -2,6 +2,17 @@
 
 Android app for **CPU and GPU** Bitcoin mining via Stratum pools. Uses **in-app native code** (C, built with NDK/CMake) for SHA-256 and nonce scanning—no external miner binary required. Open-source; build with Android Studio or Gradle (sideload; not on Play Store).
 
+## Recent updates (2026)
+
+- **Dashboard — Page 2 — Network difficulty:** Shows chain-style difficulty computed from the **current** Stratum job’s compact **`nbits`** (`mining.notify`). It updates when a new job arrives, shows **—** when idle or there is no job, and is **not** a persisted lifetime counter (it is not cleared by **Reset All UI Counters**). This is **not** the same as **Stratum Difficulty** on Page 1 (pool share difficulty from `mining.set_difficulty`). On **Signet** or other test networks, values are much smaller than mainnet; that is expected.
+- **Stratum / mining parity with public-pool reference logic:** Several behaviors were corrected so the app matches the public-pool / bitcoinjs-style rules referenced in [`StratumHeaderBuilder.kt`](app/src/main/kotlin/com/btcminer/android/mining/StratumHeaderBuilder.kt) (see unit tests in [`StratumHeaderBuilderGoldenTest.kt`](app/src/test/kotlin/com/btcminer/android/mining/StratumHeaderBuilderGoldenTest.kt)):
+  - **`prevhash` in the 80-byte header:** Stratum `mining.notify` `prevhash` is converted with a **per-4-byte-word** endian swap (`swapEndianWords32`), as in public-pool `MiningJob.response`, instead of reversing the full 32-byte field.
+  - **Share difficulty from a candidate header:** The double-SHA256 hash is interpreted as a **little-endian** unsigned 256-bit integer for `truediffone / hash`, matching public-pool **DifficultyUtils** / bitcoinjs PoW ordering (used for best-share–style difficulty reporting).
+  - **Share targets when pool difficulty is below 1.0:** Share targets are **not** clamped back to the difficulty-1 maximum when the pool sends an easier `mining.set_difficulty`, matching low-diff Stratum behavior (public-pool / NerdMiner–style pools).
+- **Dashboard — Page 1 — Stratum Difficulty:** Shows **Stratum Difficulty** from the pool’s `mining.set_difficulty` message (replacing the former CPU utilization % on that row). CPU jiffies sampling for **CPU usage target** throttling in Config is unchanged; only the on-screen metric changed.
+- **TLS pool URLs:** The pool host field supports `stratum+tcp://`, `stratum+ssl://`, and `stratum+tls://`. TLS is used when the URL indicates SSL/TLS (`+ssl` / `+tls` in the scheme) or when the configured port is **443**. Enter the port separately (e.g. `stratum+tls://public-pool.example` with port **4333** per the pool).
+- **Reset All UI Counters:** Config → **Reset All UI Counters** clears persisted dashboard counters including accepted, rejected, and identified shares, block templates, best difficulty, session nonces, and all-time lifetime stats (sum of session-average hash rates and cumulative nonces); see the in-app dialog.
+
 Created using:
 Cursor AI
 
@@ -18,7 +29,7 @@ https://github.com/VirtusVerbis/BTC_Public_Pool_Signet
 
 
 
-<img src="https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot.png" width="250" height="500">
+<img src="https://github.com/VirtusVerbis/BTC_Android_Miner/blob/main/Screenshot.png" width="250" height="500">
 
 
 
@@ -40,18 +51,18 @@ The core mining pipeline is implemented correctly:
 **Stratum protocol** (`StratumClient.kt`) — properly implements:
 - `mining.subscribe` → gets `extranonce1` and `extranonce2_size`
 - `mining.authorize` → authenticates with the pool
-- `mining.notify` → receives block templates with `prevhash`, `coinbase`, `merkle_branch`, `version`, `nbits`, `ntime`
+- `mining.notify` → receives block templates with `prevhash`, `coinbase`, `merkle_branch`, `version`, `nbits`, `ntime` (`nbits` is the compact **network target** for that template; the dashboard’s **Network difficulty** on Page 2 derives from it when a job is active.)
 - `mining.submit` → submits found shares back to the pool
 - `set_difficulty` and `set_extranonce` handling ✅
 
 **Block header construction** (`NativeMiningEngine.kt` + `StratumHeaderBuilder.kt`) — assembles the 80-byte block header correctly:
 - Builds the coinbase transaction from `coinb1 + extranonce1 + extranonce2 + coinb2`
 - Computes the Merkle root from the coinbase hash + merkle branch
-- Assembles the 80-byte header: `version + prevhash + merkle_root + ntime + nbits + nonce`
+- Assembles the 80-byte header: `version + prevhash + merkle_root + ntime + nbits + nonce` (Stratum `prevhash` uses per-word endian swap as in public-pool `MiningJob.response`, not a full 32-byte reverse.)
 
 **SHA-256d hashing** (`miner.c`) — the double-SHA256 implementation is a clean, correct from-scratch implementation verified against NIST test vectors (SHA-256("abc")). ✅
 
-**Target comparison** — `hash_meets_target()` uses `memcmp` on 32-byte big-endian hashes, which is correct. ✅
+**Target comparison** — `hash_meets_target()` compares the **byte-reversed** double-SHA256 digest to the 32-byte share target (`memcmp(rev(hash), target) <= 0`), matching bitcoinjs `Block.checkProofOfWork` / Bitcoin PoW ordering. CPU (`sha256_scan.c`), Vulkan host, and `miner.comp` use the same rule. ✅
 
 **GPU acceleration** (`vulkan_miner.c` + `miner.comp`) — a real Vulkan compute shader is used to parallelize nonce scanning on the device GPU. This is a genuine optimization, not fake. ✅
 
@@ -80,12 +91,6 @@ At 5 kH/s, the expected time to solo-mine one Bitcoin block is roughly **hundred
 
 The code is a **genuine, honest implementation** of a Bitcoin miner — not a scam, not fake mining, not a cryptojacker. It's just that mining Bitcoin profitably on a phone has been economically infeasible since roughly 2011. This appears to be a legitimate learning/hobby project, and the code quality (especially the security practices noted earlier) supports that interpretation.
 
-## Recent updates (2026)
-
-- **Dashboard — Stratum difficulty:** The main dashboard (page 1) shows **Stratum Difficulty** from the pool’s `mining.set_difficulty` message (replacing the former CPU utilization % on that row). CPU jiffies sampling for **CPU usage target** throttling in Config is unchanged; only the on-screen metric changed.
-- **TLS pool URLs:** The pool host field supports `stratum+tcp://`, `stratum+ssl://`, and `stratum+tls://`. TLS is used when the URL indicates SSL/TLS (`+ssl` / `+tls` in the scheme) or when the configured port is **443**. Enter the port separately (e.g. `stratum+tls://public-pool.example` with port **4333** per the pool).
-- **Reset All UI Counters:** Config → **Reset All UI Counters** clears persisted dashboard counters including block templates, shares, best difficulty, and related stats (see in-app dialog).
-
 ## Features
 
 - **Stratum v1** pool support: plain TCP, or TLS when using `stratum+ssl://` / `stratum+tls://` or port **443**
@@ -101,7 +106,7 @@ The code is a **genuine, honest implementation** of a Bitcoin miner — not a sc
 - **Mining thread priority (0 to -20):** slider for CPU priority when screen is off (0 = default, -20 = highest)
 - **Battery optimization** in Config: "Request Don't optimize" (system dialog) and "Open battery optimization settings" so you can whitelist the app from battery optimization
 - **Certificate pinning:** TLS connections to the pool can use a per-host SPKI pin captured from **Config → Pin Mining Pool Certificate** (required on connect when no pin is stored for that host). Separate optional pins can be used for **mempool.space** when querying balance. **Encrypted config:** credentials stored with EncryptedSharedPreferences and Android Keystore.
-- **Dashboard (swipeable pages):** **Page 1** — CPU and GPU hash rate (GPU shows "----" when unavailable), mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, **Stratum Difficulty** (pool share difficulty while mining), best difficulty, block template, battery temp (left), GPU hashrate (right with workgroup size in label), hashrate chart; red/white indicators when throttle is active. **Page 2 — lifetime stats:** running totals of session-average CPU/GPU/total hash rates and cumulative nonces, updated when a mining session ends (or if the service is stopped without a normal session teardown). **Reset All UI Counters** in Config clears session counters and can reset lifetime aggregates (see in-app dialog).
+- **Dashboard (swipeable pages):** **Page 1** — CPU and GPU hash rate (GPU shows "----" when unavailable), mining timer (DD:HH:MM:SS), nonces, accepted/rejected/identified shares, **Stratum Difficulty** (pool **share** difficulty from `mining.set_difficulty` while mining), best difficulty, block template, battery temp (left), GPU hashrate (right with workgroup size in label), hashrate chart; red/white indicators when throttle is active. **Page 2 — lifetime + live chain readout:** persisted **all-sessions** accepted/rejected/identified shares, all-time **best difficulty** and **block template** counters, plus **Network difficulty** from the **current** job’s `nbits` (live; **—** when no job). **Page 3 — lifetime hash aggregates:** running totals of session-average CPU/GPU/total hash rates and cumulative nonces, updated when a mining session ends (or if the service is stopped without a normal session teardown). **Reset All UI Counters** in Config clears persisted session/lifetime counters listed in the in-app dialog (Network difficulty on Page 2 is not stored and is unaffected).
 - **Picture-in-picture** support on the main activity (where supported by the device)
 - Runs as a **foreground service** so mining continues in the background until you stop it (notification permission required on Android 13+)
 

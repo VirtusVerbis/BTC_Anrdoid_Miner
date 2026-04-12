@@ -28,6 +28,9 @@ interface MiningEngine {
 
     /** Clears per-session display counters in the engine (session best share difficulty). */
     fun resetSessionScopeDisplay() {}
+
+    /** Stratum `mining.notify` param 6 (`nbitsHex`) for current job, or null if none / engine has no Stratum client. */
+    fun getCurrentStratumNbitsHex(): String? = null
 }
 
 data class MiningStatus(

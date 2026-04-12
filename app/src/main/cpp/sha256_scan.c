@@ -20,8 +20,12 @@
 
 extern atomic_int g_cpu_interrupt_requested;
 
+/* Bitcoin / bitcoinjs: compare reverse(double-SHA256(header)) to target (see bitcoinjs Block.checkProofOfWork). */
 static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
-    return memcmp(hash, target, HASH_SIZE) <= 0;
+    uint8_t rev[HASH_SIZE];
+    for (int i = 0; i < HASH_SIZE; i++)
+        rev[i] = hash[HASH_SIZE - 1 - i];
+    return memcmp(rev, target, HASH_SIZE) <= 0;
 }
 
 static void midstate_after_block0(const uint8_t *header76, uint32_t mid[8], void (*compress)(uint32_t *, const uint8_t *, size_t)) {

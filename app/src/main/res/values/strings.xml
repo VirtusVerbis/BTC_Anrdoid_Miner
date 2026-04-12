@@ -120,6 +120,8 @@
     <!-- Lifetime stats (dashboard page 2): sum of per-session average hash rates (H/s), not time-weighted. -->
     <string name="dashboard_panel2_lifetime_shares_title">Lifetime shares (all sessions)</string>
     <string name="dashboard_panel2_lifetime_records_title">All-time records</string>
+    <string name="dashboard_panel2_network_title">Network</string>
+    <string name="network_difficulty_label">Network difficulty</string>
     <string name="lifetime_total_hash_label">All-time total hash rate (sum of session avgs)</string>
     <string name="lifetime_total_cpu_hash_label">All-time total CPU hash rate (sum of session avgs)</string>
     <string name="lifetime_total_gpu_hash_label">All-time total GPU hash rate (sum of session avgs)</string>

@@ -33,6 +33,7 @@ import com.btcminer.android.mining.MiningForegroundService
 import com.btcminer.android.mining.MiningStatsRepository
 import com.btcminer.android.mining.MiningStatus
 import com.btcminer.android.mining.NativeMiner
+import com.btcminer.android.mining.StratumHeaderBuilder
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
@@ -516,6 +517,12 @@ class MainActivity : AppCompatActivity() {
         p2.lifetimeIdentifiedSharesValue.text = idle.identifiedShares.toString()
         p2.lifetimeBestDifficultyValue.text = if (idle.bestDifficulty > 0.0) String.format(Locale.US, "%.6f", idle.bestDifficulty) else "—"
         p2.lifetimeBlockTemplateValue.text = idle.blockTemplates.toString()
+
+        val nbitsHex = miningService?.getCurrentStratumNbitsHex()?.trim().orEmpty()
+        val netDiff =
+            if (nbitsHex.isNotEmpty()) StratumHeaderBuilder.networkDifficultyFromNbitsHex(nbitsHex) else null
+        p2.lifetimeNetworkDifficultyValue.text =
+            if (netDiff != null) NumberFormatUtils.formatNetworkDifficultyForUi(netDiff) else "—"
     }
 
     private fun formatElapsed(elapsedMs: Long): String {

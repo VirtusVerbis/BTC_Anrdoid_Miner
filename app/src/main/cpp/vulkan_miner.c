@@ -39,8 +39,12 @@ _Static_assert(HEADER_PREFIX_SIZE % 4 == 0, "UBO header must be a multiple of 4 
 /* Returned to Java when GPU path is unavailable (no SPIR-V or Vulkan failure). */
 #define GPU_UNAVAILABLE (-2)
 
+/* Same ordering as sha256_scan.c / bitcoinjs checkProofOfWork (reversed digest vs target). */
 static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
-    return memcmp(hash, target, HASH_SIZE) <= 0;
+    uint8_t rev[HASH_SIZE];
+    for (int i = 0; i < HASH_SIZE; i++)
+        rev[i] = hash[HASH_SIZE - 1 - i];
+    return memcmp(rev, target, HASH_SIZE) <= 0;
 }
 
 #ifdef __ANDROID__
