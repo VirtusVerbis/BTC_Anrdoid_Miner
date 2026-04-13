@@ -119,6 +119,7 @@
     <string name="dashboard_page4_stratum_input_title">Stratum JSON Response</string>
     <string name="dashboard_page5_stratum_output_title">Miner JSON Submission</string>
     <string name="stratum_json_mining_inactive">Mining inactive</string>
+    <string name="dashboard_page_indicator_a11y">Dashboard page %1$d of %2$d</string>
 
     <!-- Lifetime stats (dashboard page 2): sum of per-session average hash rates (H/s), not time-weighted. -->
     <string name="dashboard_panel2_lifetime_shares_title">Lifetime shares (all sessions)</string>

@@ -42,6 +42,7 @@ import com.btcminer.android.util.BitcoinAddressValidator
 import com.btcminer.android.util.NumberFormatUtils
 import com.btcminer.android.util.StratumJsonUiFormatter
 import com.google.android.material.snackbar.Snackbar
+import com.google.android.material.tabs.TabLayoutMediator
 import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -71,6 +72,7 @@ class MainActivity : AppCompatActivity() {
     private var page3Fragment: DashboardStatsPage3Fragment? = null
     private var page4Fragment: DashboardStatsPage4Fragment? = null
     private var page5Fragment: DashboardStatsPage5Fragment? = null
+    private var dashboardTabMediator: TabLayoutMediator? = null
 
     private val dashboardFragmentCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(fm: FragmentManager, f: Fragment, v: View, savedInstanceState: Bundle?) {
@@ -248,6 +250,18 @@ class MainActivity : AppCompatActivity() {
 
         supportFragmentManager.registerFragmentLifecycleCallbacks(dashboardFragmentCallbacks, true)
         binding.dashboardPager.adapter = MainPagerAdapter(this)
+        val dashboardPageCount = binding.dashboardPager.adapter!!.itemCount
+        dashboardTabMediator = TabLayoutMediator(
+            binding.dashboardPageIndicator,
+            binding.dashboardPager,
+        ) { tab, position ->
+            tab.text = ""
+            tab.contentDescription = getString(
+                R.string.dashboard_page_indicator_a11y,
+                position + 1,
+                dashboardPageCount,
+            )
+        }.also { it.attach() }
 
         setupChart()
         // Initialize lastBitcoinAddress to detect changes when returning from Config
@@ -255,6 +269,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        dashboardTabMediator?.detach()
+        dashboardTabMediator = null
         supportFragmentManager.unregisterFragmentLifecycleCallbacks(dashboardFragmentCallbacks)
         super.onDestroy()
     }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="@dimen/dashboard_tab_dot_diameter"
+        android:height="@dimen/dashboard_tab_dot_diameter"
+        android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="@color/bitcoin_orange" />
+        </shape>
+    </item>
+</layer-list>

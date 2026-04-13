@@ -119,6 +119,26 @@
             android:layout_marginTop="4dp"
             android:layout_weight="1" />
 
+        <com.google.android.material.tabs.TabLayout
+            android:id="@+id/dashboard_page_indicator"
+            android:layout_width="wrap_content"
+            android:layout_height="@dimen/dashboard_tab_indicator_row_height"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="6dp"
+            android:background="@android:color/transparent"
+            android:paddingBottom="0dp"
+            app:tabBackground="@drawable/tab_dashboard_dot"
+            app:tabGravity="center"
+            app:tabIndicatorColor="@android:color/transparent"
+            app:tabIndicatorHeight="0dp"
+            app:tabMinWidth="@dimen/dashboard_tab_dot_pitch"
+            app:tabMode="fixed"
+            app:tabPaddingBottom="0dp"
+            app:tabPaddingEnd="0dp"
+            app:tabPaddingStart="0dp"
+            app:tabPaddingTop="0dp"
+            app:tabRippleColor="@android:color/transparent" />
+
         <com.github.mikephil.charting.charts.LineChart
             android:id="@+id/hash_rate_chart"
             android:layout_width="match_parent"

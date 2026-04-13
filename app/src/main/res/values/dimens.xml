@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- TabLayout row height: keeps tabBackground dots circular (avoids default ~48dp stretch). -->
+    <dimen name="dashboard_tab_indicator_row_height">10dp</dimen>
+    <!-- Dot size + pitch: pitch = 2 × diameter so edge gap between neighbors equals diameter. -->
+    <dimen name="dashboard_tab_dot_diameter">3dp</dimen>
+    <dimen name="dashboard_tab_dot_pitch">6dp</dimen>
+</resources>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="@dimen/dashboard_tab_dot_diameter"
+        android:height="@dimen/dashboard_tab_dot_diameter"
+        android:gravity="center">
+        <shape android:shape="oval">
+            <stroke
+                android:width="0.5dp"
+                android:color="@color/slider_priority_track_low" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</layer-list>
