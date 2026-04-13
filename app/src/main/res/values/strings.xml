@@ -116,8 +116,8 @@
     <string name="battery_temp_label">Battery temp</string>
     <string name="best_difficulty_label">Best difficulty</string>
     <string name="block_template_label">Block template</string>
-    <string name="dashboard_page4_stratum_input_title">Stratum JSON (input)</string>
-    <string name="dashboard_page5_stratum_output_title">Stratum JSON (output)</string>
+    <string name="dashboard_page4_stratum_input_title">Stratum JSON Response</string>
+    <string name="dashboard_page5_stratum_output_title">Miner JSON Submission</string>
     <string name="stratum_json_mining_inactive">Mining inactive</string>
 
     <!-- Lifetime stats (dashboard page 2): sum of per-session average hash rates (H/s), not time-weighted. -->

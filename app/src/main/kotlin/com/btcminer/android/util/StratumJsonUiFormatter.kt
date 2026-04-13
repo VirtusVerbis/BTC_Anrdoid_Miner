@@ -172,16 +172,22 @@ object StratumJsonUiFormatter {
 
     /**
      * Index legend for the last raw line, or null to hide the footer.
+     * Requires a non-empty JSON-RPC [params] array; null/empty [params] yields no footer (e.g. mining.extranonce.subscribe).
      * [isInbound] true = pool → app, false = app → pool.
      */
     fun indicesFooter(context: Context, raw: String, isInbound: Boolean): CharSequence? {
         val t = raw.trim()
         if (t.isEmpty()) return null
-        val method = try {
-            JSONObject(t).optString("method", "")
+        val obj = try {
+            JSONObject(t)
         } catch (_: Exception) {
             return null
         }
+        val method = obj.optString("method", "")
+        if (method.isEmpty()) return null
+        val params = obj.optJSONArray("params")
+        if (params == null || params.length() == 0) return null
+
         val orange = ContextCompat.getColor(context, R.color.bitcoin_orange)
         val onSurface = MaterialColors.getColor(
             context,
@@ -191,6 +197,9 @@ object StratumJsonUiFormatter {
         return if (isInbound) {
             when (method) {
                 "mining.notify" -> buildNotifyIndicesFooter(orange, onSurface)
+                "mining.set_difficulty" -> buildSetDifficultyIndicesFooter(orange, onSurface)
+                "mining.set_extranonce" -> buildSetExtranonceIndicesFooter(orange, onSurface)
+                "client.reconnect" -> buildClientReconnectIndicesFooter(orange, onSurface)
                 else -> null
             }
         } else {
@@ -264,6 +273,35 @@ object StratumJsonUiFormatter {
         ssb.append("Indices: ")
         ssb.setSpan(ForegroundColorSpan(onSurface), introStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         appendIndexPart(ssb, "0", " client subscription name / user agent.", orange, onSurface)
+        return ssb
+    }
+
+    private fun buildSetDifficultyIndicesFooter(orange: Int, onSurface: Int): CharSequence {
+        val ssb = SpannableStringBuilder()
+        val introStart = ssb.length
+        ssb.append("Indices: ")
+        ssb.setSpan(ForegroundColorSpan(onSurface), introStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        appendIndexPart(ssb, "0", " difficulty.", orange, onSurface)
+        return ssb
+    }
+
+    private fun buildSetExtranonceIndicesFooter(orange: Int, onSurface: Int): CharSequence {
+        val ssb = SpannableStringBuilder()
+        val introStart = ssb.length
+        ssb.append("Indices: ")
+        ssb.setSpan(ForegroundColorSpan(onSurface), introStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        appendIndexPart(ssb, "0", " extranonce1 (hex), ", orange, onSurface)
+        appendIndexPart(ssb, "1", " extranonce2 size (optional).", orange, onSurface)
+        return ssb
+    }
+
+    private fun buildClientReconnectIndicesFooter(orange: Int, onSurface: Int): CharSequence {
+        val ssb = SpannableStringBuilder()
+        val introStart = ssb.length
+        ssb.append("Indices: ")
+        ssb.setSpan(ForegroundColorSpan(onSurface), introStart, ssb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        appendIndexPart(ssb, "0", " host, ", orange, onSurface)
+        appendIndexPart(ssb, "1", " port.", orange, onSurface)
         return ssb
     }
 }
