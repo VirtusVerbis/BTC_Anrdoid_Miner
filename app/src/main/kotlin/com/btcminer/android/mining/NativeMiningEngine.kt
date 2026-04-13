@@ -310,6 +310,10 @@ class NativeMiningEngine(
     override fun getCurrentStratumNbitsHex(): String? =
         clientRef.get()?.getCurrentJob()?.nbitsHex?.trim()?.takeIf { it.isNotEmpty() }
 
+    override fun getLastStratumJsonIn(): String? = clientRef.get()?.getLastInboundLine()
+
+    override fun getLastStratumJsonOut(): String? = clientRef.get()?.getLastOutboundLine()
+
     /** Disk-backed pending shares plus Stratum reconnect queue and in-flight submit RPCs. */
     private fun queuedSharesCount(stratum: StratumClient?): Long {
         val repo = pendingSharesRepository?.getAll()?.size ?: 0

@@ -9,4 +9,9 @@
     <color name="auto_tune_decreasing">#5EB8E6</color>
     <color name="slider_priority_track_low">#808080</color>
     <color name="slider_priority_track_high">#F7931A</color>
+    <!-- Stratum JSON syntax highlighting (body text on dashboard pages 4–5); light theme -->
+    <color name="json_syntax_key">#7E57C2</color>
+    <color name="json_syntax_string">#C026D3</color>
+    <color name="json_syntax_keyword">#00838F</color>
+    <color name="json_syntax_punctuation">#5C5C5C</color>
 </resources>

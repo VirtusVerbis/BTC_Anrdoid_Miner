@@ -31,6 +31,12 @@ interface MiningEngine {
 
     /** Stratum `mining.notify` param 6 (`nbitsHex`) for current job, or null if none / engine has no Stratum client. */
     fun getCurrentStratumNbitsHex(): String? = null
+
+    /** Last raw JSON line received from the pool (Stratum), or null. Cleared when engine disconnects. */
+    fun getLastStratumJsonIn(): String? = null
+
+    /** Last raw JSON line sent to the pool (Stratum), or null. Cleared when engine disconnects. */
+    fun getLastStratumJsonOut(): String? = null
 }
 
 data class MiningStatus(

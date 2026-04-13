@@ -2,4 +2,8 @@
 <resources>
     <color name="chart_axis_legend">#DEE0E0E0</color>
     <color name="throttle_secondary">#FFFFFFFF</color>
+    <color name="json_syntax_key">#CBA6F7</color>
+    <color name="json_syntax_string">#FF79C6</color>
+    <color name="json_syntax_keyword">#89DDFF</color>
+    <color name="json_syntax_punctuation">#E8E8E8</color>
 </resources>

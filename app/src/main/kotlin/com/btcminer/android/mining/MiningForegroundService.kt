@@ -376,6 +376,10 @@ class MiningForegroundService : Service() {
 
     fun getCurrentStratumNbitsHex(): String? = engine.getCurrentStratumNbitsHex()
 
+    fun getLastStratumJsonIn(): String? = engine.getLastStratumJsonIn()
+
+    fun getLastStratumJsonOut(): String? = engine.getLastStratumJsonOut()
+
     /**
      * Accepted / rejected / identified counts for the current mining session only (since last successful start).
      * Zeros when not mining. Aligns with [miningStartTimeMillis] being set.

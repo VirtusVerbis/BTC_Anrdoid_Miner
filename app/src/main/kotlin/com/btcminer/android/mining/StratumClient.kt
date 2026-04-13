@@ -62,6 +62,11 @@ class StratumClient(
     private val authorizeErrorRef = AtomicReference<String?>(null)
     private val cleanJobsInvalidation = AtomicBoolean(false)
 
+    /** Last raw JSON line read from pool (for dashboard). Cleared on [disconnect]. */
+    private val lastInboundRaw = AtomicReference<String?>(null)
+    /** Last raw JSON line sent to pool (for dashboard). Cleared on [disconnect]. */
+    private val lastOutboundRaw = AtomicReference<String?>(null)
+
     /** Maps current JSON-RPC submit id to in-flight logical submit. */
     private val pendingByRpcId = ConcurrentHashMap<Int, PendingLogicalSubmit>()
 
@@ -100,6 +105,8 @@ class StratumClient(
         private const val MAX_SUBMIT_RETRIES = 5
         private const val MSG_CLIENT_STOPPED = "client stopped"
         private const val MSG_NO_RESPONSE = "no response after retries"
+        /** Cap stored Stratum lines for RAM (dashboard JSON panels). */
+        private const val MAX_STRATUM_RAW_CHARS = 16_384
 
         private val sslSocketOverPlainMethod: Method = SSLSocketFactory::class.java.getDeclaredMethod(
             "createSocket",
@@ -157,6 +164,8 @@ class StratumClient(
     }
 
     fun getCurrentJob(): StratumJob? = currentJob.get()
+    fun getLastInboundLine(): String? = lastInboundRaw.get()
+    fun getLastOutboundLine(): String? = lastOutboundRaw.get()
     fun getCurrentDifficulty(): Double = currentDifficulty.get()
     fun getExtranonce1Hex(): String? = extranonce1Hex.get()
     fun getExtranonce2Size(): Int = extranonce2Size.get()
@@ -338,12 +347,27 @@ class StratumClient(
         }
         currentJob.set(null)
         shutdownSubmitScheduler()
+        lastInboundRaw.set(null)
+        lastOutboundRaw.set(null)
+    }
+
+    private fun capStratumRaw(s: String): String =
+        if (s.length <= MAX_STRATUM_RAW_CHARS) s else s.take(MAX_STRATUM_RAW_CHARS) + "\n…"
+
+    private fun recordOutbound(payload: String) {
+        lastOutboundRaw.set(capStratumRaw(payload))
+    }
+
+    private fun recordInbound(payload: String) {
+        lastInboundRaw.set(capStratumRaw(payload))
     }
 
     private fun handleLine(line: String) {
         if (line.isBlank()) return
+        val trimmed = line.trim()
+        recordInbound(trimmed)
         try {
-            val obj = JSONObject(line)
+            val obj = JSONObject(trimmed)
             if (obj.has("method")) {
                 when (obj.optString("method")) {
                     "mining.notify" -> parseNotify(obj.optJSONArray("params"))
@@ -467,7 +491,9 @@ class StratumClient(
             put("method", "mining.subscribe")
             put("params", JSONArray().put("btcminer-android/1.0"))
         }
-        writerRef.get()?.println(req.toString())
+        val line = req.toString()
+        recordOutbound(line)
+        writerRef.get()?.println(line)
     }
 
     private fun sendAuthorize() {
@@ -476,7 +502,9 @@ class StratumClient(
             put("method", "mining.authorize")
             put("params", JSONArray().put(username).put(password))
         }
-        writerRef.get()?.println(req.toString())
+        val line = req.toString()
+        recordOutbound(line)
+        writerRef.get()?.println(line)
     }
 
     private fun sendExtranonceSubscribe() {
@@ -485,7 +513,9 @@ class StratumClient(
             put("method", "mining.extranonce.subscribe")
             put("params", JSONArray())
         }
-        writerRef.get()?.println(req.toString())
+        val line = req.toString()
+        recordOutbound(line)
+        writerRef.get()?.println(line)
     }
 
     private fun onSubmitResponseTimeout(expectedRpcId: Int) {
@@ -538,7 +568,9 @@ class StratumClient(
             pendingByRpcId[newId] = p
             p.timeoutFuture = scheduleSubmitTimeoutLocked(newId)
         }
-        writer!!.println(req.toString())
+        val out = req.toString()
+        recordOutbound(out)
+        writer!!.println(out)
         AppLog.d(LOG_TAG) { "Resubmit attempt ${p.attempt}/$MAX_SUBMIT_RETRIES id=$newId jobId=${p.jobId}" }
     }
 
@@ -604,6 +636,8 @@ class StratumClient(
             pendingByRpcId[id] = pending
             pending.timeoutFuture = scheduleSubmitTimeoutLocked(id)
         }
-        writer.println(req.toString())
+        val out = req.toString()
+        recordOutbound(out)
+        writer.println(out)
     }
 }

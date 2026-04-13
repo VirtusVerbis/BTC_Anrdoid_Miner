@@ -40,6 +40,7 @@ import com.github.mikephil.charting.data.LineDataSet
 import com.btcminer.android.network.CertPins
 import com.btcminer.android.util.BitcoinAddressValidator
 import com.btcminer.android.util.NumberFormatUtils
+import com.btcminer.android.util.StratumJsonUiFormatter
 import com.google.android.material.snackbar.Snackbar
 import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
@@ -68,6 +69,8 @@ class MainActivity : AppCompatActivity() {
     private var page1Fragment: DashboardStatsPage1Fragment? = null
     private var page2Fragment: DashboardStatsPage2Fragment? = null
     private var page3Fragment: DashboardStatsPage3Fragment? = null
+    private var page4Fragment: DashboardStatsPage4Fragment? = null
+    private var page5Fragment: DashboardStatsPage5Fragment? = null
 
     private val dashboardFragmentCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(fm: FragmentManager, f: Fragment, v: View, savedInstanceState: Bundle?) {
@@ -75,6 +78,8 @@ class MainActivity : AppCompatActivity() {
                 is DashboardStatsPage1Fragment -> page1Fragment = f
                 is DashboardStatsPage2Fragment -> page2Fragment = f
                 is DashboardStatsPage3Fragment -> page3Fragment = f
+                is DashboardStatsPage4Fragment -> page4Fragment = f
+                is DashboardStatsPage5Fragment -> page5Fragment = f
                 else -> return
             }
             refreshDashboardFromPoll()
@@ -85,6 +90,8 @@ class MainActivity : AppCompatActivity() {
                 is DashboardStatsPage1Fragment -> if (page1Fragment === f) page1Fragment = null
                 is DashboardStatsPage2Fragment -> if (page2Fragment === f) page2Fragment = null
                 is DashboardStatsPage3Fragment -> if (page3Fragment === f) page3Fragment = null
+                is DashboardStatsPage4Fragment -> if (page4Fragment === f) page4Fragment = null
+                is DashboardStatsPage5Fragment -> if (page5Fragment === f) page5Fragment = null
             }
         }
     }
@@ -484,6 +491,7 @@ class MainActivity : AppCompatActivity() {
         }
         updateLifetimeUi()
         updateLifetimePanel2Ui()
+        updateStratumJsonPanels()
         val config = configRepository.getConfig()
         if (config.autoTuningByBatteryTemp && service != null) {
             binding.autoTuneBlock.visibility = View.VISIBLE
@@ -523,6 +531,66 @@ class MainActivity : AppCompatActivity() {
             if (nbitsHex.isNotEmpty()) StratumHeaderBuilder.networkDifficultyFromNbitsHex(nbitsHex) else null
         p2.lifetimeNetworkDifficultyValue.text =
             if (netDiff != null) NumberFormatUtils.formatNetworkDifficultyForUi(netDiff) else "—"
+    }
+
+    private fun updateStratumJsonPanels() {
+        val p4 = page4Fragment?.pageBinding
+        val p5 = page5Fragment?.pageBinding
+        if (p4 == null && p5 == null) return
+
+        val service = miningService
+        val mining = service != null && service.getStatus().state == MiningStatus.State.Mining
+
+        val idle = getString(R.string.stratum_json_mining_inactive)
+        if (!mining) {
+            p4?.stratumJsonInputValue?.text = idle
+            p5?.stratumJsonOutputValue?.text = idle
+            p4?.stratumJsonInputIndicesFooter?.visibility = View.GONE
+            p5?.stratumJsonOutputIndicesFooter?.visibility = View.GONE
+            return
+        }
+
+        val rawIn = service!!.getLastStratumJsonIn().orEmpty()
+        val rawOut = service.getLastStratumJsonOut().orEmpty()
+
+        p4?.stratumJsonInputValue?.text = if (rawIn.isNotEmpty()) {
+            StratumJsonUiFormatter.prettyStratumJsonSpanned(this, rawIn)
+        } else {
+            "—"
+        }
+        p5?.stratumJsonOutputValue?.text = if (rawOut.isNotEmpty()) {
+            StratumJsonUiFormatter.prettyStratumJsonSpanned(this, rawOut)
+        } else {
+            "—"
+        }
+
+        val inFooter = if (rawIn.isNotEmpty()) {
+            StratumJsonUiFormatter.indicesFooter(this, rawIn, isInbound = true)
+        } else {
+            null
+        }
+        p4?.stratumJsonInputIndicesFooter?.let { ft ->
+            if (inFooter != null) {
+                ft.text = inFooter
+                ft.visibility = View.VISIBLE
+            } else {
+                ft.visibility = View.GONE
+            }
+        }
+
+        val outFooter = if (rawOut.isNotEmpty()) {
+            StratumJsonUiFormatter.indicesFooter(this, rawOut, isInbound = false)
+        } else {
+            null
+        }
+        p5?.stratumJsonOutputIndicesFooter?.let { ft ->
+            if (outFooter != null) {
+                ft.text = outFooter
+                ft.visibility = View.VISIBLE
+            } else {
+                ft.visibility = View.GONE
+            }
+        }
     }
 
     private fun formatElapsed(elapsedMs: Long): String {
