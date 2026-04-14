@@ -57,7 +57,7 @@
     <string name="overheat_banner_message">Mining was stopped due to overheat</string>
     <string name="overheat_banner_dismiss">Dismiss</string>
     <string name="config_cores_used">CPU Cores</string>
-    <string name="config_cores_used_summary">Number of CPU cores used for mining (1 = single thread, can throttle with intensity below)</string>
+    <string name="config_cores_used_summary">Number of CPU cores used for mining (0 = CPU off, GPU-only if workgroups &gt; 0; 1 = single thread; can throttle with intensity below)</string>
     <string name="config_max_intensity">Max CPU intensity (%)</string>
     <string name="config_max_intensity_summary">0–100 (0=10 min delay, 100=no delay)</string>
     <string name="config_gpu_section">GPU</string>
@@ -90,6 +90,8 @@
     <string name="mining_start_fail_config">Set pool URL and username in Configuration first.</string>
     <string name="mining_start_fail_network">No suitable network. Enable WiFi or allow mobile data in Configuration.</string>
     <string name="mining_start_fail_charging">Mine only when charging is on. Plug in the device to start.</string>
+    <string name="mining_start_fail_both_hashers_disabled">Both CPU and GPU are disabled</string>
+    <string name="mining_failed_no_hashing_backend">No CPU or GPU mining is active (GPU unavailable or disabled while CPU cores are 0).</string>
     <string name="mining_started">Mining started</string>
     <string name="mining_restarted">Mining restarted with new settings</string>
     <string name="mining_failed">Mining failed: %s</string>
@@ -117,7 +119,9 @@
     <string name="best_difficulty_label">Best difficulty</string>
     <string name="block_template_label">Block template</string>
     <string name="dashboard_page4_stratum_input_title">Stratum JSON Response</string>
-    <string name="dashboard_page5_stratum_output_title">Miner JSON Submission</string>
+    <string name="dashboard_page5_stratum_output_title">Mining JSON Submission</string>
+    <string name="dashboard_page5_stratum_output_title_cpu_share">Mining JSON Submission - CPU Share</string>
+    <string name="dashboard_page5_stratum_output_title_gpu_share">Mining JSON Submission - GPU Share</string>
     <string name="stratum_json_mining_inactive">Mining inactive</string>
     <string name="dashboard_page_indicator_a11y">Dashboard page %1$d of %2$d</string>
 

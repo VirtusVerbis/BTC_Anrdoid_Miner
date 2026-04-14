@@ -34,6 +34,7 @@ import com.btcminer.android.mining.MiningStatsRepository
 import com.btcminer.android.mining.MiningStatus
 import com.btcminer.android.mining.NativeMiner
 import com.btcminer.android.mining.StratumHeaderBuilder
+import com.btcminer.android.mining.StratumOutboundSubmitSource
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
@@ -451,6 +452,9 @@ class MainActivity : AppCompatActivity() {
             }
             p1.gpuHashRateValue.text = gpuHashrateStr
             val config = configRepository.getConfig()
+            val maxCoresUi = Runtime.getRuntime().availableProcessors()
+            val cpuCoresForLabel = config.maxWorkerThreads.coerceIn(0, maxCoresUi)
+            p1.hashRateLabel.text = getString(R.string.hash_rate_label) + " - " + cpuCoresForLabel
             val gpuCores = config.gpuCores.coerceAtLeast(0)
             val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize().coerceAtLeast(32)
             val effectiveWorkgroupSize = if (gpuCores > 0) (32 * gpuCores).coerceAtMost(maxWorkGroupSize) else 0
@@ -561,6 +565,7 @@ class MainActivity : AppCompatActivity() {
         if (!mining) {
             p4?.stratumJsonInputValue?.text = idle
             p5?.stratumJsonOutputValue?.text = idle
+            p5?.stratumJsonOutputTitle?.text = getString(R.string.dashboard_page5_stratum_output_title)
             p4?.stratumJsonInputIndicesFooter?.visibility = View.GONE
             p5?.stratumJsonOutputIndicesFooter?.visibility = View.GONE
             return
@@ -568,6 +573,12 @@ class MainActivity : AppCompatActivity() {
 
         val rawIn = service!!.getLastStratumJsonIn().orEmpty()
         val rawOut = service.getLastStratumJsonOut().orEmpty()
+
+        p5?.stratumJsonOutputTitle?.text = when (service.getLastStratumJsonOutSubmitSource()) {
+            StratumOutboundSubmitSource.Cpu -> getString(R.string.dashboard_page5_stratum_output_title_cpu_share)
+            StratumOutboundSubmitSource.Gpu -> getString(R.string.dashboard_page5_stratum_output_title_gpu_share)
+            null -> getString(R.string.dashboard_page5_stratum_output_title)
+        }
 
         p4?.stratumJsonInputValue?.text = if (rawIn.isNotEmpty()) {
             StratumJsonUiFormatter.prettyStratumJsonSpanned(this, rawIn)
@@ -716,6 +727,10 @@ class MainActivity : AppCompatActivity() {
         }
         if (!MiningConstraints.isChargingOk(this, config)) {
             Toast.makeText(this, R.string.mining_start_fail_charging, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!config.hasActiveHashingConfig()) {
+            Toast.makeText(this, R.string.mining_start_fail_both_hashers_disabled, Toast.LENGTH_SHORT).show()
             return
         }
         // Refresh Bitcoin balance when starting mining

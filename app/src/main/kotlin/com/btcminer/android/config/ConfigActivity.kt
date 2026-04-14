@@ -208,8 +208,9 @@ class ConfigActivity : AppCompatActivity() {
         binding.configHashrateTarget.editText?.setText(c.hashrateTargetHps?.toString() ?: "")
         binding.configCpuUsageTarget.editText?.setText(c.cpuUsageTargetPercent?.toString() ?: "")
         val maxCores = Runtime.getRuntime().availableProcessors()
+        binding.configSliderCores.valueFrom = 0f
         binding.configSliderCores.valueTo = maxCores.toFloat()
-        val cores = c.maxWorkerThreads.coerceIn(MiningConfig.MAX_WORKER_THREADS_MIN, maxCores)
+        val cores = c.maxWorkerThreads.coerceIn(0, maxCores)
         binding.configSliderCores.value = cores.toFloat()
         binding.configCoresValue.text = "$cores"
         binding.configSliderIntensity.value = c.maxIntensityPercent.toFloat()
@@ -318,8 +319,8 @@ class ConfigActivity : AppCompatActivity() {
                 MiningConfig.MAX_INTENSITY_MAX
             ),
             maxWorkerThreads = binding.configSliderCores.value.toInt().coerceIn(
-                MiningConfig.MAX_WORKER_THREADS_MIN,
-                Runtime.getRuntime().availableProcessors()
+                0,
+                Runtime.getRuntime().availableProcessors(),
             ),
             statusUpdateIntervalMs = binding.configSliderStatusInterval.value.toInt().coerceIn(
                 MiningConfig.STATUS_UPDATE_INTERVAL_MIN,

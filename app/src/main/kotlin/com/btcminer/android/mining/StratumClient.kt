@@ -66,6 +66,8 @@ class StratumClient(
     private val lastInboundRaw = AtomicReference<String?>(null)
     /** Last raw JSON line sent to pool (for dashboard). Cleared on [disconnect]. */
     private val lastOutboundRaw = AtomicReference<String?>(null)
+    /** When [lastOutboundRaw] is a `mining.submit` from a found share, which path produced it. */
+    private val lastOutboundSubmitSource = AtomicReference<StratumOutboundSubmitSource?>(null)
 
     /** Maps current JSON-RPC submit id to in-flight logical submit. */
     private val pendingByRpcId = ConcurrentHashMap<Int, PendingLogicalSubmit>()
@@ -83,6 +85,7 @@ class StratumClient(
         val extranonce2Hex: String,
         val ntimeHex: String,
         val nonceHex: String,
+        val submitDisplaySource: StratumOutboundSubmitSource?,
         val onResultOnce: (Boolean, String?) -> Unit,
     )
 
@@ -91,6 +94,7 @@ class StratumClient(
         val extranonce2Hex: String,
         val ntimeHex: String,
         val nonceHex: String,
+        val submitDisplaySource: StratumOutboundSubmitSource?,
         val onResultOnce: (Boolean, String?) -> Unit,
         var currentRpcId: Int,
         var attempt: Int,
@@ -166,6 +170,7 @@ class StratumClient(
     fun getCurrentJob(): StratumJob? = currentJob.get()
     fun getLastInboundLine(): String? = lastInboundRaw.get()
     fun getLastOutboundLine(): String? = lastOutboundRaw.get()
+    fun getLastOutboundSubmitSource(): StratumOutboundSubmitSource? = lastOutboundSubmitSource.get()
     fun getCurrentDifficulty(): Double = currentDifficulty.get()
     fun getExtranonce1Hex(): String? = extranonce1Hex.get()
     fun getExtranonce2Size(): Int = extranonce2Size.get()
@@ -194,7 +199,7 @@ class StratumClient(
         while (true) {
             val d = reconnectSubmitQueue.poll() ?: break
             AppLog.d(LOG_TAG) { "Draining deferred submit jobId=${d.jobId}" }
-            sendSubmitInternal(d.jobId, d.extranonce2Hex, d.ntimeHex, d.nonceHex, d.onResultOnce)
+            sendSubmitInternal(d.jobId, d.extranonce2Hex, d.ntimeHex, d.nonceHex, d.submitDisplaySource, d.onResultOnce)
         }
     }
 
@@ -243,7 +248,7 @@ class StratumClient(
                 p.timeoutFuture = null
                 if (running.get()) {
                     reconnectSubmitQueue.offer(
-                        DeferredSubmit(p.jobId, p.extranonce2Hex, p.ntimeHex, p.nonceHex, p.onResultOnce),
+                        DeferredSubmit(p.jobId, p.extranonce2Hex, p.ntimeHex, p.nonceHex, p.submitDisplaySource, p.onResultOnce),
                     )
                     AppLog.d(LOG_TAG) { "Deferred submit for reconnect jobId=${p.jobId} rpcId=${p.currentRpcId}" }
                 } else {
@@ -349,13 +354,15 @@ class StratumClient(
         shutdownSubmitScheduler()
         lastInboundRaw.set(null)
         lastOutboundRaw.set(null)
+        lastOutboundSubmitSource.set(null)
     }
 
     private fun capStratumRaw(s: String): String =
         if (s.length <= MAX_STRATUM_RAW_CHARS) s else s.take(MAX_STRATUM_RAW_CHARS) + "\n…"
 
-    private fun recordOutbound(payload: String) {
+    private fun recordOutbound(payload: String, submitSource: StratumOutboundSubmitSource? = null) {
         lastOutboundRaw.set(capStratumRaw(payload))
+        lastOutboundSubmitSource.set(submitSource)
     }
 
     private fun recordInbound(payload: String) {
@@ -561,7 +568,7 @@ class StratumClient(
         synchronized(submitStateLock) {
             if (!connected.get() || writerRef.get() == null) {
                 reconnectSubmitQueue.offer(
-                    DeferredSubmit(p.jobId, p.extranonce2Hex, p.ntimeHex, p.nonceHex, p.onResultOnce),
+                    DeferredSubmit(p.jobId, p.extranonce2Hex, p.ntimeHex, p.nonceHex, p.submitDisplaySource, p.onResultOnce),
                 )
                 return
             }
@@ -569,7 +576,7 @@ class StratumClient(
             p.timeoutFuture = scheduleSubmitTimeoutLocked(newId)
         }
         val out = req.toString()
-        recordOutbound(out)
+        recordOutbound(out, p.submitDisplaySource)
         writer!!.println(out)
         AppLog.d(LOG_TAG) { "Resubmit attempt ${p.attempt}/$MAX_SUBMIT_RETRIES id=$newId jobId=${p.jobId}" }
     }
@@ -590,9 +597,10 @@ class StratumClient(
         extranonce2Hex: String,
         ntimeHex: String,
         nonceHex: String,
+        submitDisplaySource: StratumOutboundSubmitSource? = null,
         onResult: (accepted: Boolean, errorMessage: String?) -> Unit,
     ) {
-        sendSubmitInternal(jobId, extranonce2Hex, ntimeHex, nonceHex, wrapOnce(onResult))
+        sendSubmitInternal(jobId, extranonce2Hex, ntimeHex, nonceHex, submitDisplaySource, wrapOnce(onResult))
     }
 
     private fun sendSubmitInternal(
@@ -600,6 +608,7 @@ class StratumClient(
         extranonce2Hex: String,
         ntimeHex: String,
         nonceHex: String,
+        submitDisplaySource: StratumOutboundSubmitSource?,
         onResultOnce: (Boolean, String?) -> Unit,
     ) {
         val writer = writerRef.get()
@@ -613,6 +622,7 @@ class StratumClient(
             extranonce2Hex = extranonce2Hex,
             ntimeHex = ntimeHex,
             nonceHex = nonceHex,
+            submitDisplaySource = submitDisplaySource,
             onResultOnce = onResultOnce,
             currentRpcId = id,
             attempt = 1,
@@ -637,7 +647,7 @@ class StratumClient(
             pending.timeoutFuture = scheduleSubmitTimeoutLocked(id)
         }
         val out = req.toString()
-        recordOutbound(out)
+        recordOutbound(out, submitDisplaySource)
         writer.println(out)
     }
 }

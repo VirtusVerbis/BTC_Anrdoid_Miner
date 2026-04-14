@@ -1,6 +1,44 @@
 package com.btcminer.android.mining
 
 /**
+ * Outcome of a CPU nonce scan ([nativeScanNoncesInto]). Status values match CPU JNI in [miner.c] only.
+ */
+data class CpuNonceScanResult(val status: Int, val nonceU32: Long) {
+    val isHit: Boolean get() = status == HIT
+
+    companion object {
+        const val MISS = 0
+        const val HIT = 1
+        const val INTERRUPTED = -3
+        const val FLAVOR_ERROR = -4
+        const val JNI_ARG_ERROR = -5
+
+        fun fromJniOut(out: LongArray): CpuNonceScanResult {
+            require(out.size >= 2) { "CPU scan JNI out[] length >= 2" }
+            return CpuNonceScanResult(out[0].toInt(), out[1])
+        }
+    }
+}
+
+/**
+ * Outcome of a GPU nonce scan ([gpuScanNoncesInto]). Status values match GPU JNI in [vulkan_miner.c] only.
+ */
+data class GpuNonceScanResult(val status: Int, val nonceU32: Long) {
+    val isHit: Boolean get() = status == HIT
+
+    companion object {
+        const val MISS = 0
+        const val HIT = 1
+        const val UNAVAILABLE = -2
+
+        fun fromJniOut(out: LongArray): GpuNonceScanResult {
+            require(out.size >= 2) { "GPU scan JNI out[] length >= 2" }
+            return GpuNonceScanResult(out[0].toInt(), out[1])
+        }
+    }
+}
+
+/**
  * Native miner (Option A1). Loads libminer.so and exposes JNI functions.
  * Phase 1: trivial version call. Phase 2: SHA-256 + block header hash.
  */
@@ -38,30 +76,36 @@ object NativeMiner {
     external fun gpuShaVulkanSelftest(useMidstate: Int): Boolean
 
     /**
-     * Scan nonce range for a block header prefix. Returns winning nonce, -1 if none meets target (or JNI
-     * validation error), **-3** ([CPU_INTERRUPTED]) when interrupted, **-4** ([CPU_SHA_FLAVOR_ERROR])
-     * when flavor/dispatch fails — treat -4 like -3 for worker exit and do not count full chunk scanned.
+     * CPU nonce scan: writes [CpuNonceScanResult] wire format into [out] — `out[0]` = status, `out[1]` = winning
+     * nonce as [Long] in `0..0xFFFFFFFFL` when status is [CpuNonceScanResult.HIT].
      * @param flavor [com.btcminer.android.config.CpuSha256Flavor.ordinal], 0..5.
      */
-    external fun nativeScanNonces(header76: ByteArray, nonceStart: Int, nonceEnd: Int, target: ByteArray, flavor: Int): Int
+    external fun nativeScanNoncesInto(
+        header76: ByteArray,
+        nonceStart: Int,
+        nonceEnd: Int,
+        target: ByteArray,
+        flavor: Int,
+        out: LongArray,
+    )
 
-    /** Returned when CPU SHA flavor path fails in native (invalid flavor, ARM/NEON error). See [nativeScanNonces]. */
+    /** @see CpuNonceScanResult.FLAVOR_ERROR */
     const val CPU_SHA_FLAVOR_ERROR = -4
 
     /**
-     * Requests the GPU worker to interrupt. When set, [gpuScanNonces] will return -2 on its next
+     * Requests the GPU worker to interrupt. When set, [gpuScanNoncesInto] reports unavailable on the next
      * vkWaitForFences timeout (within ~1s). Used by the stuck-worker watchdog.
      */
     external fun gpuRequestInterrupt(): Unit
 
     /**
-     * Requests CPU workers to interrupt. When set, [nativeScanNonces] will return -3 on its next
+     * Requests CPU workers to interrupt. When set, [nativeScanNoncesInto] reports interrupted on its next
      * 64k-iteration check. Used by the stuck-worker watchdog.
      */
     external fun cpuRequestInterrupt(): Unit
 
     /**
-     * Whether Vulkan is available for GPU compute. When true, [gpuScanNonces] can be used.
+     * Whether Vulkan is available for GPU compute. When true, [gpuScanNoncesInto] can be used.
      */
     external fun gpuIsAvailable(): Boolean
 
@@ -73,24 +117,24 @@ object NativeMiner {
 
     /**
      * True only when the Vulkan compute pipeline for the given [gpuCores] can be created
-     * (SPIR-V present and pipeline creation succeeds). When false, [gpuScanNonces] would return -2;
+     * (SPIR-V present and pipeline creation succeeds). When false, [gpuScanNoncesInto] would report unavailable;
      * use this to fail fast at mining start instead of on first chunk.
      * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
     external fun gpuPipelineReady(gpuCores: Int, gpuSha256Mode: Int): Boolean
 
     /**
-     * Scan nonce range on GPU path. Returns winning nonce, -1 if no solution in chunk, or -2 if
-     * GPU path is unavailable (Vulkan/SPIR-V or dispatch failed; no CPU fallback). [gpuCores] (1..N)
-     * sets local workgroup size (32 * gpuCores, capped by device max) for parallelism.
+     * GPU nonce scan: writes [GpuNonceScanResult] wire format into [out] — `out[0]` = status, `out[1]` = winning
+     * nonce as [Long] in `0..0xFFFFFFFFL` when status is [GpuNonceScanResult.HIT] (including `0xFFFFFFFFL` as a valid hit).
      * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
-    external fun gpuScanNonces(
+    external fun gpuScanNoncesInto(
         header76: ByteArray,
         nonceStart: Int,
         nonceEnd: Int,
         target: ByteArray,
         gpuCores: Int,
         gpuSha256Mode: Int,
-    ): Int
+        out: LongArray,
+    )
 }

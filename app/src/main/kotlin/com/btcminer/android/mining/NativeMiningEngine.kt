@@ -3,6 +3,7 @@ package com.btcminer.android.mining
 import android.os.Process
 import com.btcminer.android.AppLog
 import com.btcminer.android.config.MiningConfig
+import com.btcminer.android.debug.DebugMiningSession
 import com.btcminer.android.network.StratumPinCapture
 import com.btcminer.android.util.NumberFormatUtils
 import java.util.Locale
@@ -33,17 +34,15 @@ class NativeMiningEngine(
 
     companion object {
         private const val LOG_TAG = "Mining"
-        /** Returned by gpuScanNonces when GPU path is unavailable (no CPU fallback). */
-        private const val GPU_UNAVAILABLE = -2
-        /** Returned by nativeScanNonces when CPU worker was interrupted by stuck watchdog. */
-        private const val CPU_INTERRUPTED = -3
-        /** Returned when native CPU SHA flavor path fails; same handling as [CPU_INTERRUPTED] in workers. */
-        private const val CPU_SHA_FLAVOR_ERROR = NativeMiner.CPU_SHA_FLAVOR_ERROR
 
         /** [MiningStatus.lastError] marker for SHA self-test failure (dedicated Toast in service). */
         const val SHA256_SELFTEST_LAST_ERROR = "CPU_SHA256_SELFTEST"
         /** GPU host or Vulkan digest readback self-test failure. */
         const val GPU_SHA256_SELFTEST_LAST_ERROR = "GPU_SHA256_SELFTEST"
+        /** Config has CPU cores = 0 and GPU workgroups = 0 (should be blocked in UI; engine guard). */
+        const val BOTH_HASHERS_DISABLED_LAST_ERROR = "BOTH_HASHERS_DISABLED"
+        /** CPU cores = 0 and GPU not usable (pipeline/init failed). */
+        const val NO_HASHING_BACKEND_LAST_ERROR = "NO_HASHING_BACKEND"
         private const val CHUNK_SIZE = 2L * 1024 * 1024
         private const val MAX_NONCE = 0xFFFFFFFFL
         /** CPU nonce range end; GPU uses CPU_NONCE_END to MAX_NONCE. */
@@ -58,7 +57,16 @@ class NativeMiningEngine(
             MiningConfig.intensityDelayMs(intensityPercent)
     }
 
-    private data class FoundResult(val jobId: String, val nonce: Int, val extranonce2Hex: String, val ntimeHex: String, val header76: ByteArray)
+    private data class FoundResult(
+        val jobId: String,
+        /** Unsigned 32-bit nonce as [Long] in `0..0xFFFFFFFFL`. */
+        val nonceU32: Long,
+        val extranonce2Hex: String,
+        val ntimeHex: String,
+        val header76: ByteArray,
+        /** "cpu" or "gpu" — for debug logcat (MiningDbg). */
+        val source: String,
+    )
 
     private val running = AtomicBoolean(false)
     private val statusRef = AtomicReference(MiningStatus(MiningStatus.State.Idle))
@@ -114,6 +122,12 @@ class NativeMiningEngine(
         }
     }
 
+    private fun shareSourceFromFoundTag(tag: String): StratumOutboundSubmitSource? = when (tag.lowercase(Locale.US)) {
+        "cpu" -> StratumOutboundSubmitSource.Cpu
+        "gpu" -> StratumOutboundSubmitSource.Gpu
+        else -> null
+    }
+
     override fun start(config: MiningConfig) {
         if (running.getAndSet(true)) return
         AppLog.d(LOG_TAG) { "start()" }
@@ -132,14 +146,25 @@ class NativeMiningEngine(
             return
         }
 
-        val flavor = config.cpuSha256Flavor
-        if (!NativeMiner.nativeSelfTestCpuSha256Flavor(flavor.ordinal)) {
-            AppLog.e(LOG_TAG) { "CPU SHA-256 self-test failed for flavor=${flavor.name}" }
-            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
+        if (!config.hasActiveHashingConfig()) {
+            AppLog.e(LOG_TAG) { "No hashing backend configured (CPU cores and GPU workgroups both zero)" }
+            statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = BOTH_HASHERS_DISABLED_LAST_ERROR, queuedShares = queuedSharesCount(null)))
             running.set(false)
             return
         }
-        AppLog.d(LOG_TAG) { "CPU SHA-256 flavor active: ${flavor.name}" }
+
+        val flavor = config.cpuSha256Flavor
+        if (config.maxWorkerThreads > 0) {
+            if (!NativeMiner.nativeSelfTestCpuSha256Flavor(flavor.ordinal)) {
+                AppLog.e(LOG_TAG) { "CPU SHA-256 self-test failed for flavor=${flavor.name}" }
+                statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
+                running.set(false)
+                return
+            }
+            AppLog.d(LOG_TAG) { "CPU SHA-256 flavor active: ${flavor.name}" }
+        } else {
+            AppLog.d(LOG_TAG) { "CPU mining disabled (0 cores); skipping CPU SHA-256 self-test" }
+        }
 
         if (config.gpuCores > 0) {
             if (!NativeMiner.gpuShaHostSelftest()) {
@@ -314,6 +339,9 @@ class NativeMiningEngine(
 
     override fun getLastStratumJsonOut(): String? = clientRef.get()?.getLastOutboundLine()
 
+    override fun getLastStratumJsonOutSubmitSource(): StratumOutboundSubmitSource? =
+        clientRef.get()?.getLastOutboundSubmitSource()
+
     /** Disk-backed pending shares plus Stratum reconnect queue and in-flight submit RPCs. */
     private fun queuedSharesCount(stratum: StratumClient?): Long {
         val repo = pendingSharesRepository?.getAll()?.size ?: 0
@@ -328,7 +356,13 @@ class NativeMiningEngine(
         AppLog.d(LOG_TAG) { "Flushing ${list.size} pending share(s)" }
         for (share in list) {
             val latch = CountDownLatch(1)
-            client.sendSubmit(share.jobId, share.extranonce2Hex, share.ntimeHex, share.nonceHex) { accepted, _ ->
+            client.sendSubmit(
+                share.jobId,
+                share.extranonce2Hex,
+                share.ntimeHex,
+                share.nonceHex,
+                submitDisplaySource = share.submitDisplaySource,
+            ) { accepted, _ ->
                 if (accepted) acceptedShares.incrementAndGet() else rejectedShares.incrementAndGet()
                 latch.countDown()
             }
@@ -372,23 +406,36 @@ class NativeMiningEngine(
                     val nonceEndL = minOf(start + CHUNK_SIZE - 1, CPU_NONCE_END)
                     val nonceEnd = nonceEndL.toInt()
                     val t0 = System.currentTimeMillis()
-                    val n = NativeMiner.nativeScanNonces(
+                    val jniOut = LongArray(2)
+                    NativeMiner.nativeScanNoncesInto(
                         ctx.header76,
                         start.toInt(),
                         nonceEnd,
                         ctx.target,
                         config.cpuSha256Flavor.ordinal,
+                        jniOut,
                     )
+                    val scan = CpuNonceScanResult.fromJniOut(jniOut)
                     val workMs = System.currentTimeMillis() - t0
-                    if (n == CPU_INTERRUPTED || n == CPU_SHA_FLAVOR_ERROR) {
-                        if (n == CPU_SHA_FLAVOR_ERROR) {
-                            AppLog.e(LOG_TAG) { "CPU SHA flavor error in worker (flavor=${config.cpuSha256Flavor.name})" }
-                        } else {
-                            AppLog.d(LOG_TAG) { "CPU worker interrupted (stuck watchdog)" }
-                        }
+                    if (scan.status == CpuNonceScanResult.INTERRUPTED) {
+                        AppLog.d(LOG_TAG) { "CPU worker interrupted (stuck watchdog)" }
                         break
                     }
-                    val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
+                    if (scan.status == CpuNonceScanResult.FLAVOR_ERROR) {
+                        AppLog.e(LOG_TAG) { "CPU SHA flavor error in worker (flavor=${config.cpuSha256Flavor.name})" }
+                        break
+                    }
+                    if (scan.status == CpuNonceScanResult.JNI_ARG_ERROR) {
+                        AppLog.e(LOG_TAG) { "CPU scan JNI argument error in worker" }
+                        break
+                    }
+                    val startU = start.toLong() and 0xFFFFFFFFL
+                    val endU = nonceEndL
+                    val scanned = if (scan.isHit) {
+                        ((scan.nonceU32 and 0xFFFFFFFFL) - startU + 1L).coerceIn(1L, endU - startU + 1L)
+                    } else {
+                        endU - startU + 1L
+                    }
                     totalNoncesScanned.addAndGet(scanned)
                     val intensity = throttle?.effectiveIntensityPercent ?: config.maxIntensityPercent
                     val throttleSleep = throttle?.throttleSleepMs ?: 0L
@@ -402,8 +449,22 @@ class NativeMiningEngine(
                             break
                         }
                     }
-                    if (n >= 0) {
-                        foundSharesQueue.offer(FoundResult(job.jobId, n, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76))
+                    if (scan.isHit) {
+                        val nu = scan.nonceU32 and 0xFFFFFFFFL
+                        foundSharesQueue.offer(
+                            FoundResult(job.jobId, nu, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76, "cpu"),
+                        )
+                        // #region agent log
+                        DebugMiningSession.log(
+                            hypothesisId = "H1",
+                            location = "NativeMiningEngine:runCpuRound:worker",
+                            message = "share_identified_cpu",
+                            data = mapOf(
+                                "jobId" to job.jobId,
+                                "nonce" to String.format(Locale.US, "%08x", nu),
+                            ),
+                        )
+                        // #endregion
                         break
                     }
                 }
@@ -461,24 +522,33 @@ class NativeMiningEngine(
                 val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
                 val nonceEnd = nonceEndL.toInt()
                 val t0 = System.currentTimeMillis()
-                val n = NativeMiner.gpuScanNonces(
+                val jniOut = LongArray(2)
+                NativeMiner.gpuScanNoncesInto(
                     ctx.header76,
                     start.toInt(),
                     nonceEnd,
                     ctx.target,
                     config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX),
                     config.gpuSha256Mode.ordinal,
+                    jniOut,
                 )
+                val scan = GpuNonceScanResult.fromJniOut(jniOut)
                 val workMs = System.currentTimeMillis() - t0
-                if (n == GPU_UNAVAILABLE) {
+                if (scan.status == GpuNonceScanResult.UNAVAILABLE) {
                     if (!gpuUnavailable.getAndSet(true)) {
-                        AppLog.d(LOG_TAG) { "GPU unavailable (gpuScanNonces returned GPU_UNAVAILABLE)" }
+                        AppLog.d(LOG_TAG) { "GPU unavailable (gpuScanNoncesInto status=UNAVAILABLE)" }
                         onGpuUnavailable?.invoke()
                         startGpuRetryThreadIfNeeded(config)
                     }
                     break
                 }
-                val scanned = if (n >= 0) (n.toLong() - start + 1) else (nonceEndL - start + 1)
+                val startU = start.toLong() and 0xFFFFFFFFL
+                val endU = nonceEndL
+                val scanned = if (scan.isHit) {
+                    ((scan.nonceU32 and 0xFFFFFFFFL) - startU + 1L).coerceIn(1L, endU - startU + 1L)
+                } else {
+                    endU - startU + 1L
+                }
                 gpuNoncesScanned.addAndGet(scanned)
                 val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent).coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
                 val throttleSleep = throttle?.throttleSleepMs ?: 0L
@@ -492,8 +562,22 @@ class NativeMiningEngine(
                         break
                     }
                 }
-                if (n >= 0) {
-                    foundSharesQueue.offer(FoundResult(job.jobId, n, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76))
+                if (scan.isHit) {
+                    val nu = scan.nonceU32 and 0xFFFFFFFFL
+                    foundSharesQueue.offer(
+                        FoundResult(job.jobId, nu, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76, "gpu"),
+                    )
+                    // #region agent log
+                    DebugMiningSession.log(
+                        hypothesisId = "H1",
+                        location = "NativeMiningEngine:runGpuRound:worker",
+                        message = "share_identified_gpu",
+                        data = mapOf(
+                            "jobId" to job.jobId,
+                            "nonce" to String.format(Locale.US, "%08x", nu),
+                        ),
+                    )
+                    // #endregion
                     break
                 }
             }
@@ -520,11 +604,27 @@ class NativeMiningEngine(
             val gpuProgress = gpuNoncesScanned.get() - roundStartGpuNonces
             if (elapsed >= MiningConstants.WORKER_STUCK_TIMEOUT_MS && gpuProgress == 0L) {
                 AppLog.d(LOG_TAG) { "GPU worker stuck (no progress for ${elapsed / 1000}s), requesting interrupt" }
+                // #region agent log
+                DebugMiningSession.log(
+                    hypothesisId = "H4",
+                    location = "NativeMiningEngine:runGpuRound:supervisor",
+                    message = "gpu_worker_stuck",
+                    data = mapOf("elapsedSec" to (elapsed / 1000), "gpuProgress" to gpuProgress),
+                )
+                // #endregion
                 NativeMiner.gpuRequestInterrupt()
                 activeJobId.set(null)
             }
             if (elapsed >= MiningConstants.ROUND_STUCK_TIMEOUT_MS && gpuWorker.isAlive) {
                 AppLog.d(LOG_TAG) { "GPU round stuck (${elapsed / 1000}s), interrupting" }
+                // #region agent log
+                DebugMiningSession.log(
+                    hypothesisId = "H4",
+                    location = "NativeMiningEngine:runGpuRound:supervisor",
+                    message = "gpu_round_stuck",
+                    data = mapOf("elapsedSec" to (elapsed / 1000)),
+                )
+                // #endregion
                 NativeMiner.gpuRequestInterrupt()
                 gpuWorker.interrupt()
                 activeJobId.set(null)
@@ -539,7 +639,7 @@ class NativeMiningEngine(
         synchronized(hashrateSamples) { hashrateSamples.clear() }
         var lastLogTime = statsStartTime
         val statusUpdateIntervalMs = config.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
-        val threadCount = config.maxWorkerThreads.coerceIn(1, Runtime.getRuntime().availableProcessors())
+        val threadCount = config.maxWorkerThreads.coerceIn(0, Runtime.getRuntime().availableProcessors())
         var gpuEnabled = config.gpuCores > 0 && NativeMiner.gpuIsAvailable() && !gpuUnavailable.get()
         val gpuCoresClamped = config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX)
         if (gpuEnabled && !NativeMiner.gpuPipelineReady(gpuCoresClamped, config.gpuSha256Mode.ordinal)) {
@@ -549,6 +649,20 @@ class NativeMiningEngine(
                 startGpuRetryThreadIfNeeded(config)
             }
             gpuEnabled = false
+        }
+        if (threadCount == 0 && !gpuEnabled) {
+            AppLog.e(LOG_TAG) { "No CPU workers and no usable GPU; stopping mining loop" }
+            statusRef.set(MiningStatus(
+                MiningStatus.State.Error,
+                lastError = NO_HASHING_BACKEND_LAST_ERROR,
+                queuedShares = queuedSharesCount(client),
+                acceptedShares = acceptedShares.get(),
+                rejectedShares = rejectedShares.get(),
+                identifiedShares = identifiedShares.get(),
+                bestDifficulty = bestDifficultyRef.get(),
+                blockTemplates = blockTemplatesCount.get(),
+            ))
+            return
         }
         AppLog.d(LOG_TAG) { "Using $threadCount CPU worker(s), GPU=$gpuEnabled" }
 
@@ -570,17 +684,18 @@ class NativeMiningEngine(
 
         fun cpuSupervisorLoop() {
             while (running.get()) {
-                var j = client.getCurrentJob()
+                var j: StratumJob? = client.getCurrentJob()
                 while (j == null && running.get()) {
                     Thread.sleep(200)
                     j = client.getCurrentJob()
                 }
-                if (j == null || !running.get()) continue
+                val cpuJob = j ?: continue
+                if (!running.get()) continue
                 val diff = client.getCurrentDifficulty()
                 if (diff <= 0.0) continue
                 val en1 = client.getExtranonce1Hex() ?: continue
                 val en2 = client.getExtranonce2Size().coerceAtLeast(4)
-                val ctx = buildRoundContext(j, diff, en1, en2, !client.isConnected())
+                val ctx = buildRoundContext(cpuJob, diff, en1, en2, !client.isConnected())
                 runCpuRound(client, config, ctx, threadCount, statusUpdateIntervalMs, statsStartTime)
             }
         }
@@ -591,22 +706,25 @@ class NativeMiningEngine(
                     Thread.sleep(1000)
                     continue
                 }
-                var j = client.getCurrentJob()
+                var j: StratumJob? = client.getCurrentJob()
                 while (j == null && running.get()) {
                     Thread.sleep(200)
                     j = client.getCurrentJob()
                 }
-                if (j == null || !running.get()) continue
+                val gpuJob = j ?: continue
+                if (!running.get()) continue
                 val diff = client.getCurrentDifficulty()
                 if (diff <= 0.0) continue
                 val en1 = client.getExtranonce1Hex() ?: continue
                 val en2 = client.getExtranonce2Size().coerceAtLeast(4)
-                val ctx = buildRoundContext(j, diff, en1, en2, !client.isConnected())
+                val ctx = buildRoundContext(gpuJob, diff, en1, en2, !client.isConnected())
                 runGpuRound(client, config, ctx, statusUpdateIntervalMs, statsStartTime)
             }
         }
 
-        cpuSupervisorThread = Thread({ cpuSupervisorLoop() }, "cpu-supervisor").apply { isDaemon = true; start() }
+        if (threadCount > 0) {
+            cpuSupervisorThread = Thread({ cpuSupervisorLoop() }, "cpu-supervisor").apply { isDaemon = true; start() }
+        }
         if (gpuEnabled) {
             gpuSupervisorThread = Thread({ gpuSupervisorLoop() }, "gpu-supervisor").apply { isDaemon = true; start() }
         }
@@ -644,16 +762,44 @@ class NativeMiningEngine(
 
             while (true) {
                 val found = foundSharesQueue.poll() ?: break
-                val header80 = StratumHeaderBuilder.header76WithNonce(found.header76, found.nonce)
+                val header80 = StratumHeaderBuilder.header76WithNonce(found.header76, found.nonceU32)
                 val diff = StratumHeaderBuilder.difficultyFromHeader80(header80)
                 bestDifficultyRef.updateAndGet { maxOf(it, diff) }
                 sessionBestShareDifficultyRef.updateAndGet { maxOf(it, diff) }
                 identifiedShares.incrementAndGet()
-                val nonceHex = String.format("%08x", (found.nonce.toLong() and 0xFFFFFFFFL))
+                val nonceHex = String.format("%08x", found.nonceU32 and 0xFFFFFFFFL)
                 if (client.isConnected()) {
                     if (client.getCurrentJob()?.jobId != found.jobId) AppLog.d(LOG_TAG) { "Stale job, submitting anyway so pool sees we are alive" }
-                    AppLog.d(LOG_TAG) { String.format(Locale.US, "Share submitted (jobId=%s, nonce 0x%s)", found.jobId, nonceHex) }
-                    client.sendSubmit(found.jobId, found.extranonce2Hex, found.ntimeHex, nonceHex) { accepted, errorMessage ->
+                    AppLog.d(LOG_TAG) {
+                        String.format(
+                            Locale.US,
+                            "Share submitted (source=%s, jobId=%s, nonce 0x%s)",
+                            found.source,
+                            found.jobId,
+                            nonceHex,
+                        )
+                    }
+                    // #region agent log
+                    DebugMiningSession.log(
+                        hypothesisId = "H2",
+                        location = "NativeMiningEngine:runMiningLoop:submit",
+                        message = "share_stratum_submit",
+                        data = mapOf(
+                            "source" to found.source,
+                            "jobId" to found.jobId,
+                            "nonceHex" to nonceHex,
+                            "shareDifficulty" to diff,
+                            "connected" to true,
+                        ),
+                    )
+                    // #endregion
+                    client.sendSubmit(
+                        found.jobId,
+                        found.extranonce2Hex,
+                        found.ntimeHex,
+                        nonceHex,
+                        submitDisplaySource = shareSourceFromFoundTag(found.source),
+                    ) { accepted, errorMessage ->
                         if (accepted) {
                             acceptedShares.incrementAndGet()
                             AppLog.d(LOG_TAG) { String.format(Locale.US, "Share accepted #%d", acceptedShares.get()) }
@@ -661,10 +807,40 @@ class NativeMiningEngine(
                             rejectedShares.incrementAndGet()
                             AppLog.e(LOG_TAG) { String.format(Locale.US, "Share rejected #%d: %s", rejectedShares.get(), errorMessage ?: "unknown") }
                         }
+                        // #region agent log
+                        DebugMiningSession.log(
+                            hypothesisId = "H5",
+                            location = "NativeMiningEngine:runMiningLoop:submitCb",
+                            message = "share_pool_result",
+                            data = mapOf(
+                                "source" to found.source,
+                                "jobId" to found.jobId,
+                                "nonceHex" to nonceHex,
+                                "accepted" to accepted,
+                                "error" to (errorMessage ?: ""),
+                            ),
+                        )
+                        // #endregion
                     }
                 } else {
-                    pendingSharesRepository?.add(PendingSharesRepository.QueuedShare(found.jobId, found.extranonce2Hex, found.ntimeHex, nonceHex))
-                    AppLog.d(LOG_TAG) { "Queued share (disconnected)" }
+                    pendingSharesRepository?.add(
+                        PendingSharesRepository.QueuedShare(
+                            found.jobId,
+                            found.extranonce2Hex,
+                            found.ntimeHex,
+                            nonceHex,
+                            submitDisplaySource = shareSourceFromFoundTag(found.source),
+                        ),
+                    )
+                    AppLog.d(LOG_TAG) { "Queued share (disconnected, source=${found.source})" }
+                    // #region agent log
+                    DebugMiningSession.log(
+                        hypothesisId = "H2",
+                        location = "NativeMiningEngine:runMiningLoop:queueOffline",
+                        message = "share_queued_offline",
+                        data = mapOf("source" to found.source, "jobId" to found.jobId, "nonceHex" to nonceHex),
+                    )
+                    // #endregion
                 }
             }
 
@@ -690,9 +866,12 @@ class NativeMiningEngine(
                 connectionLost = !client.isConnected(),
                 stratumDifficulty = client.getCurrentDifficulty(),
             ))
+            // H3 MiningDbg mining_stats_tick removed (noisy); H2/H5 share logs unchanged.
             if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
+                val cpuNonceN = totalNoncesScanned.get()
+                val gpuNonceN = gpuNoncesScanned.get()
                 AppLog.d(LOG_TAG) {
-                    "Stats: ${statsLogExtra?.invoke() ?: ""}CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, nonces=${NumberFormatUtils.formatWithSpaces(totalNoncesScanned.get() + gpuNoncesScanned.get())}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}"
+                    "Stats: ${statsLogExtra?.invoke() ?: ""}CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, noncesCpu=${NumberFormatUtils.formatWithSpaces(cpuNonceN)}, noncesGpu=${NumberFormatUtils.formatWithSpaces(gpuNonceN)}, noncesTotal=${NumberFormatUtils.formatWithSpaces(cpuNonceN + gpuNonceN)}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}"
                 }
                 lastLogTime = now
             }

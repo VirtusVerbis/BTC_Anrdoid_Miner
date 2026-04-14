@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Persists pending shares (jobId, extranonce2Hex, ntimeHex, nonceHex) to disk for flush on reconnect.
+ * Persists pending shares (jobId, extranonce2Hex, ntimeHex, nonceHex, optional submit display source) to disk for flush on reconnect.
  * Cap: 100 shares; when at limit, oldest is dropped before adding.
  */
 class PendingSharesRepository(context: Context) {
@@ -14,27 +14,46 @@ class PendingSharesRepository(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    /** One share to submit (same fields as StratumClient.sendSubmit). */
+    /** One share to submit (same fields as StratumClient.sendSubmit plus optional UI source for dashboard). */
     data class QueuedShare(
         val jobId: String,
         val extranonce2Hex: String,
         val ntimeHex: String,
         val nonceHex: String,
+        val submitDisplaySource: StratumOutboundSubmitSource? = null,
     ) {
         fun toJson(): JSONObject = JSONObject().apply {
             put(KEY_JOB_ID, jobId)
             put(KEY_EXTRANONCE2_HEX, extranonce2Hex)
             put(KEY_NTIME_HEX, ntimeHex)
             put(KEY_NONCE_HEX, nonceHex)
+            if (submitDisplaySource != null) {
+                put(
+                    KEY_SUBMIT_SOURCE,
+                    when (submitDisplaySource) {
+                        StratumOutboundSubmitSource.Cpu -> "cpu"
+                        StratumOutboundSubmitSource.Gpu -> "gpu"
+                    },
+                )
+            }
         }
 
         companion object {
-            fun fromJson(obj: JSONObject): QueuedShare = QueuedShare(
-                jobId = obj.optString(KEY_JOB_ID, ""),
-                extranonce2Hex = obj.optString(KEY_EXTRANONCE2_HEX, ""),
-                ntimeHex = obj.optString(KEY_NTIME_HEX, ""),
-                nonceHex = obj.optString(KEY_NONCE_HEX, ""),
-            )
+            fun fromJson(obj: JSONObject): QueuedShare {
+                val src = obj.optString(KEY_SUBMIT_SOURCE, "").lowercase()
+                val parsedSubmitSource = when (src) {
+                    "cpu" -> StratumOutboundSubmitSource.Cpu
+                    "gpu" -> StratumOutboundSubmitSource.Gpu
+                    else -> null
+                }
+                return QueuedShare(
+                    jobId = obj.optString(KEY_JOB_ID, ""),
+                    extranonce2Hex = obj.optString(KEY_EXTRANONCE2_HEX, ""),
+                    ntimeHex = obj.optString(KEY_NTIME_HEX, ""),
+                    nonceHex = obj.optString(KEY_NONCE_HEX, ""),
+                    submitDisplaySource = parsedSubmitSource,
+                )
+            }
         }
     }
 
@@ -91,6 +110,7 @@ class PendingSharesRepository(context: Context) {
         private const val KEY_EXTRANONCE2_HEX = "extranonce2_hex"
         private const val KEY_NTIME_HEX = "ntime_hex"
         private const val KEY_NONCE_HEX = "nonce_hex"
+        private const val KEY_SUBMIT_SOURCE = "submit_source"
         const val MAX_QUEUE_SIZE = 100
     }
 }

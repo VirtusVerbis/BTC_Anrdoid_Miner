@@ -46,8 +46,10 @@ layout(set = 0, binding = 0) uniform Uniforms {
     uint gpu_selftest_write_digest;
 };
 
+/* Word0 = hit flag (0 none, 1 mining hit, 2 self-test digest write). Word1 = min winning nonce (mining) or sentinel (self-test). */
 layout(set = 0, binding = 1) buffer Result {
-    coherent uint resultNonce;
+    coherent uint resultFound;
+    coherent uint winningNonce;
     uint first_hash[8];
     uint final_hash[8];
 };
@@ -190,7 +192,8 @@ void main() {
         }
         uint f0, f1, f2, f3, f4, f5, f6, f7;
         sha256_32bytes(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
-        resultNonce = 0xFFFFFFFFu;
+        resultFound = 2u;
+        winningNonce = 0xFFFFFFFFu;
         first_hash[0] = o0; first_hash[1] = o1; first_hash[2] = o2; first_hash[3] = o3;
         first_hash[4] = o4; first_hash[5] = o5; first_hash[6] = o6; first_hash[7] = o7;
         final_hash[0] = f0; final_hash[1] = f1; final_hash[2] = f2; final_hash[3] = f3;
@@ -220,6 +223,8 @@ void main() {
     uint f0, f1, f2, f3, f4, f5, f6, f7;
     sha256_32bytes(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
 
-    if (hash_meets_target(f0, f1, f2, f3, f4, f5, f6, f7))
-        atomicMin(resultNonce, nonce);
+    if (hash_meets_target(f0, f1, f2, f3, f4, f5, f6, f7)) {
+        atomicMax(resultFound, 1u);
+        atomicMin(winningNonce, nonce);
+    }
 }

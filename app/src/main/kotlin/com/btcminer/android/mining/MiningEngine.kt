@@ -37,6 +37,9 @@ interface MiningEngine {
 
     /** Last raw JSON line sent to the pool (Stratum), or null. Cleared when engine disconnects. */
     fun getLastStratumJsonOut(): String? = null
+
+    /** If the last outbound line was a share [sendSubmit], which scanner produced it; else null. */
+    fun getLastStratumJsonOutSubmitSource(): StratumOutboundSubmitSource? = null
 }
 
 data class MiningStatus(

@@ -135,17 +135,22 @@ object StratumHeaderBuilder {
         }
     }
 
-    /** Append nonce (4 bytes, little-endian) to 76-byte header. */
-    fun header76WithNonce(header76: ByteArray, nonce: Int): ByteArray {
+    /** Append nonce (4 bytes, little-endian) to 76-byte header. [nonceU32] is the unsigned 32-bit value. */
+    fun header76WithNonce(header76: ByteArray, nonceU32: Long): ByteArray {
         require(header76.size == 76)
+        val n = nonceU32 and 0xFFFFFFFFL
         val nonceBytes = byteArrayOf(
-            (nonce and 0xff).toByte(),
-            (nonce shr 8 and 0xff).toByte(),
-            (nonce shr 16 and 0xff).toByte(),
-            (nonce shr 24 and 0xff).toByte(),
+            (n and 0xffL).toInt().toByte(),
+            ((n shr 8) and 0xffL).toInt().toByte(),
+            ((n shr 16) and 0xffL).toInt().toByte(),
+            ((n shr 24) and 0xffL).toInt().toByte(),
         )
         return header76 + nonceBytes
     }
+
+    /** @see header76WithNonce(header76, Long) */
+    fun header76WithNonce(header76: ByteArray, nonce: Int): ByteArray =
+        header76WithNonce(header76, nonce.toLong() and 0xFFFFFFFFL)
 
     /** Bitcoin "difficulty 1" target as double (max_target numeric value). */
     private const val TRUEDIFFONE = 26959535291011309493156476344723991336010898738574164086137773096960.0

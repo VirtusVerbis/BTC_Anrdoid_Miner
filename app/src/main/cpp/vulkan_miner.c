@@ -1,7 +1,7 @@
 /*
  * Vulkan GPU miner JNI.
  * gpuIsAvailable(): initializes Vulkan (instance, device, compute queue). Returns true if Vulkan is present.
- * gpuScanNonces(): scans nonce range via compute shader. Returns -2 if GPU path unavailable (no CPU fallback).
+ * gpuScanNoncesInto(): scans nonce range via compute shader; writes status + nonce into jlong[2] (GPU JNI codes only).
  */
 #include "sha256.h"
 #include "btc_header_sha256.h"
@@ -38,6 +38,15 @@ _Static_assert(HEADER_PREFIX_SIZE % 4 == 0, "UBO header must be a multiple of 4 
 #define MAX_GPU_WORKGROUP_STEPS 64
 /* Returned to Java when GPU path is unavailable (no SPIR-V or Vulkan failure). */
 #define GPU_UNAVAILABLE (-2)
+/* JNI jlong[0] status values for GPU path only (not shared with miner.c). */
+#define GPU_JNI_STATUS_MISS 0
+#define GPU_JNI_STATUS_HIT 1
+#define GPU_JNI_STATUS_UNAVAILABLE (-2)
+/* SSBO layout words 0..1 = resultFound, winningNonce; words 2..9 first_hash; 10..17 final_hash (miner.comp). */
+#define RES_WORD_FOUND 0u
+#define RES_WORD_NONCE 1u
+#define RES_WORD_FIRST_HASH 2u
+#define RES_SELFTEST_FOUND_MAGIC 2u
 
 /* Same ordering as sha256_scan.c / bitcoinjs checkProofOfWork (reversed digest vs target). */
 static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
@@ -45,6 +54,13 @@ static int hash_meets_target(const uint8_t *hash, const uint8_t *target) {
     for (int i = 0; i < HASH_SIZE; i++)
         rev[i] = hash[HASH_SIZE - 1 - i];
     return memcmp(rev, target, HASH_SIZE) <= 0;
+}
+
+/** Mining dispatch: SSBO word0=0 (no hit yet), word1=0xFFFFFFFF for atomicMin baseline; rest cleared. */
+static void mining_result_buffer_reset(void *ptr) {
+    uint32_t head[2] = {0u, 0xFFFFFFFFu};
+    memcpy(ptr, head, sizeof(head));
+    memset((uint8_t *)ptr + sizeof(head), 0, RESULT_BUFFER_SIZE - sizeof(head));
 }
 
 #ifdef __ANDROID__
@@ -766,10 +782,11 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
     }
     host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
     uint32_t *words = (uint32_t *)ptr;
-    uint32_t sent = words[0];
+    uint32_t found = words[RES_WORD_FOUND];
+    uint32_t sent_nonce = words[RES_WORD_NONCE];
     uint32_t gw_first[8], gw_final[8];
-    memcpy(gw_first, words + 1, sizeof(gw_first));
-    memcpy(gw_final, words + 9, sizeof(gw_final));
+    memcpy(gw_first, words + RES_WORD_FIRST_HASH, sizeof(gw_first));
+    memcpy(gw_final, words + RES_WORD_FIRST_HASH + 8u, sizeof(gw_final));
     vkUnmapMemory(g_device, g_resultMemory);
 
     uint8_t ref_first[32], ref_final[32];
@@ -796,9 +813,9 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
     }
 
     __android_log_print(ANDROID_LOG_INFO, GPU_SELFTEST_TAG,
-        "vulkan_readback mode=%s midstate=%s cpu_first=%s cpu_final=%s gpu_first=%s gpu_final=%s same_first=%d same_final=%d nonce_sentinel=%08x",
+        "vulkan_readback mode=%s midstate=%s cpu_first=%s cpu_final=%s gpu_first=%s gpu_final=%s same_first=%d same_final=%d resultFound=%08x winningNonce=%08x",
         useMidstate ? "GPU_Midstate" : "GPU_Full", mid_line, ref_f_hex, ref_l_hex, g_f_hex, g_l_hex, same_first, same_final,
-        (unsigned)sent);
+        (unsigned)found, (unsigned)sent_nonce);
 
     if (useMidstate && same_first) {
         uint8_t ref_mid_first[32];
@@ -807,12 +824,12 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
         __android_log_print(ANDROID_LOG_INFO, GPU_SELFTEST_TAG, "vulkan_readback cpu_midstate_first_matches_gpu_first=%d", midpath);
     }
 
-    return (same_first && same_final && sent == 0xFFFFFFFFu) ? 1 : 0;
+    return (same_first && same_final && found == RES_SELFTEST_FOUND_MAGIC) ? 1 : 0;
 }
 
-/* Run compute dispatch; returns winning nonce, -1 if no solution in chunk, or GPU_UNAVAILABLE on failure. */
+/* Returns GPU_UNAVAILABLE on failure; else 0. Sets *hit_out 0/1; if 1, *nonce_out is the winning nonce (may be 0xFFFFFFFFu). */
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
-                        const uint8_t *target, int gpuCores, int useMidstate) {
+                        const uint8_t *target, int gpuCores, int useMidstate, int *hit_out, uint32_t *nonce_out) {
     if (gpuCores < 1) gpuCores = 1;
     uint32_t maxSteps = g_maxWorkGroupSize / 32;
     if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
@@ -840,6 +857,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         g_descriptorSet == VK_NULL_HANDLE || g_pipelineLayout == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
+    *hit_out = 0;
+    *nonce_out = 0u;
     atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
 
     uint32_t localSize = 32 * (uint32_t)gpuCores;
@@ -850,71 +869,102 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
 
     if (!g_workgroup_size_logged) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU workgroup size in use: %u", (unsigned)localSize);
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan maxComputeWorkGroupCount[0]=%u", (unsigned)g_maxWorkGroupCount);
         g_workgroup_size_logged = 1;
     }
-
-    uint32_t totalInv = nonceEnd - nonceStart + 1;
-    uint32_t groupCountX = (totalInv + localSize - 1) / localSize;
-    if (groupCountX > g_maxWorkGroupCount)
-        groupCountX = g_maxWorkGroupCount;
-    if (groupCountX == 0)
-        return GPU_UNAVAILABLE;
 
     uint32_t mid[8] = {0};
     if (useMidstate)
         btc_midstate_header76(header76, mid);
     uint8_t ubo[UBO_SIZE];
-    fill_ubo_mining(ubo, header76, nonceStart, nonceEnd, target, useMidstate, 0, mid);
 
-    void *ptr;
-    VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr);
-    if (mapRes != VK_SUCCESS) {
-        if (mapRes == VK_ERROR_DEVICE_LOST) {
-            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (ubo)");
-            cleanup_vulkan();
-        } else {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(ubo) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
-        }
+    /* One vkCmdDispatch is limited to maxComputeWorkGroupCount[0] groups. Without looping, part of a
+     * large Java "chunk" would never be scanned while Kotlin still credits the full chunk — misses
+     * shares and skews hashrate. Cover [nonceStart, nonceEnd] in one or more sub-ranges. */
+    static int s_gpu_multipass_notice;
+    uint64_t chunkInv = (uint64_t)nonceEnd - (uint64_t)nonceStart + 1ULL;
+    uint64_t maxInvPerPass = (uint64_t)g_maxWorkGroupCount * (uint64_t)localSize;
+    if (maxInvPerPass == 0)
         return GPU_UNAVAILABLE;
+    if (chunkInv > maxInvPerPass && !s_gpu_multipass_notice) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+            "GPU scan uses multiple dispatches per chunk (chunkNonces=%llu maxNoncesPerPass=%llu maxGroups=%u localSize=%u)",
+            (unsigned long long)chunkInv, (unsigned long long)maxInvPerPass, (unsigned)g_maxWorkGroupCount, (unsigned)localSize);
+        s_gpu_multipass_notice = 1;
     }
-    memcpy(ptr, ubo, UBO_SIZE);
-    host_flush_before_gpu_read(g_uboMemory);
-    vkUnmapMemory(g_device, g_uboMemory);
 
-    mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
-    if (mapRes != VK_SUCCESS) {
-        if (mapRes == VK_ERROR_DEVICE_LOST) {
-            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result)");
-            cleanup_vulkan();
-        } else {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(result) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
+    for (uint32_t cursor = nonceStart; cursor <= nonceEnd;) {
+        uint64_t remain = (uint64_t)nonceEnd - (uint64_t)cursor + 1ULL;
+        uint32_t thisInv = remain > maxInvPerPass ? (uint32_t)maxInvPerPass : (uint32_t)remain;
+        uint32_t subEnd = (uint32_t)((uint64_t)cursor + (uint64_t)thisInv - 1ULL);
+        uint32_t groupCountX = (thisInv + localSize - 1) / localSize;
+        if (groupCountX > g_maxWorkGroupCount)
+            groupCountX = g_maxWorkGroupCount;
+        if (groupCountX == 0)
+            return GPU_UNAVAILABLE;
+
+        fill_ubo_mining(ubo, header76, cursor, subEnd, target, useMidstate, 0, mid);
+
+        void *ptr;
+        VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr);
+        if (mapRes != VK_SUCCESS) {
+            if (mapRes == VK_ERROR_DEVICE_LOST) {
+                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (ubo)");
+                cleanup_vulkan();
+            } else {
+                __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(ubo) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
+            }
+            return GPU_UNAVAILABLE;
         }
-        return GPU_UNAVAILABLE;
-    }
-    memset(ptr, 0xFF, RESULT_BUFFER_SIZE);
-    host_flush_before_gpu_read(g_resultMemory);
-    vkUnmapMemory(g_device, g_resultMemory);
+        memcpy(ptr, ubo, UBO_SIZE);
+        host_flush_before_gpu_read(g_uboMemory);
+        vkUnmapMemory(g_device, g_uboMemory);
 
-    if (!submit_once_and_wait(miningPipe, groupCountX, 1u, 1u))
-        return GPU_UNAVAILABLE;
-
-    uint32_t noWin = 0xFFFFFFFFu;
-    mapRes = vkMapMemory(g_device, g_resultMemory, 0, sizeof(uint32_t), 0, &ptr);
-    if (mapRes != VK_SUCCESS) {
-        if (mapRes == VK_ERROR_DEVICE_LOST) {
-            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result read)");
-            cleanup_vulkan();
-        } else {
-            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(result read) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
+        mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
+        if (mapRes != VK_SUCCESS) {
+            if (mapRes == VK_ERROR_DEVICE_LOST) {
+                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result)");
+                cleanup_vulkan();
+            } else {
+                __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(result) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
+            }
+            return GPU_UNAVAILABLE;
         }
-        return GPU_UNAVAILABLE;
+        mining_result_buffer_reset(ptr);
+        host_flush_before_gpu_read(g_resultMemory);
+        vkUnmapMemory(g_device, g_resultMemory);
+
+        if (!submit_once_and_wait(miningPipe, groupCountX, 1u, 1u))
+            return GPU_UNAVAILABLE;
+
+        mapRes = vkMapMemory(g_device, g_resultMemory, 0, 8u, 0, &ptr);
+        if (mapRes != VK_SUCCESS) {
+            if (mapRes == VK_ERROR_DEVICE_LOST) {
+                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result read)");
+                cleanup_vulkan();
+            } else {
+                __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(result read) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
+            }
+            return GPU_UNAVAILABLE;
+        }
+        host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
+        {
+            uint32_t *words = (uint32_t *)ptr;
+            uint32_t found = words[RES_WORD_FOUND];
+            uint32_t win = words[RES_WORD_NONCE];
+            vkUnmapMemory(g_device, g_resultMemory);
+            if (found == 1u) {
+                *hit_out = 1;
+                *nonce_out = win;
+                return 0;
+            }
+        }
+
+        if (subEnd >= nonceEnd)
+            break;
+        cursor = subEnd + 1u;
     }
-    host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
-    memcpy(&noWin, ptr, sizeof(noWin));
-    vkUnmapMemory(g_device, g_resultMemory);
-    if (noWin == 0xFFFFFFFFu)
-        return -1;  /* Chunk scanned, no solution */
-    return (int)(int32_t)noWin;
+    return 0; /* Chunk scanned, no solution */
 }
 #endif
 
@@ -994,20 +1044,25 @@ Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, j
 #endif
 }
 
-/* Returns -2 (GPU path unavailable) to Java when Vulkan/SPIR-V or dispatch fails; no CPU fallback. */
-JNIEXPORT jint JNICALL
-Java_com_btcminer_android_mining_NativeMiner_gpuScanNonces(JNIEnv *env, jclass clazz,
-                                                           jbyteArray header76Java,
-                                                           jint nonceStart, jint nonceEnd,
-                                                           jbyteArray targetJava,
-                                                           jint gpuCores,
-                                                           jint gpuSha256Mode) {
-    (void)env;
+/* Parameter order must match Kotlin [NativeMiner.gpuScanNoncesInto] (out is last). */
+JNIEXPORT void JNICALL
+Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jclass clazz, jbyteArray header76Java,
+                                                               jint nonceStart, jint nonceEnd, jbyteArray targetJava,
+                                                               jint gpuCores, jint gpuSha256Mode, jlongArray outJava) {
     (void)clazz;
+    if (!outJava || (*env)->GetArrayLength(env, outJava) < 2) {
+        return;
+    }
+    jlong *out = (*env)->GetLongArrayElements(env, outJava, NULL);
+    if (!out)
+        return;
     if (!header76Java || !targetJava ||
         (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
         (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
-        return (jint)GPU_UNAVAILABLE;
+        out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
+        out[1] = 0;
+        (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+        return;
     }
 
     uint8_t header76[HEADER_PREFIX_SIZE];
@@ -1015,19 +1070,35 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNonces(JNIEnv *env, jclass c
 
 #ifdef __ANDROID__
     if (!try_init_vulkan()) {
-        return (jint)GPU_UNAVAILABLE;
+        out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
+        out[1] = 0;
+        (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+        return;
     }
     (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
     (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
     int useMid = (gpuSha256Mode != 0);
-    int result =
-        run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuCores, useMid);
-    return (jint)result;
+    int hit = 0;
+    uint32_t winNonce = 0u;
+    int rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuCores, useMid, &hit,
+        &winNonce);
+    if (rr == GPU_UNAVAILABLE) {
+        out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
+        out[1] = 0;
+    } else if (hit) {
+        out[0] = (jlong)GPU_JNI_STATUS_HIT;
+        out[1] = (jlong)(uint32_t)winNonce;
+    } else {
+        out[0] = (jlong)GPU_JNI_STATUS_MISS;
+        out[1] = 0;
+    }
 #else
     (void)nonceStart;
     (void)nonceEnd;
     (void)gpuCores;
     (void)gpuSha256Mode;
-    return (jint)GPU_UNAVAILABLE;
+    out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
+    out[1] = 0;
 #endif
+    (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
 }

@@ -34,6 +34,9 @@ data class MiningConfig(
     fun isValidForMining(): Boolean =
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()
 
+    /** True when at least one of CPU worker threads or GPU workgroups is configured for hashing. */
+    fun hasActiveHashingConfig(): Boolean = maxWorkerThreads > 0 || gpuCores > 0
+
     companion object {
         /** Max lengths for config strings to avoid abuse and storage bloat. */
         const val MAX_STRATUM_URL_LEN = 256
@@ -55,7 +58,7 @@ data class MiningConfig(
         }
         const val MAX_INTENSITY_MIN = 0
         const val MAX_INTENSITY_MAX = 100
-        const val MAX_WORKER_THREADS_MIN = 1
+        const val MAX_WORKER_THREADS_MIN = 0
         const val DEFAULT_STRATUM_PORT = 3333
         const val STATUS_UPDATE_INTERVAL_MIN = 500
         const val STATUS_UPDATE_INTERVAL_MAX = 30_000

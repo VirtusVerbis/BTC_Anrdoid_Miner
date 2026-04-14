@@ -320,7 +320,7 @@
             android:id="@+id/config_slider_cores"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:valueFrom="1"
+            android:valueFrom="0"
             android:valueTo="8"
             android:value="1"
             android:stepSize="1"

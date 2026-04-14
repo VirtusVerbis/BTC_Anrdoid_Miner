@@ -380,6 +380,9 @@ class MiningForegroundService : Service() {
 
     fun getLastStratumJsonOut(): String? = engine.getLastStratumJsonOut()
 
+    fun getLastStratumJsonOutSubmitSource(): StratumOutboundSubmitSource? =
+        engine.getLastStratumJsonOutSubmitSource()
+
     /**
      * Accepted / rejected / identified counts for the current mining session only (since last successful start).
      * Zeros when not mining. Aligns with [miningStartTimeMillis] being set.
@@ -508,6 +511,14 @@ class MiningForegroundService : Service() {
             stopSelf()
             return
         }
+        if (!config.hasActiveHashingConfig()) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(applicationContext, R.string.mining_start_fail_both_hashers_disabled, Toast.LENGTH_SHORT).show()
+            }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
         if (!MiningConstraints.canStartMining(this, config)) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -533,6 +544,10 @@ class MiningForegroundService : Service() {
                             getString(R.string.mining_start_fail_sha_selftest)
                         NativeMiningEngine.GPU_SHA256_SELFTEST_LAST_ERROR ->
                             getString(R.string.mining_start_fail_gpu_sha_selftest)
+                        NativeMiningEngine.BOTH_HASHERS_DISABLED_LAST_ERROR ->
+                            getString(R.string.mining_start_fail_both_hashers_disabled)
+                        NativeMiningEngine.NO_HASHING_BACKEND_LAST_ERROR ->
+                            getString(R.string.mining_failed_no_hashing_backend)
                         else -> getString(R.string.mining_failed, err)
                     }
                     Toast.makeText(applicationContext, toastText, Toast.LENGTH_LONG).show()

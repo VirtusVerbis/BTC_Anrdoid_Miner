@@ -51,5 +51,8 @@ object MiningConstraints {
     }
 
     fun canStartMining(context: Context, config: MiningConfig): Boolean =
-        config.isValidForMining() && isNetworkOk(context, config) && isChargingOk(context, config)
+        config.isValidForMining() &&
+            config.hasActiveHashingConfig() &&
+            isNetworkOk(context, config) &&
+            isChargingOk(context, config)
 }
