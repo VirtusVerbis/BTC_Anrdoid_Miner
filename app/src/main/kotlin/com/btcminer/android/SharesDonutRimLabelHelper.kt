@@ -83,10 +83,20 @@ object SharesDonutRimLabelHelper {
         }
         val cpuPct = (100.0 * cpuEntry.y / total).roundToInt()
         val gpuPct = (100.0 * gpuEntry.y / total).roundToInt()
+        val newCpuText = "$cpuLabel: $cpuPct%"
+        val newGpuText = "$gpuLabel: $gpuPct%"
+        if (overlay.visibility == View.VISIBLE &&
+            cpuTv.visibility == View.VISIBLE &&
+            gpuTv.visibility == View.VISIBLE &&
+            cpuTv.text.toString() == newCpuText &&
+            gpuTv.text.toString() == newGpuText
+        ) {
+            return
+        }
         cpuTv.visibility = View.INVISIBLE
         gpuTv.visibility = View.INVISIBLE
-        cpuTv.text = "$cpuLabel: $cpuPct%"
-        gpuTv.text = "$gpuLabel: $gpuPct%"
+        cpuTv.text = newCpuText
+        gpuTv.text = newGpuText
         cpuTv.setTextColor(android.graphics.Color.WHITE)
         gpuTv.setTextColor(android.graphics.Color.WHITE)
         overlay.visibility = View.VISIBLE

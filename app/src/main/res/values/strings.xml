@@ -109,7 +109,7 @@
     <string name="shares_donut_cpu_label">CPU</string>
     <string name="shares_donut_gpu_label">GPU</string>
     <string name="shares_donut_no_shares">No shares yet</string>
-    <string name="shares_donut_center_total">Total identified: %1$d</string>
+    <string name="shares_donut_center_value_a11y">Identified shares total %1$d</string>
     <string name="hash_rate_label">Hash Rate (CPU)</string>
     <string name="stratum_connection_icon_content_description">Stratum connection status: lit when connected, dim when disconnected</string>
     <string name="hash_rate_gpu_label">Hash Rate (GPU)</string>

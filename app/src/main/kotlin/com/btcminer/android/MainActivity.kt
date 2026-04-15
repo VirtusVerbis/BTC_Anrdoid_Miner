@@ -47,6 +47,7 @@ import com.github.mikephil.charting.highlight.Highlight
 import com.github.mikephil.charting.listener.OnChartValueSelectedListener
 import com.github.mikephil.charting.listener.ChartTouchListener
 import com.github.mikephil.charting.listener.OnChartGestureListener
+import com.github.mikephil.charting.charts.PieChart
 import com.github.mikephil.charting.components.YAxis
 import com.github.mikephil.charting.components.Legend
 import com.github.mikephil.charting.components.LegendEntry
@@ -107,6 +108,9 @@ class MainActivity : AppCompatActivity() {
     private var chartTabMediator: TabLayoutMediator? = null
     /** Last session CPU/GPU identified counts passed to [updateSharesDonutChart]; null forces next refresh. */
     private var lastDonutIdentifiedCounts: Pair<Long, Long>? = null
+    /** Keeps donut hole label aligned with [PieChart] layout; removed when donut fragment view is destroyed. */
+    private var donutChartLayoutListener: View.OnLayoutChangeListener? = null
+    private var donutChartForLayoutListener: PieChart? = null
 
     private val dashboardFragmentCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(fm: FragmentManager, f: Fragment, v: View, savedInstanceState: Bundle?) {
@@ -122,6 +126,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 is ChartSharesDonutFragment -> {
                     chartSharesDonutFragment = f
+                    lastDonutIdentifiedCounts = null
                     setupSharesDonutChart()
                 }
                 else -> return
@@ -137,7 +142,14 @@ class MainActivity : AppCompatActivity() {
                 is DashboardStatsPage4Fragment -> if (page4Fragment === f) page4Fragment = null
                 is DashboardStatsPage5Fragment -> if (page5Fragment === f) page5Fragment = null
                 is ChartHashrateFragment -> if (chartHashrateFragment === f) chartHashrateFragment = null
-                is ChartSharesDonutFragment -> if (chartSharesDonutFragment === f) chartSharesDonutFragment = null
+                is ChartSharesDonutFragment -> if (chartSharesDonutFragment === f) {
+                    donutChartLayoutListener?.let { l ->
+                        donutChartForLayoutListener?.removeOnLayoutChangeListener(l)
+                    }
+                    donutChartLayoutListener = null
+                    donutChartForLayoutListener = null
+                    chartSharesDonutFragment = null
+                }
             }
         }
     }
@@ -266,6 +278,7 @@ class MainActivity : AppCompatActivity() {
                     c.hashChartModeTitle.visibility = View.GONE
                     c.hashRateChart.invalidate()
                 }
+                refreshDashboardFromPoll()
             }
         }
     }
@@ -540,7 +553,7 @@ class MainActivity : AppCompatActivity() {
         chart.setUsePercentValues(false)
         chart.setDrawEntryLabels(false)
         chart.setHoleColor(Color.TRANSPARENT)
-        chart.setCenterTextColor(chartTextColor)
+        chart.centerText = ""
         chart.legend.isEnabled = true
         chart.legend.textColor = chartTextColor
         chart.legend.verticalAlignment = Legend.LegendVerticalAlignment.BOTTOM
@@ -571,6 +584,20 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
+        donutChartLayoutListener?.let { l ->
+            donutChartForLayoutListener?.removeOnLayoutChangeListener(l)
+        }
+        donutChartForLayoutListener = chart
+        val centerLabel = b.donutCenterValue
+        donutChartLayoutListener = View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            if (v is PieChart && v.width > 0 && v.height > 0) {
+                SharesDonutCenterLabelHelper.updateLayout(v, centerLabel)
+            }
+        }
+        chart.addOnLayoutChangeListener(donutChartLayoutListener)
+        chart.post {
+            SharesDonutCenterLabelHelper.updateLayout(chart, centerLabel)
+        }
     }
 
     private fun syncDonutRimLabels() {
@@ -673,26 +700,16 @@ class MainActivity : AppCompatActivity() {
             )
             val src = service.getSessionIdentifiedShareSourceCounts()
             if (lastDonutIdentifiedCounts != src) {
-                lastDonutIdentifiedCounts = src
-                updateSharesDonutChart(src.first, src.second)
-            } else {
-                val donutChart = chartSharesDonutFragment?.chartBinding?.sharesDonutChart
-                val highlights = donutChart?.highlighted
-                if (!highlights.isNullOrEmpty()) {
-                    syncDonutRimLabels()
+                if (updateSharesDonutChart(src.first, src.second)) {
+                    lastDonutIdentifiedCounts = src
                 }
             }
         } else {
             updateStatsUi(statsRepository.get(), null)
             val idle = 0L to 0L
             if (lastDonutIdentifiedCounts != idle) {
-                lastDonutIdentifiedCounts = idle
-                updateSharesDonutChart(0L, 0L)
-            } else {
-                val donutChart = chartSharesDonutFragment?.chartBinding?.sharesDonutChart
-                val highlights = donutChart?.highlighted
-                if (!highlights.isNullOrEmpty()) {
-                    syncDonutRimLabels()
+                if (updateSharesDonutChart(0L, 0L)) {
+                    lastDonutIdentifiedCounts = idle
                 }
             }
         }
@@ -856,10 +873,16 @@ class MainActivity : AppCompatActivity() {
             c.hashRateChart.invalidate()
         }
         chartSharesDonutFragment?.chartBinding?.let { c ->
-            c.sharesDonutChart.data = null
-            c.sharesDonutChart.centerText = getString(R.string.shares_donut_no_shares)
-            c.sharesDonutChart.invalidate()
+            val chart = c.sharesDonutChart
+            chart.data = null
+            chart.centerText = ""
+            val empty = getString(R.string.shares_donut_no_shares)
+            val orange = ContextCompat.getColor(this, R.color.bitcoin_orange)
+            SharesDonutCenterLabelHelper.setContent(c.donutCenterValue, empty, orange, maxLines = 2)
+            c.donutCenterValue.contentDescription = empty
+            chart.invalidate()
             SharesDonutRimLabelHelper.hide(c.donutRimLabelsOverlay, c.donutRimCpuPct, c.donutRimGpuPct)
+            chart.post { SharesDonutCenterLabelHelper.updateLayout(chart, c.donutCenterValue) }
         }
         // Persistent counters (nonces) are not zeroed here; accepted/rejected/identified and best/block on page 1 are live per-session while mining, then last-stopped snapshots from prefs until the next start; lifetime stats on panels 2–3 reset only via Config "Reset All UI Counters"
     }
@@ -991,16 +1014,22 @@ class MainActivity : AppCompatActivity() {
         chart.invalidate()
     }
 
-    private fun updateSharesDonutChart(cpuShares: Long, gpuShares: Long) {
-        val b = chartSharesDonutFragment?.chartBinding ?: return
+    private fun updateSharesDonutChart(cpuShares: Long, gpuShares: Long): Boolean {
+        val b = chartSharesDonutFragment?.chartBinding ?: return false
         val chart = b.sharesDonutChart
+        val orange = ContextCompat.getColor(this, R.color.bitcoin_orange)
         val total = (cpuShares + gpuShares).coerceAtLeast(0L)
         if (total <= 0L) {
             chart.data = null
-            chart.centerText = getString(R.string.shares_donut_no_shares)
+            chart.centerText = ""
+            val empty = getString(R.string.shares_donut_no_shares)
+            // Same accent as numeric total; switch to chart_axis_legend if contrast in hole is poor on a theme.
+            SharesDonutCenterLabelHelper.setContent(b.donutCenterValue, empty, orange, maxLines = 2)
+            b.donutCenterValue.contentDescription = empty
             chart.invalidate()
             SharesDonutRimLabelHelper.hide(b.donutRimLabelsOverlay, b.donutRimCpuPct, b.donutRimGpuPct)
-            return
+            chart.post { SharesDonutCenterLabelHelper.updateLayout(chart, b.donutCenterValue) }
+            return true
         }
         val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
         val gray = Color.GRAY
@@ -1016,8 +1045,9 @@ class MainActivity : AppCompatActivity() {
             setSelectionShift(8f)
         }
         chart.data = PieData(set)
-        chart.centerText = getString(R.string.shares_donut_center_total, total)
-        chart.setCenterTextColor(chartTextColor)
+        chart.centerText = ""
+        SharesDonutCenterLabelHelper.setContent(b.donutCenterValue, total.toString(), orange, maxLines = 1)
+        b.donutCenterValue.contentDescription = getString(R.string.shares_donut_center_value_a11y, total)
         chart.legend.isEnabled = true
         chart.legend.setCustom(
             listOf(
@@ -1041,6 +1071,8 @@ class MainActivity : AppCompatActivity() {
         )
         chart.invalidate()
         syncDonutRimLabels()
+        chart.post { SharesDonutCenterLabelHelper.updateLayout(chart, b.donutCenterValue) }
+        return true
     }
 
     private fun onStartMiningClicked() {
