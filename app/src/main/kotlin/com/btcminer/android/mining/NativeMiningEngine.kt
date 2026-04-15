@@ -76,6 +76,8 @@ class NativeMiningEngine(
     private val acceptedShares = AtomicLong(0)
     private val rejectedShares = AtomicLong(0)
     private val identifiedShares = AtomicLong(0)
+    private val identifiedSharesCpu = AtomicLong(0)
+    private val identifiedSharesGpu = AtomicLong(0)
     private val totalNoncesScanned = AtomicLong(0)
     private val bestDifficultyRef = AtomicReference(0.0)
     private val blockTemplatesCount = AtomicLong(0)
@@ -285,6 +287,8 @@ class NativeMiningEngine(
         acceptedShares.set(0)
         rejectedShares.set(0)
         identifiedShares.set(0)
+        identifiedSharesCpu.set(0)
+        identifiedSharesGpu.set(0)
         totalNoncesScanned.set(0)
         bestDifficultyRef.set(0.0)
         blockTemplatesCount.set(0)
@@ -341,6 +345,9 @@ class NativeMiningEngine(
 
     override fun getLastStratumJsonOutSubmitSource(): StratumOutboundSubmitSource? =
         clientRef.get()?.getLastOutboundSubmitSource()
+
+    override fun getIdentifiedSharesBySource(): Pair<Long, Long> =
+        identifiedSharesCpu.get() to identifiedSharesGpu.get()
 
     /** Disk-backed pending shares plus Stratum reconnect queue and in-flight submit RPCs. */
     private fun queuedSharesCount(stratum: StratumClient?): Long {
@@ -767,6 +774,11 @@ class NativeMiningEngine(
                 bestDifficultyRef.updateAndGet { maxOf(it, diff) }
                 sessionBestShareDifficultyRef.updateAndGet { maxOf(it, diff) }
                 identifiedShares.incrementAndGet()
+                when (shareSourceFromFoundTag(found.source)) {
+                    StratumOutboundSubmitSource.Cpu -> identifiedSharesCpu.incrementAndGet()
+                    StratumOutboundSubmitSource.Gpu -> identifiedSharesGpu.incrementAndGet()
+                    null -> { }
+                }
                 val nonceHex = String.format("%08x", found.nonceU32 and 0xFFFFFFFFL)
                 if (client.isConnected()) {
                     if (client.getCurrentJob()?.jobId != found.jobId) AppLog.d(LOG_TAG) { "Stale job, submitting anyway so pool sees we are alive" }

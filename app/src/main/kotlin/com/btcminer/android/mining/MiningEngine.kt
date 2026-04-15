@@ -40,6 +40,9 @@ interface MiningEngine {
 
     /** If the last outbound line was a share [sendSubmit], which scanner produced it; else null. */
     fun getLastStratumJsonOutSubmitSource(): StratumOutboundSubmitSource? = null
+
+    /** Session/lifetime counters split by identify source (CPU, GPU). */
+    fun getIdentifiedSharesBySource(): Pair<Long, Long> = 0L to 0L
 }
 
 data class MiningStatus(

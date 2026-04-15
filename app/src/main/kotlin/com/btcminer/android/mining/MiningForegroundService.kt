@@ -86,6 +86,8 @@ class MiningForegroundService : Service() {
     private var sessionBaselineAcceptedShares = 0L
     private var sessionBaselineRejectedShares = 0L
     private var sessionBaselineIdentifiedShares = 0L
+    private var sessionBaselineIdentifiedSharesCpu = 0L
+    private var sessionBaselineIdentifiedSharesGpu = 0L
     private var sessionBaselineBlockTemplates = 0L
 
     /** Current throttle sleep (ms) when auto-tuning is ON. 0–60_000. */
@@ -115,9 +117,13 @@ class MiningForegroundService : Service() {
     private val sampleExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "mining-sample").apply { isDaemon = true }
     }
+    private val hashrateHistoryLock = Any()
     private val hashrateHistoryCpu = mutableListOf<Double>()
     private val hashrateHistoryGpu = mutableListOf<Double>()
-    private val maxHistorySize = 120
+    /** Wall-clock seconds since [miningStartTimeMillis] at each sample (aligned with CPU/GPU entries). */
+    private val hashrateHistoryElapsedSec = mutableListOf<Float>()
+    /** Per-sample battery temperature in Celsius (aligned with CPU/GPU/elapsed entries). */
+    private val batteryTempHistoryCelsius = mutableListOf<Float>()
     /** UI-only: hashrate history and notification. Heavy work runs on [sampleExecutor]; only startForeground on main. */
     private val sampleRunnable: Runnable = object : Runnable {
         override fun run() {
@@ -125,13 +131,20 @@ class MiningForegroundService : Service() {
                 sampleExecutor.execute {
                     val status = engine.getStatus()
                     if (status.state == MiningStatus.State.Mining) {
-                        synchronized(hashrateHistoryCpu) {
+                        val startMs = miningStartTimeMillis
+                        synchronized(hashrateHistoryLock) {
                             hashrateHistoryCpu.add(status.hashrateHs)
-                            while (hashrateHistoryCpu.size > maxHistorySize) hashrateHistoryCpu.removeAt(0)
-                        }
-                        synchronized(hashrateHistoryGpu) {
                             hashrateHistoryGpu.add(if (status.gpuAvailable) status.gpuHashrateHs else 0.0)
-                            while (hashrateHistoryGpu.size > maxHistorySize) hashrateHistoryGpu.removeAt(0)
+                            val tempTenthsC = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                                ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+                            val tempC = if (tempTenthsC != 0) tempTenthsC / 10f else Float.NaN
+                            val elapsedSec = if (startMs != null) {
+                                ((System.currentTimeMillis() - startMs).coerceAtLeast(0L) / 1000.0).toFloat()
+                            } else {
+                                (hashrateHistoryCpu.size - 1).coerceAtLeast(0).toFloat()
+                            }
+                            hashrateHistoryElapsedSec.add(elapsedSec)
+                            batteryTempHistoryCelsius.add(tempC)
                         }
                     }
                     val contentText = if (MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) && status.connectionLost) getString(R.string.mining_reconnecting) else getString(R.string.mining_notification_text)
@@ -397,14 +410,27 @@ class MiningForegroundService : Service() {
         )
     }
 
+    /** CPU/GPU identified share counts for the current session only. */
+    fun getSessionIdentifiedShareSourceCounts(): Pair<Long, Long> {
+        if (miningStartTimeMillis == null) return 0L to 0L
+        val bySource = engine.getIdentifiedSharesBySource()
+        return Pair(
+            (bySource.first - sessionBaselineIdentifiedSharesCpu).coerceAtLeast(0L),
+            (bySource.second - sessionBaselineIdentifiedSharesGpu).coerceAtLeast(0L),
+        )
+    }
+
     private fun recordShareSessionBaselines() {
         statsRepository.saveLastStoppedSessionShareDisplay(0L, 0L, 0L)
         statsRepository.saveLastStoppedSessionBestBlockDisplay(0.0, 0L)
         engine.resetSessionScopeDisplay()
         val s = engine.getStatus()
+        val bySource = engine.getIdentifiedSharesBySource()
         sessionBaselineAcceptedShares = s.acceptedShares
         sessionBaselineRejectedShares = s.rejectedShares
         sessionBaselineIdentifiedShares = s.identifiedShares
+        sessionBaselineIdentifiedSharesCpu = bySource.first
+        sessionBaselineIdentifiedSharesGpu = bySource.second
         sessionBaselineBlockTemplates = s.blockTemplates
     }
 
@@ -431,8 +457,10 @@ class MiningForegroundService : Service() {
         }
     }
 
-    fun getHashrateHistoryCpu(): List<Double> = synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.toList() }
-    fun getHashrateHistoryGpu(): List<Double> = synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.toList() }
+    fun getHashrateHistoryCpu(): List<Double> = synchronized(hashrateHistoryLock) { hashrateHistoryCpu.toList() }
+    fun getHashrateHistoryGpu(): List<Double> = synchronized(hashrateHistoryLock) { hashrateHistoryGpu.toList() }
+    fun getHashrateHistoryElapsedSec(): List<Float> = synchronized(hashrateHistoryLock) { hashrateHistoryElapsedSec.toList() }
+    fun getBatteryTempHistoryCelsius(): List<Float> = synchronized(hashrateHistoryLock) { batteryTempHistoryCelsius.toList() }
 
     fun isBatteryThrottleActive(): Boolean = lastBatteryThrottleActive
     fun isHashrateThrottleActive(): Boolean = lastHashrateThrottleActive
@@ -602,8 +630,12 @@ class MiningForegroundService : Service() {
         handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
         stopThrottleThread()
-        synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
-        synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
+        synchronized(hashrateHistoryLock) {
+            hashrateHistoryCpu.clear()
+            hashrateHistoryGpu.clear()
+            hashrateHistoryElapsedSec.clear()
+            batteryTempHistoryCelsius.clear()
+        }
         unregisterConstraintReceiver()
         cancelAlarm()
         releaseWakeLock()
@@ -796,8 +828,8 @@ class MiningForegroundService : Service() {
      */
     private fun finalizeLifetimeStatsForEndedSession() {
         val status = engine.getStatus()
-        val cpuHist = synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.toList() }
-        val gpuHist = synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.toList() }
+        val cpuHist = synchronized(hashrateHistoryLock) { hashrateHistoryCpu.toList() }
+        val gpuHist = synchronized(hashrateHistoryLock) { hashrateHistoryGpu.toList() }
         val avgCpu = sessionAverageHashrateForLifetime(cpuHist, status.hashrateHs)
         val avgGpu = sessionAverageHashrateForLifetime(
             gpuHist,
@@ -823,8 +855,12 @@ class MiningForegroundService : Service() {
         stopThrottleThread()
         finalizeLifetimeStatsForEndedSession()
         statsRepository.save(engine.getStatus())
-        synchronized(hashrateHistoryCpu) { hashrateHistoryCpu.clear() }
-        synchronized(hashrateHistoryGpu) { hashrateHistoryGpu.clear() }
+        synchronized(hashrateHistoryLock) {
+            hashrateHistoryCpu.clear()
+            hashrateHistoryGpu.clear()
+            hashrateHistoryElapsedSec.clear()
+            batteryTempHistoryCelsius.clear()
+        }
         unregisterConstraintReceiver()
         engine.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)

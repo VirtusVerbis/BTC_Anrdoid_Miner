@@ -102,6 +102,14 @@
     <string name="pool_redirect_notification_text">Pool requested redirect to %1$s:%2$d (not applied). Dismiss when done.</string>
 
     <!-- Dashboard stats -->
+    <string name="hash_chart_title_2min">2 min</string>
+    <string name="hash_chart_title_session">Session</string>
+    <string name="hash_chart_a11y_toggle_hint">Hash rate chart. Tap to switch between 2 minute and session history.</string>
+    <string name="chart_page_indicator_a11y">Chart page %1$d of %2$d</string>
+    <string name="shares_donut_cpu_label">CPU</string>
+    <string name="shares_donut_gpu_label">GPU</string>
+    <string name="shares_donut_no_shares">No shares yet</string>
+    <string name="shares_donut_center_total">Total identified: %1$d</string>
     <string name="hash_rate_label">Hash Rate (CPU)</string>
     <string name="stratum_connection_icon_content_description">Stratum connection status: lit when connected, dim when disconnected</string>
     <string name="hash_rate_gpu_label">Hash Rate (GPU)</string>

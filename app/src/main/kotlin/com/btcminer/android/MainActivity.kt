@@ -16,6 +16,7 @@ import android.util.Rational
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -38,6 +39,17 @@ import com.btcminer.android.mining.StratumOutboundSubmitSource
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
+import com.github.mikephil.charting.data.PieData
+import com.github.mikephil.charting.data.PieDataSet
+import com.github.mikephil.charting.data.PieEntry
+import com.github.mikephil.charting.formatter.ValueFormatter
+import com.github.mikephil.charting.highlight.Highlight
+import com.github.mikephil.charting.listener.OnChartValueSelectedListener
+import com.github.mikephil.charting.listener.ChartTouchListener
+import com.github.mikephil.charting.listener.OnChartGestureListener
+import com.github.mikephil.charting.components.YAxis
+import com.github.mikephil.charting.components.Legend
+import com.github.mikephil.charting.components.LegendEntry
 import com.btcminer.android.network.CertPins
 import com.btcminer.android.util.BitcoinAddressValidator
 import com.btcminer.android.util.NumberFormatUtils
@@ -62,7 +74,23 @@ class MainActivity : AppCompatActivity() {
         /** How often to fetch wallet balance from Mempool.space (ms). */
         private const val MEMPOOL_BALANCE_FETCH_INTERVAL_MS = 3_600_000L  // 1 hour
         private const val MEMPOOL_UTXO_URL = "https://mempool.space/api/address"
+        /** Rolling window size for the short hash rate chart (matches prior ~2 min at 1 Hz). */
+        private const val HASHRATE_CHART_TWO_MIN_SAMPLES = 120
+        private const val STATE_HASH_CHART_MODE = "hashChartMode"
     }
+
+    private enum class HashChartMode {
+        TwoMinute,
+        Session,
+        ;
+
+        fun toggle(): HashChartMode = when (this) {
+            TwoMinute -> Session
+            Session -> TwoMinute
+        }
+    }
+
+    private var hashChartMode = HashChartMode.TwoMinute
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var configRepository: MiningConfigRepository
@@ -74,6 +102,11 @@ class MainActivity : AppCompatActivity() {
     private var page4Fragment: DashboardStatsPage4Fragment? = null
     private var page5Fragment: DashboardStatsPage5Fragment? = null
     private var dashboardTabMediator: TabLayoutMediator? = null
+    private var chartHashrateFragment: ChartHashrateFragment? = null
+    private var chartSharesDonutFragment: ChartSharesDonutFragment? = null
+    private var chartTabMediator: TabLayoutMediator? = null
+    /** Last session CPU/GPU identified counts passed to [updateSharesDonutChart]; null forces next refresh. */
+    private var lastDonutIdentifiedCounts: Pair<Long, Long>? = null
 
     private val dashboardFragmentCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(fm: FragmentManager, f: Fragment, v: View, savedInstanceState: Bundle?) {
@@ -83,6 +116,14 @@ class MainActivity : AppCompatActivity() {
                 is DashboardStatsPage3Fragment -> page3Fragment = f
                 is DashboardStatsPage4Fragment -> page4Fragment = f
                 is DashboardStatsPage5Fragment -> page5Fragment = f
+                is ChartHashrateFragment -> {
+                    chartHashrateFragment = f
+                    setupChart()
+                }
+                is ChartSharesDonutFragment -> {
+                    chartSharesDonutFragment = f
+                    setupSharesDonutChart()
+                }
                 else -> return
             }
             refreshDashboardFromPoll()
@@ -95,6 +136,8 @@ class MainActivity : AppCompatActivity() {
                 is DashboardStatsPage3Fragment -> if (page3Fragment === f) page3Fragment = null
                 is DashboardStatsPage4Fragment -> if (page4Fragment === f) page4Fragment = null
                 is DashboardStatsPage5Fragment -> if (page5Fragment === f) page5Fragment = null
+                is ChartHashrateFragment -> if (chartHashrateFragment === f) chartHashrateFragment = null
+                is ChartSharesDonutFragment -> if (chartSharesDonutFragment === f) chartSharesDonutFragment = null
             }
         }
     }
@@ -208,6 +251,7 @@ class MainActivity : AppCompatActivity() {
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             miningService = (binder as? MiningForegroundService.LocalBinder)?.getService()
+            lastDonutIdentifiedCounts = null
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -217,8 +261,11 @@ class MainActivity : AppCompatActivity() {
                 updateStatsUi(statsRepository.get(), null)
                 updateLifetimeUi()
                 updateLifetimePanel2Ui()
-                binding.hashRateChart.data = null
-                binding.hashRateChart.invalidate()
+                chartHashrateFragment?.chartBinding?.let { c ->
+                    c.hashRateChart.data = null
+                    c.hashChartModeTitle.visibility = View.GONE
+                    c.hashRateChart.invalidate()
+                }
             }
         }
     }
@@ -231,6 +278,9 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        savedInstanceState?.getString(STATE_HASH_CHART_MODE)?.let { saved ->
+            hashChartMode = runCatching { HashChartMode.valueOf(saved) }.getOrDefault(HashChartMode.TwoMinute)
+        }
         configRepository = MiningConfigRepository(applicationContext)
 
         // Phase 1: verify native miner loads and responds
@@ -263,15 +313,35 @@ class MainActivity : AppCompatActivity() {
                 dashboardPageCount,
             )
         }.also { it.attach() }
+        binding.chartPager.adapter = ChartPagerAdapter(this)
+        val chartPageCount = binding.chartPager.adapter!!.itemCount
+        chartTabMediator = TabLayoutMediator(
+            binding.chartPageIndicator,
+            binding.chartPager,
+        ) { tab, position ->
+            tab.text = ""
+            tab.contentDescription = getString(
+                R.string.chart_page_indicator_a11y,
+                position + 1,
+                chartPageCount,
+            )
+        }.also { it.attach() }
+        binding.chartPager.setCurrentItem(0, false)
 
-        setupChart()
         // Initialize lastBitcoinAddress to detect changes when returning from Config
         lastBitcoinAddress = configRepository.getConfig().bitcoinAddress.trim()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(STATE_HASH_CHART_MODE, hashChartMode.name)
     }
 
     override fun onDestroy() {
         dashboardTabMediator?.detach()
         dashboardTabMediator = null
+        chartTabMediator?.detach()
+        chartTabMediator = null
         supportFragmentManager.unregisterFragmentLifecycleCallbacks(dashboardFragmentCallbacks)
         super.onDestroy()
     }
@@ -414,15 +484,105 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupChart() {
+        val chartBinding = chartHashrateFragment?.chartBinding ?: return
+        val chart = chartBinding.hashRateChart
         val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
-        binding.hashRateChart.description.isEnabled = false
-        binding.hashRateChart.legend.isEnabled = false
-        binding.hashRateChart.legend.setTextColor(chartTextColor)
-        binding.hashRateChart.xAxis.setDrawLabels(true)
-        binding.hashRateChart.xAxis.setTextColor(chartTextColor)
-        binding.hashRateChart.axisLeft.setDrawLabels(true)
-        binding.hashRateChart.axisLeft.setTextColor(chartTextColor)
-        binding.hashRateChart.axisRight.isEnabled = false
+        chart.description.isEnabled = false
+        chart.legend.isEnabled = false
+        chart.legend.setTextColor(chartTextColor)
+        chart.xAxis.setDrawLabels(true)
+        chart.xAxis.setTextColor(chartTextColor)
+        chart.axisLeft.setDrawLabels(true)
+        chart.axisLeft.setTextColor(chartTextColor)
+        chart.axisRight.isEnabled = true
+        chart.axisRight.setDrawLabels(true)
+        chart.axisRight.setTextColor(chartTextColor)
+        chart.axisRight.valueFormatter = object : ValueFormatter() {
+            override fun getFormattedValue(value: Float): String {
+                val useF = configRepository.getConfig().batteryTempFahrenheit
+                val displayValue = if (useF) (value * 9f / 5f + 32f) else value
+                val unit = if (useF) "F" else "C"
+                return String.format(Locale.US, "%.1f%s", displayValue, unit)
+            }
+        }
+        chart.setTouchEnabled(true)
+        chart.isDragEnabled = false
+        chart.setScaleEnabled(false)
+        chart.setPinchZoom(false)
+        chart.isHighlightPerTapEnabled = false
+        chart.isHighlightPerDragEnabled = false
+        chart.setExtraOffsets(8f, 8f, 8f, 8f)
+        chart.setOnChartGestureListener(object : OnChartGestureListener {
+            override fun onChartGestureStart(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
+            override fun onChartGestureEnd(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
+            override fun onChartLongPressed(me: MotionEvent?) {}
+            override fun onChartDoubleTapped(me: MotionEvent?) {}
+            override fun onChartSingleTapped(me: MotionEvent?) {
+                hashChartMode = hashChartMode.toggle()
+                refreshDashboardFromPoll()
+            }
+
+            override fun onChartFling(me1: MotionEvent?, me2: MotionEvent?, velocityX: Float, velocityY: Float) {}
+            override fun onChartScale(me: MotionEvent?, scaleX: Float, scaleY: Float) {}
+            override fun onChartTranslate(me: MotionEvent?, dX: Float, dY: Float) {}
+        })
+        chart.contentDescription = getString(R.string.hash_chart_a11y_toggle_hint)
+    }
+
+    private fun setupSharesDonutChart() {
+        val b = chartSharesDonutFragment?.chartBinding ?: return
+        val chart = b.sharesDonutChart
+        val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
+        chart.description.isEnabled = false
+        chart.isDrawHoleEnabled = true
+        chart.holeRadius = 62f
+        chart.transparentCircleRadius = 66f
+        chart.setUsePercentValues(false)
+        chart.setDrawEntryLabels(false)
+        chart.setHoleColor(Color.TRANSPARENT)
+        chart.setCenterTextColor(chartTextColor)
+        chart.legend.isEnabled = true
+        chart.legend.textColor = chartTextColor
+        chart.legend.verticalAlignment = Legend.LegendVerticalAlignment.BOTTOM
+        chart.legend.horizontalAlignment = Legend.LegendHorizontalAlignment.CENTER
+        chart.legend.orientation = Legend.LegendOrientation.HORIZONTAL
+        chart.legend.setDrawInside(false)
+        chart.legend.form = Legend.LegendForm.SQUARE
+        chart.legend.xEntrySpace = 8f
+        chart.legend.yEntrySpace = 0f
+        chart.setExtraOffsets(20f, 18f, 20f, 18f)
+        chart.isHighlightPerTapEnabled = true
+        chart.isRotationEnabled = false
+        chart.marker = null
+        val forwardTouch = View.OnTouchListener { _, ev ->
+            SharesDonutRimLabelHelper.forwardTouchToPieChart(chart, b.donutRimLabelsOverlay, ev)
+        }
+        b.donutRimLabelsOverlay.setOnTouchListener(forwardTouch)
+        b.donutRimCpuPct.setOnTouchListener(forwardTouch)
+        b.donutRimGpuPct.setOnTouchListener(forwardTouch)
+        chart.setOnChartValueSelectedListener(object : OnChartValueSelectedListener {
+            override fun onValueSelected(e: Entry?, h: Highlight?) {
+                syncDonutRimLabels()
+            }
+
+            override fun onNothingSelected() {
+                chartSharesDonutFragment?.chartBinding?.let { bb ->
+                    SharesDonutRimLabelHelper.hide(bb.donutRimLabelsOverlay, bb.donutRimCpuPct, bb.donutRimGpuPct)
+                }
+            }
+        })
+    }
+
+    private fun syncDonutRimLabels() {
+        val bb = chartSharesDonutFragment?.chartBinding ?: return
+        SharesDonutRimLabelHelper.updateIfHighlighted(
+            bb.sharesDonutChart,
+            bb.donutRimLabelsOverlay,
+            bb.donutRimCpuPct,
+            bb.donutRimGpuPct,
+            getString(R.string.shares_donut_cpu_label),
+            getString(R.string.shares_donut_gpu_label),
+        )
     }
 
     /** Pool `mining.set_difficulty` for dashboard (not best share difficulty). */
@@ -505,9 +665,36 @@ class MainActivity : AppCompatActivity() {
         val service = miningService
         if (service != null) {
             updateStatsUi(service.getStatus(), service)
-            updateChart(service.getHashrateHistoryCpu(), service.getHashrateHistoryGpu())
+            updateChart(
+                service.getHashrateHistoryCpu(),
+                service.getHashrateHistoryGpu(),
+                service.getHashrateHistoryElapsedSec(),
+                service.getBatteryTempHistoryCelsius(),
+            )
+            val src = service.getSessionIdentifiedShareSourceCounts()
+            if (lastDonutIdentifiedCounts != src) {
+                lastDonutIdentifiedCounts = src
+                updateSharesDonutChart(src.first, src.second)
+            } else {
+                val donutChart = chartSharesDonutFragment?.chartBinding?.sharesDonutChart
+                val highlights = donutChart?.highlighted
+                if (!highlights.isNullOrEmpty()) {
+                    syncDonutRimLabels()
+                }
+            }
         } else {
             updateStatsUi(statsRepository.get(), null)
+            val idle = 0L to 0L
+            if (lastDonutIdentifiedCounts != idle) {
+                lastDonutIdentifiedCounts = idle
+                updateSharesDonutChart(0L, 0L)
+            } else {
+                val donutChart = chartSharesDonutFragment?.chartBinding?.sharesDonutChart
+                val highlights = donutChart?.highlighted
+                if (!highlights.isNullOrEmpty()) {
+                    syncDonutRimLabels()
+                }
+            }
         }
         updateLifetimeUi()
         updateLifetimePanel2Ui()
@@ -651,6 +838,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun clearStatsUi() {
+        lastDonutIdentifiedCounts = null
         page1Fragment?.pageBinding?.let { p1 ->
             p1.hashRateValue.text = "0.00 H/s"
             p1.gpuHashRateValue.text = "0.00 H/s"
@@ -662,23 +850,90 @@ class MainActivity : AppCompatActivity() {
         }
         binding.walletBalanceValue.text = "—"
         binding.walletBalanceNote.visibility = View.GONE
-        binding.hashRateChart.data = null
-        binding.hashRateChart.invalidate()
+        chartHashrateFragment?.chartBinding?.let { c ->
+            c.hashRateChart.data = null
+            c.hashChartModeTitle.visibility = View.GONE
+            c.hashRateChart.invalidate()
+        }
+        chartSharesDonutFragment?.chartBinding?.let { c ->
+            c.sharesDonutChart.data = null
+            c.sharesDonutChart.centerText = getString(R.string.shares_donut_no_shares)
+            c.sharesDonutChart.invalidate()
+            SharesDonutRimLabelHelper.hide(c.donutRimLabelsOverlay, c.donutRimCpuPct, c.donutRimGpuPct)
+        }
         // Persistent counters (nonces) are not zeroed here; accepted/rejected/identified and best/block on page 1 are live per-session while mining, then last-stopped snapshots from prefs until the next start; lifetime stats on panels 2–3 reset only via Config "Reset All UI Counters"
     }
 
-    private fun updateChart(historyCpu: List<Double>, historyGpu: List<Double>) {
-        val maxSize = maxOf(historyCpu.size, historyGpu.size)
-        if (maxSize == 0) {
-            binding.hashRateChart.data = null
-            binding.hashRateChart.invalidate()
+    private fun formatElapsedChartAxisSeconds(value: Float): String {
+        val totalSec = value.toLong().coerceAtLeast(0)
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+        val s = totalSec % 60
+        return if (h > 0L) {
+            String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+        } else {
+            String.format(Locale.US, "%d:%02d", m, s)
+        }
+    }
+
+    private fun updateChart(
+        historyCpu: List<Double>,
+        historyGpu: List<Double>,
+        historyElapsedSec: List<Float>,
+        batteryTempHistoryCelsius: List<Float>,
+    ) {
+        val chartBinding = chartHashrateFragment?.chartBinding ?: return
+        val chart = chartBinding.hashRateChart
+        val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
+        val nAll = minOf(
+            historyCpu.size,
+            historyGpu.size,
+            historyElapsedSec.size,
+            batteryTempHistoryCelsius.size,
+        )
+        if (nAll == 0) {
+            chart.data = null
+            chartBinding.hashChartModeTitle.visibility = View.GONE
+            chart.invalidate()
             return
         }
+
+        val from = when (hashChartMode) {
+            HashChartMode.TwoMinute -> maxOf(0, nAll - HASHRATE_CHART_TWO_MIN_SAMPLES)
+            HashChartMode.Session -> 0
+        }
+        val cpuSlice = historyCpu.subList(from, nAll)
+        val gpuSlice = historyGpu.subList(from, nAll)
+        val battSliceC = batteryTempHistoryCelsius.subList(from, nAll)
+
+        when (hashChartMode) {
+            HashChartMode.TwoMinute -> {
+                chart.xAxis.valueFormatter = object : ValueFormatter() {
+                    override fun getFormattedValue(value: Float): String = value.toInt().toString()
+                }
+                chart.xAxis.granularity = 1f
+                chart.xAxis.isGranularityEnabled = true
+            }
+            HashChartMode.Session -> {
+                chart.xAxis.valueFormatter = object : ValueFormatter() {
+                    override fun getFormattedValue(value: Float): String = formatElapsedChartAxisSeconds(value)
+                }
+                chart.xAxis.isGranularityEnabled = false
+            }
+        }
+
+        val maxSize = cpuSlice.size
         val orange = ContextCompat.getColor(this, R.color.bitcoin_orange)
         val gray = Color.GRAY
         val green = Color.parseColor("#4CAF50")
+        val magenta = Color.MAGENTA
 
-        val cpuEntries = historyCpu.mapIndexed { i, v -> Entry(i.toFloat(), v.toFloat()) }
+        fun xForIndex(i: Int): Float = when (hashChartMode) {
+            HashChartMode.TwoMinute -> i.toFloat()
+            HashChartMode.Session -> historyElapsedSec[from + i]
+        }
+
+        val cpuEntries = cpuSlice.mapIndexed { i, v -> Entry(xForIndex(i), v.toFloat()) }
         val cpuSet = LineDataSet(cpuEntries, "CPU").apply {
             setColor(gray)
             setCircleColor(gray)
@@ -687,7 +942,7 @@ class MainActivity : AppCompatActivity() {
             setDrawValues(false)
         }
 
-        val gpuEntries = historyGpu.mapIndexed { i, v -> Entry(i.toFloat(), v.toFloat()) }
+        val gpuEntries = gpuSlice.mapIndexed { i, v -> Entry(xForIndex(i), v.toFloat()) }
         val gpuSet = LineDataSet(gpuEntries, "GPU").apply {
             setColor(green)
             setCircleColor(green)
@@ -696,23 +951,96 @@ class MainActivity : AppCompatActivity() {
             setDrawValues(false)
         }
 
-        val totalHistory = (0 until maxSize).map { i ->
-            (historyCpu.getOrNull(i) ?: 0.0) + (historyGpu.getOrNull(i) ?: 0.0)
-        }
+        val totalHistory = (0 until maxSize).map { i -> cpuSlice[i] + gpuSlice[i] }
         val avg = if (totalHistory.isNotEmpty()) totalHistory.average() else 0.0
-        val avgEntries = (0 until maxSize).map { i -> Entry(i.toFloat(), avg.toFloat()) }
+        val avgEntries = (0 until maxSize).map { i -> Entry(xForIndex(i), avg.toFloat()) }
         val avgSet = LineDataSet(avgEntries, "Avg").apply {
             setColor(orange)
             setCircleColor(orange)
             lineWidth = 2f
             setDrawCircles(false)
             setDrawValues(false)
+            axisDependency = YAxis.AxisDependency.LEFT
         }
 
-        binding.hashRateChart.data = LineData(cpuSet, gpuSet, avgSet)
-        binding.hashRateChart.legend.isEnabled = true
-        binding.hashRateChart.legend.setTextColor(ContextCompat.getColor(this, R.color.chart_axis_legend))
-        binding.hashRateChart.invalidate()
+        val battEntries = battSliceC.mapIndexedNotNull { i, vC ->
+            if (!vC.isFinite()) return@mapIndexedNotNull null
+            Entry(xForIndex(i), vC)
+        }
+        val battSet = LineDataSet(battEntries, "BATT Temp").apply {
+            setColor(magenta)
+            setCircleColor(magenta)
+            lineWidth = 2f
+            setDrawCircles(false)
+            setDrawValues(false)
+            axisDependency = YAxis.AxisDependency.RIGHT
+        }
+
+        cpuSet.axisDependency = YAxis.AxisDependency.LEFT
+        gpuSet.axisDependency = YAxis.AxisDependency.LEFT
+
+        chart.data = LineData(cpuSet, gpuSet, avgSet, battSet)
+        chart.legend.isEnabled = true
+        chart.legend.setTextColor(chartTextColor)
+        chartBinding.hashChartModeTitle.visibility = View.VISIBLE
+        chartBinding.hashChartModeTitle.text = when (hashChartMode) {
+            HashChartMode.TwoMinute -> getString(R.string.hash_chart_title_2min)
+            HashChartMode.Session -> getString(R.string.hash_chart_title_session)
+        }
+        chartBinding.hashChartModeTitle.setTextColor(chartTextColor)
+        chart.invalidate()
+    }
+
+    private fun updateSharesDonutChart(cpuShares: Long, gpuShares: Long) {
+        val b = chartSharesDonutFragment?.chartBinding ?: return
+        val chart = b.sharesDonutChart
+        val total = (cpuShares + gpuShares).coerceAtLeast(0L)
+        if (total <= 0L) {
+            chart.data = null
+            chart.centerText = getString(R.string.shares_donut_no_shares)
+            chart.invalidate()
+            SharesDonutRimLabelHelper.hide(b.donutRimLabelsOverlay, b.donutRimCpuPct, b.donutRimGpuPct)
+            return
+        }
+        val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
+        val gray = Color.GRAY
+        val green = Color.parseColor("#4CAF50")
+        val entries = listOf(
+            PieEntry(cpuShares.toFloat(), getString(R.string.shares_donut_cpu_label)),
+            PieEntry(gpuShares.toFloat(), getString(R.string.shares_donut_gpu_label)),
+        )
+        val set = PieDataSet(entries, "").apply {
+            colors = listOf(gray, green)
+            setDrawValues(false)
+            valueTextColor = chartTextColor
+            setSelectionShift(8f)
+        }
+        chart.data = PieData(set)
+        chart.centerText = getString(R.string.shares_donut_center_total, total)
+        chart.setCenterTextColor(chartTextColor)
+        chart.legend.isEnabled = true
+        chart.legend.setCustom(
+            listOf(
+                LegendEntry(
+                    "${getString(R.string.shares_donut_cpu_label)}: $cpuShares",
+                    Legend.LegendForm.SQUARE,
+                    10f,
+                    2f,
+                    null,
+                    gray,
+                ),
+                LegendEntry(
+                    "${getString(R.string.shares_donut_gpu_label)}: $gpuShares",
+                    Legend.LegendForm.SQUARE,
+                    10f,
+                    2f,
+                    null,
+                    green,
+                ),
+            ),
+        )
+        chart.invalidate()
+        syncDonutRimLabels()
     }
 
     private fun onStartMiningClicked() {

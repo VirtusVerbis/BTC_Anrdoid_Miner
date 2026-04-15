@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <com.github.mikephil.charting.charts.PieChart
+        android:id="@+id/shares_donut_chart"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:elevation="1dp" />
+
+    <FrameLayout
+        android:id="@+id/donut_rim_labels_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="false"
+        android:elevation="2dp"
+        android:focusable="false"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/donut_rim_cpu_pct"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="#FF212121"
+            android:gravity="center"
+            android:paddingLeft="8dp"
+            android:paddingTop="4dp"
+            android:paddingRight="8dp"
+            android:paddingBottom="4dp"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/donut_rim_gpu_pct"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="#FF212121"
+            android:gravity="center"
+            android:paddingLeft="8dp"
+            android:paddingTop="4dp"
+            android:paddingRight="8dp"
+            android:paddingBottom="4dp"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+    </FrameLayout>
+</FrameLayout>
