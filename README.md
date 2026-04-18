@@ -2,6 +2,27 @@
 
 Android app for **CPU and GPU** Bitcoin mining via Stratum pools. Uses **in-app native code** (C, built with NDK/CMake) for SHA-256 and nonce scanning—no external miner binary required. Open-source; build with Android Studio or Gradle (sideload; not on Play Store).
 
+Created using:
+Cursor AI
+
+References:
+https://github.com/BitMaker-hub/NerdMiner_v2/releases
+
+
+Note: This app can be tested against the Public-Pool with Signet support - found here:
+
+https://github.com/VirtusVerbis/BTC_Public_Pool_Signet
+
+
+
+
+
+
+<img src="https://github.com/VirtusVerbis/BTC_Android_Miner/blob/main/Screenshot.png" width="250" height="500">
+
+
+
+
 ## Recent updates (2026)
 
 **Features / behavior**
@@ -28,24 +49,6 @@ Android app for **CPU and GPU** Bitcoin mining via Stratum pools. Uses **in-app 
 - **Pretty-print and syntax colors:** Valid JSON is shown indented; token types use separate colors (e.g. lavender key names with neutral quotes, magenta/fuchsia string values in dark theme, orange numbers, teal/cyan for `null` / `true` / `false`, light structural punctuation). Implemented in [`StratumJsonUiFormatter.kt`](app/src/main/kotlin/com/btcminer/android/util/StratumJsonUiFormatter.kt) with palette resources in [`values/colors.xml`](app/src/main/res/values/colors.xml) and [`values-night/colors.xml`](app/src/main/res/values-night/colors.xml).
 - **Params index footers:** For JSON-RPC messages with a **non-empty** `params` array, a small **Indices:** footer explains each `params` slot for supported methods. **Inbound:** `mining.notify`, `mining.set_difficulty`, `mining.set_extranonce`, `client.reconnect`. **Outbound:** `mining.subscribe`, `mining.authorize`, `mining.submit`. If `params` is missing or **empty** (e.g. `mining.extranonce.subscribe`), **no** index footer is shown.
 - **Dashboard — page indicator dots:** Small circular tabs under the swipeable dashboard; **spacing between dots matches each dot’s width** (pitch = 2× diameter). Dots use centered fixed-size `layer-list` backgrounds so ovals are not stretched to the full `TabLayout` tab width; sizes and pitch in [`app/src/main/res/values/dimens.xml`](app/src/main/res/values/dimens.xml), drawables `tab_dashboard_dot_*.xml` under [`app/src/main/res/drawable/`](app/src/main/res/drawable/), layout in [`app/src/main/res/layout/activity_main.xml`](app/src/main/res/layout/activity_main.xml). [`MainActivity.kt`](app/src/main/kotlin/com/btcminer/android/MainActivity.kt) uses `TabLayoutMediator` to keep the indicator and `ViewPager2` in sync.
-
-Created using:
-Cursor AI
-
-References:
-https://github.com/BitMaker-hub/NerdMiner_v2/releases
-
-
-Note: This app can be tested against the Public-Pool with Signet support - found here:
-
-https://github.com/VirtusVerbis/BTC_Public_Pool_Signet
-
-
-
-
-
-
-<img src="https://github.com/VirtusVerbis/BTC_Android_Miner/blob/main/Screenshot.png" width="250" height="500">
 
 
 
