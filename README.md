@@ -18,8 +18,8 @@ https://github.com/VirtusVerbis/BTC_Public_Pool_Signet
 
 
 
-<img src="https://github.com/VirtusVerbis/BTC_Android_Miner/Screenshot_1.jpeg" width="250" height="500">
-<img src="https://github.com/VirtusVerbis/BTC_Android_Miner/Screenshot_2.jpeg" width="250" height="500">
+<img src="https://github.com/VirtusVerbis/BTC_Anrdoid_Miner/blob/main/Screenshot_1.jpeg" width="250" height="500">
+<img src="https://github.com/VirtusVerbis/BTC_Android_Miner/blob/main/Screenshot_2.jpeg" width="250" height="500">
 
 
 
