@@ -168,6 +168,32 @@
                     android:textColor="?attr/colorOnSurface"
                     android:textSize="9sp" />
             </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/lifetime_total_mining_time_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="00:00:00-00:00:00"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="11sp" />
+
+                <TextView
+                    android:id="@+id/lifetime_total_mining_time_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/total_mining_time_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="9sp" />
+            </LinearLayout>
         </LinearLayout>
 
         <TextView
@@ -183,25 +209,61 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:gravity="center_horizontal"
-            android:orientation="vertical">
+            android:gravity="center"
+            android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/lifetime_network_difficulty_value"
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:text="—"
-                android:textColor="@color/bitcoin_orange"
-                android:textSize="15sp" />
-
-            <TextView
-                android:id="@+id/lifetime_network_difficulty_label"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_weight="1"
                 android:gravity="center_horizontal"
-                android:text="@string/network_difficulty_label"
-                android:textColor="?attr/colorOnSurface"
-                android:textSize="9sp" />
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/lifetime_network_difficulty_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="—"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/lifetime_network_difficulty_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/network_difficulty_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="9sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp">
+
+                <TextView
+                    android:id="@+id/lifetime_heat_stop_value"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/heat_stop_default"
+                    android:textColor="@color/bitcoin_orange"
+                    android:textSize="11sp" />
+
+                <TextView
+                    android:id="@+id/lifetime_heat_stop_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_horizontal"
+                    android:text="@string/heat_stop_label"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="9sp" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

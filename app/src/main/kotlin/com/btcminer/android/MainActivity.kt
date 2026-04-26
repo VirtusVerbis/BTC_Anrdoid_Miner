@@ -749,6 +749,24 @@ class MainActivity : AppCompatActivity() {
         p2.lifetimeIdentifiedSharesValue.text = idle.identifiedShares.toString()
         p2.lifetimeBestDifficultyValue.text = if (idle.bestDifficulty > 0.0) String.format(Locale.US, "%.6f", idle.bestDifficulty) else "—"
         p2.lifetimeBlockTemplateValue.text = idle.blockTemplates.toString()
+        p2.lifetimeTotalMiningTimeValue.text =
+            NumberFormatUtils.formatTotalMiningTimeYyMmDdHhMmSs(statsRepository.getTotalMiningTimeMs())
+
+        val heatMs = statsRepository.getHeatStopSessionMs()
+        if (heatMs <= 0L) {
+            p2.lifetimeHeatStopValue.text = getString(R.string.heat_stop_default)
+        } else {
+            val tempC = statsRepository.getHeatStopTempCelsius()
+            val useF = configRepository.getConfig().batteryTempFahrenheit
+            val tempPart = if (useF) {
+                val tempF = tempC * 9f / 5f + 32f
+                String.format(Locale.US, "%.1f °F", tempF)
+            } else {
+                String.format(Locale.US, "%.1f °C", tempC)
+            }
+            p2.lifetimeHeatStopValue.text =
+                "$tempPart - ${NumberFormatUtils.formatElapsedDdHhMmSs(heatMs)}"
+        }
 
         val nbitsHex = miningService?.getCurrentStratumNbitsHex()?.trim().orEmpty()
         val netDiff =
@@ -824,16 +842,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun formatElapsed(elapsedMs: Long): String {
-        var totalSeconds = (elapsedMs / 1000).coerceAtLeast(0)
-        val days = (totalSeconds / 86400).coerceAtMost(99)
-        totalSeconds %= 86400
-        val hours = totalSeconds / 3600
-        totalSeconds %= 3600
-        val minutes = totalSeconds / 60
-        val seconds = totalSeconds % 60
-        return String.format(Locale.US, "%02d:%02d:%02d:%02d", days, hours, minutes, seconds)
-    }
+    private fun formatElapsed(elapsedMs: Long): String =
+        NumberFormatUtils.formatElapsedDdHhMmSs(elapsedMs)
 
     private fun updateBatteryTempUi() {
         val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: run {

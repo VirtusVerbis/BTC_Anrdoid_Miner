@@ -137,6 +137,9 @@
     <string name="dashboard_panel2_lifetime_shares_title">Lifetime shares (all sessions)</string>
     <string name="dashboard_panel2_lifetime_records_title">All-time records</string>
     <string name="dashboard_panel2_network_title">Network</string>
+    <string name="total_mining_time_label">Total mining time</string>
+    <string name="heat_stop_label">Heat stop</string>
+    <string name="heat_stop_default">False</string>
     <string name="network_difficulty_label">Network difficulty</string>
     <string name="lifetime_total_hash_label">All-time total hash rate (sum of session avgs)</string>
     <string name="lifetime_total_cpu_hash_label">All-time total CPU hash rate (sum of session avgs)</string>
@@ -146,7 +149,7 @@
     <!-- Reset counters (Config) -->
     <string name="reset_all_ui_counters">Reset All UI Counters</string>
     <string name="reset_counters_dialog_title">Reset counters?</string>
-    <string name="reset_counters_dialog_message">Do you want to reset all counters? This includes accepted, rejected, and identified shares, block templates, best difficulty, session nonces, and all-time lifetime stats (sum of session-average hash rates and cumulative nonces).</string>
+    <string name="reset_counters_dialog_message">Do you want to reset all counters? This includes accepted, rejected, and identified shares, block templates, best difficulty, session nonces, all-time lifetime stats (sum of session-average hash rates and cumulative nonces), and total mining time.</string>
     <string name="reset_counters_yes">Yes</string>
     <string name="reset_counters_no">No</string>
 

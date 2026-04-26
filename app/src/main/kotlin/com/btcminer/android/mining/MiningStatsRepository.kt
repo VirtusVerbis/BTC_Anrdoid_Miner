@@ -16,6 +16,11 @@ import android.content.SharedPreferences
  * mining stops, cleared when a new session starts or via [saveZeros].
  *
  * **Last stopped session** best share difficulty and block-template delta (panel #1 while idle): same lifecycle.
+ *
+ * **Total mining time** (wall clock summed across sessions): [addTotalMiningTimeMs], cleared only via [saveZeros].
+ *
+ * **Heat stop** (last 43°C hard stop: session ms + °C at stop): [setHeatStopSnapshot] / [clearHeatStopForNewSession];
+ * not cleared by [saveZeros].
  */
 class MiningStatsRepository(context: Context) {
 
@@ -115,6 +120,34 @@ class MiningStatsRepository(context: Context) {
             .apply()
     }
 
+    fun getTotalMiningTimeMs(): Long = prefs.getLong(KEY_TOTAL_MINING_TIME_MS, 0L)
+
+    fun addTotalMiningTimeMs(deltaMs: Long) {
+        val d = deltaMs.coerceAtLeast(0L)
+        if (d == 0L) return
+        prefs.edit().putLong(KEY_TOTAL_MINING_TIME_MS, prefs.getLong(KEY_TOTAL_MINING_TIME_MS, 0L) + d).apply()
+    }
+
+    /** `sessionMs == 0` means UI shows False. */
+    fun getHeatStopSessionMs(): Long = prefs.getLong(KEY_HEAT_STOP_SESSION_MS, 0L)
+
+    fun getHeatStopTempCelsius(): Float =
+        Float.fromBits(prefs.getInt(KEY_HEAT_STOP_TEMP_CELSIUS_BITS, 0))
+
+    fun setHeatStopSnapshot(sessionMs: Long, tempCelsius: Float) {
+        prefs.edit()
+            .putLong(KEY_HEAT_STOP_SESSION_MS, sessionMs.coerceAtLeast(0L))
+            .putInt(KEY_HEAT_STOP_TEMP_CELSIUS_BITS, tempCelsius.toRawBits())
+            .apply()
+    }
+
+    fun clearHeatStopForNewSession() {
+        prefs.edit()
+            .putLong(KEY_HEAT_STOP_SESSION_MS, 0L)
+            .putInt(KEY_HEAT_STOP_TEMP_CELSIUS_BITS, HEAT_STOP_TEMP_INACTIVE_BITS)
+            .apply()
+    }
+
     /**
      * Writes zeros for the five persisted counters. Used only when user resets via Config.
      */
@@ -133,6 +166,7 @@ class MiningStatsRepository(context: Context) {
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_IDENTIFIED, 0L)
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY, 0.0.toRawBits())
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA, 0L)
+            .putLong(KEY_TOTAL_MINING_TIME_MS, 0L)
             .apply()
     }
 
@@ -184,6 +218,10 @@ class MiningStatsRepository(context: Context) {
         private const val KEY_LAST_STOPPED_SESSION_DISPLAY_IDENTIFIED = "last_stopped_session_display_identified"
         private const val KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY = "last_stopped_session_display_best_difficulty"
         private const val KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA = "last_stopped_session_display_block_templates_delta"
+        private const val KEY_TOTAL_MINING_TIME_MS = "total_mining_time_ms"
+        private const val KEY_HEAT_STOP_SESSION_MS = "heat_stop_session_ms"
+        private const val KEY_HEAT_STOP_TEMP_CELSIUS_BITS = "heat_stop_temp_c_bits"
+        private val HEAT_STOP_TEMP_INACTIVE_BITS = Float.NaN.toRawBits()
     }
 }
 

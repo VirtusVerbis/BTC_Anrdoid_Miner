@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -246,26 +247,9 @@ class MiningForegroundService : Service() {
                 else -> lastHashrateThrottleActive
             }
             if (stopDueToOverheat) {
+                val tempAtStopC = tempTenthsC / 10f
                 handler.post {
-                    releaseWakeLock()
-                    setOverheatBannerFlag(true)
-                    showOverheatNotification()
-                    // Let mining workers see overheat and unblock native GPU fence / CPU scan paths before engine.stop().
-                    val ts = throttleStateRef.get()
-                    throttleStateRef.set(
-                        ThrottleState(
-                            ts.effectiveIntensityPercent,
-                            stopDueToOverheat = true,
-                            throttleSleepMs = ts.throttleSleepMs,
-                            effectiveGpuUtilizationPercent = ts.effectiveGpuUtilizationPercent,
-                        ),
-                    )
-                    NativeMiner.gpuRequestInterrupt()
-                    NativeMiner.cpuRequestInterrupt()
-                    engine.stop()
-                    Toast.makeText(applicationContext, R.string.battery_too_hot_toast, Toast.LENGTH_LONG).show()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    shutdownSessionDueToBatteryOverheat(tempAtStopC)
                 }
                 return
             }
@@ -528,6 +512,14 @@ class MiningForegroundService : Service() {
         super.onDestroy()
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+    }
+
     private fun tryStartMining() {
         AppLog.d(LOG_TAG) { "tryStartMining()" }
         statsRepository.saveLastRunDuration(0)
@@ -585,6 +577,7 @@ class MiningForegroundService : Service() {
                 return@Thread
             }
             Handler(Looper.getMainLooper()).post {
+                statsRepository.clearHeatStopForNewSession()
                 miningStartTimeMillis = System.currentTimeMillis()
                 recordShareSessionBaselines()
                 val c = configRepository.getConfig()
@@ -660,6 +653,9 @@ class MiningForegroundService : Service() {
                 return@Thread
             }
             Handler(Looper.getMainLooper()).post {
+                miningStartTimeMillis?.let { oldStart ->
+                    statsRepository.addTotalMiningTimeMs((System.currentTimeMillis() - oldStart).coerceAtLeast(0L))
+                }
                 miningStartTimeMillis = System.currentTimeMillis()
                 recordShareSessionBaselines()
                 val c = configRepository.getConfig()
@@ -838,16 +834,30 @@ class MiningForegroundService : Service() {
         statsRepository.addLifetimeSessionContribution(status.noncesScanned, avgCpu, avgGpu)
     }
 
-    private fun stopMining() {
-        AppLog.d(LOG_TAG) { "stopMining()" }
-        miningStartTimeMillis?.let { start ->
-            statsRepository.saveLastRunDuration(System.currentTimeMillis() - start)
-            val c = getSessionShareDisplayedCounts()
-            statsRepository.saveLastStoppedSessionShareDisplay(c.first, c.second, c.third)
-            val blockDelta = (engine.getStatus().blockTemplates - sessionBaselineBlockTemplates).coerceAtLeast(0L)
-            statsRepository.saveLastStoppedSessionBestBlockDisplay(engine.getSessionBestShareDifficulty(), blockDelta)
+    /**
+     * Saves last-run duration, page-1 idle snapshots, cumulative total mining time, optional heat-stop snapshot;
+     * clears [miningStartTimeMillis]. No-op if not in a timed session.
+     */
+    private fun persistSessionWallClockSnapshotsAndTotal(heatStop: Boolean, heatStopTempC: Float?) {
+        val start = miningStartTimeMillis ?: return
+        val now = System.currentTimeMillis()
+        val delta = (now - start).coerceAtLeast(0L)
+        val s = engine.getStatus()
+        val acc = (s.acceptedShares - sessionBaselineAcceptedShares).coerceAtLeast(0L)
+        val rej = (s.rejectedShares - sessionBaselineRejectedShares).coerceAtLeast(0L)
+        val idf = (s.identifiedShares - sessionBaselineIdentifiedShares).coerceAtLeast(0L)
+        val blockDelta = (s.blockTemplates - sessionBaselineBlockTemplates).coerceAtLeast(0L)
+        statsRepository.saveLastRunDuration(delta)
+        statsRepository.addTotalMiningTimeMs(delta)
+        statsRepository.saveLastStoppedSessionShareDisplay(acc, rej, idf)
+        statsRepository.saveLastStoppedSessionBestBlockDisplay(engine.getSessionBestShareDifficulty(), blockDelta)
+        if (heatStop && heatStopTempC != null) {
+            statsRepository.setHeatStopSnapshot(delta, heatStopTempC)
         }
         miningStartTimeMillis = null
+    }
+
+    private fun tearDownMiningEngineAndHistories() {
         cancelAlarm()
         releaseWakeLock()
         handler.removeCallbacks(sampleRunnable)
@@ -863,6 +873,34 @@ class MiningForegroundService : Service() {
         }
         unregisterConstraintReceiver()
         engine.stop()
+    }
+
+    private fun shutdownSessionDueToBatteryOverheat(tempAtStopC: Float) {
+        AppLog.d(LOG_TAG) { "shutdownSessionDueToBatteryOverheat temp=${tempAtStopC}C" }
+        persistSessionWallClockSnapshotsAndTotal(heatStop = true, heatStopTempC = tempAtStopC)
+        setOverheatBannerFlag(true)
+        showOverheatNotification()
+        val ts = throttleStateRef.get()
+        throttleStateRef.set(
+            ThrottleState(
+                ts.effectiveIntensityPercent,
+                stopDueToOverheat = true,
+                throttleSleepMs = ts.throttleSleepMs,
+                effectiveGpuUtilizationPercent = ts.effectiveGpuUtilizationPercent,
+            ),
+        )
+        NativeMiner.gpuRequestInterrupt()
+        NativeMiner.cpuRequestInterrupt()
+        tearDownMiningEngineAndHistories()
+        Toast.makeText(applicationContext, R.string.battery_too_hot_toast, Toast.LENGTH_LONG).show()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun stopMining() {
+        AppLog.d(LOG_TAG) { "stopMining()" }
+        persistSessionWallClockSnapshotsAndTotal(heatStop = false, heatStopTempC = null)
+        tearDownMiningEngineAndHistories()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -1008,5 +1046,16 @@ class MiningForegroundService : Service() {
         private const val OVERHEAT_NOTIFICATION_ID = 3
         const val OVERHEAT_BANNER_PREFS = "overheat_banner"
         const val KEY_SHOW_OVERHEAT_BANNER = "show_overheat_stopped_banner"
+    }
+
+    private fun trimLevelName(level: Int): String = when (level) {
+        ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE -> "RUNNING_MODERATE"
+        ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> "RUNNING_LOW"
+        ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> "RUNNING_CRITICAL"
+        ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> "UI_HIDDEN"
+        ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> "BACKGROUND"
+        ComponentCallbacks2.TRIM_MEMORY_MODERATE -> "MODERATE"
+        ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> "COMPLETE"
+        else -> "UNKNOWN"
     }
 }
