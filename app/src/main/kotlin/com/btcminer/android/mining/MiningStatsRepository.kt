@@ -2,6 +2,10 @@ package com.btcminer.android.mining
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.btcminer.android.AppLog
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.math.ceil
 
 /**
  * Persists five dashboard counters (accepted/rejected/identified shares, best difficulty, block templates)
@@ -128,6 +132,48 @@ class MiningStatsRepository(context: Context) {
         prefs.edit().putLong(KEY_TOTAL_MINING_TIME_MS, prefs.getLong(KEY_TOTAL_MINING_TIME_MS, 0L) + d).apply()
     }
 
+    /**
+     * Persists a crash-recoverable mining-time checkpoint for the active session.
+     * This does not mutate [KEY_TOTAL_MINING_TIME_MS]; callers reconcile via [reconcileMiningTimeCheckpoint].
+     */
+    fun saveMiningTimeCheckpoint(sessionStartMs: Long, nowMs: Long = System.currentTimeMillis()) {
+        val start = sessionStartMs.coerceAtLeast(0L)
+        if (start <= 0L) return
+        val baseTotalMs = prefs.getLong(KEY_TOTAL_MINING_TIME_MS, 0L).coerceAtLeast(0L)
+        val elapsed = (nowMs - start).coerceAtLeast(0L)
+        val checkpointTotal = baseTotalMs + elapsed
+        prefs.edit()
+            .putLong(KEY_MINING_TIME_CHECKPOINT_SESSION_START_MS, start)
+            .putLong(KEY_MINING_TIME_CHECKPOINT_TOTAL_MS, checkpointTotal)
+            .putLong(KEY_MINING_TIME_CHECKPOINT_SAVED_AT_MS, nowMs.coerceAtLeast(0L))
+            .apply()
+    }
+
+    /**
+     * Reconciles crash-safe checkpoint into [KEY_TOTAL_MINING_TIME_MS] using replacement semantics:
+     * persisted total becomes max(existingTotal, checkpointTotal) to prevent double counting.
+     * Returns the reconciled total.
+     */
+    fun reconcileMiningTimeCheckpoint(): Long {
+        val existingTotal = prefs.getLong(KEY_TOTAL_MINING_TIME_MS, 0L).coerceAtLeast(0L)
+        val checkpointTotal = prefs.getLong(KEY_MINING_TIME_CHECKPOINT_TOTAL_MS, 0L).coerceAtLeast(0L)
+        val reconciled = maxOf(existingTotal, checkpointTotal)
+        if (reconciled != existingTotal) {
+            prefs.edit().putLong(KEY_TOTAL_MINING_TIME_MS, reconciled).apply()
+        }
+        clearMiningTimeCheckpoint()
+        return reconciled
+    }
+
+    /** Clears in-progress mining-time checkpoint markers. */
+    fun clearMiningTimeCheckpoint() {
+        prefs.edit()
+            .remove(KEY_MINING_TIME_CHECKPOINT_SESSION_START_MS)
+            .remove(KEY_MINING_TIME_CHECKPOINT_TOTAL_MS)
+            .remove(KEY_MINING_TIME_CHECKPOINT_SAVED_AT_MS)
+            .apply()
+    }
+
     /** `sessionMs == 0` means UI shows False. */
     fun getHeatStopSessionMs(): Long = prefs.getLong(KEY_HEAT_STOP_SESSION_MS, 0L)
 
@@ -145,6 +191,91 @@ class MiningStatsRepository(context: Context) {
         prefs.edit()
             .putLong(KEY_HEAT_STOP_SESSION_MS, 0L)
             .putInt(KEY_HEAT_STOP_TEMP_CELSIUS_BITS, HEAT_STOP_TEMP_INACTIVE_BITS)
+            .apply()
+    }
+
+    /** Saves the latest chart snapshot for idle/crash restore. */
+    fun saveChartSnapshot(
+        cpu: List<Double>,
+        gpu: List<Double>,
+        elapsedSec: List<Float>,
+        batteryTempC: List<Float>,
+        donutCpuShares: Long,
+        donutGpuShares: Long,
+        sessionStartMs: Long,
+        savedAtMs: Long = System.currentTimeMillis(),
+    ) {
+        val n = minOf(cpu.size, gpu.size, elapsedSec.size, batteryTempC.size)
+        if (n <= 0) return
+
+        val bounded = downsampleForSnapshot(
+            cpu = cpu.subList(0, n),
+            gpu = gpu.subList(0, n),
+            elapsedSec = elapsedSec.subList(0, n),
+            batteryTempC = batteryTempC.subList(0, n),
+        )
+
+        runCatching {
+            val json = JSONObject().apply {
+                put("v", CHART_SNAPSHOT_VERSION)
+                put("sessionStartMs", sessionStartMs.coerceAtLeast(0L))
+                put("savedAtMs", savedAtMs.coerceAtLeast(0L))
+                put("donutCpuShares", donutCpuShares.coerceAtLeast(0L))
+                put("donutGpuShares", donutGpuShares.coerceAtLeast(0L))
+                put("cpu", JSONArray().apply { bounded.cpu.forEach { put(it.finiteOrZero()) } })
+                put("gpu", JSONArray().apply { bounded.gpu.forEach { put(it.finiteOrZero()) } })
+                put("elapsedSec", JSONArray().apply { bounded.elapsedSec.forEach { put(it.finiteOrZero()) } })
+                // Preserve unavailable battery samples without writing forbidden NaN/Infinity to JSON.
+                put("batteryTempC", JSONArray().apply {
+                    bounded.batteryTempC.forEach {
+                        if (it.isFinite()) put(it) else put(JSONObject.NULL)
+                    }
+                })
+            }
+
+            prefs.edit()
+                .putString(KEY_CHART_SNAPSHOT_JSON, json.toString())
+                .putLong(KEY_CHART_SNAPSHOT_SAVED_AT_MS, savedAtMs.coerceAtLeast(0L))
+                .putLong(KEY_CHART_SNAPSHOT_SESSION_START_MS, sessionStartMs.coerceAtLeast(0L))
+                .apply()
+        }.onFailure { e ->
+            AppLog.e(LOG_TAG) { "saveChartSnapshot failed: ${e.message}" }
+        }
+    }
+
+    /** Returns latest chart snapshot if present and not stale. */
+    fun getChartSnapshotOrNull(nowMs: Long = System.currentTimeMillis()): ChartSnapshot? {
+        val raw = prefs.getString(KEY_CHART_SNAPSHOT_JSON, null) ?: return null
+        val json = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        val savedAtMs = json.optLong("savedAtMs", 0L).coerceAtLeast(0L)
+        if (savedAtMs > 0L && nowMs - savedAtMs > CHART_SNAPSHOT_STALE_MS) return null
+
+        val cpu = json.optJSONArray("cpu")?.toFiniteFloatList(defaultValue = 0f) ?: return null
+        val gpu = json.optJSONArray("gpu")?.toFiniteFloatList(defaultValue = 0f) ?: return null
+        val elapsedSec = json.optJSONArray("elapsedSec")?.toFiniteFloatList(defaultValue = 0f) ?: return null
+        val batteryTempC = json.optJSONArray("batteryTempC")?.toBatteryTempFloatList() ?: return null
+        val n = minOf(cpu.size, gpu.size, elapsedSec.size, batteryTempC.size)
+        if (n <= 0) return null
+
+        return ChartSnapshot(
+            version = json.optInt("v", CHART_SNAPSHOT_VERSION),
+            sessionStartMs = json.optLong("sessionStartMs", 0L).coerceAtLeast(0L),
+            savedAtMs = savedAtMs,
+            donutCpuShares = json.optLong("donutCpuShares", 0L).coerceAtLeast(0L),
+            donutGpuShares = json.optLong("donutGpuShares", 0L).coerceAtLeast(0L),
+            cpu = cpu.subList(0, n),
+            gpu = gpu.subList(0, n),
+            elapsedSec = elapsedSec.subList(0, n),
+            batteryTempC = batteryTempC.subList(0, n),
+        )
+    }
+
+    /** Clears latest chart snapshot. */
+    fun clearChartSnapshot() {
+        prefs.edit()
+            .remove(KEY_CHART_SNAPSHOT_JSON)
+            .remove(KEY_CHART_SNAPSHOT_SAVED_AT_MS)
+            .remove(KEY_CHART_SNAPSHOT_SESSION_START_MS)
             .apply()
     }
 
@@ -167,6 +298,12 @@ class MiningStatsRepository(context: Context) {
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY, 0.0.toRawBits())
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA, 0L)
             .putLong(KEY_TOTAL_MINING_TIME_MS, 0L)
+            .remove(KEY_CHART_SNAPSHOT_JSON)
+            .remove(KEY_CHART_SNAPSHOT_SAVED_AT_MS)
+            .remove(KEY_CHART_SNAPSHOT_SESSION_START_MS)
+            .remove(KEY_MINING_TIME_CHECKPOINT_SESSION_START_MS)
+            .remove(KEY_MINING_TIME_CHECKPOINT_TOTAL_MS)
+            .remove(KEY_MINING_TIME_CHECKPOINT_SAVED_AT_MS)
             .apply()
     }
 
@@ -219,10 +356,77 @@ class MiningStatsRepository(context: Context) {
         private const val KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY = "last_stopped_session_display_best_difficulty"
         private const val KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA = "last_stopped_session_display_block_templates_delta"
         private const val KEY_TOTAL_MINING_TIME_MS = "total_mining_time_ms"
+        private const val KEY_MINING_TIME_CHECKPOINT_SESSION_START_MS = "mining_time_checkpoint_session_start_ms"
+        private const val KEY_MINING_TIME_CHECKPOINT_TOTAL_MS = "mining_time_checkpoint_total_ms"
+        private const val KEY_MINING_TIME_CHECKPOINT_SAVED_AT_MS = "mining_time_checkpoint_saved_at_ms"
+        private const val KEY_CHART_SNAPSHOT_JSON = "chart_snapshot_json"
+        private const val KEY_CHART_SNAPSHOT_SAVED_AT_MS = "chart_snapshot_saved_at_ms"
+        private const val KEY_CHART_SNAPSHOT_SESSION_START_MS = "chart_snapshot_session_start_ms"
+        private const val CHART_SNAPSHOT_VERSION = 1
+        private const val CHART_SNAPSHOT_MAX_POINTS = 1_200
+        private const val CHART_SNAPSHOT_STALE_MS = 24 * 60 * 60 * 1000L
+        private const val LOG_TAG = "MiningStatsRepository"
         private const val KEY_HEAT_STOP_SESSION_MS = "heat_stop_session_ms"
         private const val KEY_HEAT_STOP_TEMP_CELSIUS_BITS = "heat_stop_temp_c_bits"
         private val HEAT_STOP_TEMP_INACTIVE_BITS = Float.NaN.toRawBits()
     }
+
+    private fun downsampleForSnapshot(
+        cpu: List<Double>,
+        gpu: List<Double>,
+        elapsedSec: List<Float>,
+        batteryTempC: List<Float>,
+    ): ChartSnapshotSeries {
+        if (cpu.size <= CHART_SNAPSHOT_MAX_POINTS) {
+            return ChartSnapshotSeries(
+                cpu = cpu.map { it.toFloat() },
+                gpu = gpu.map { it.toFloat() },
+                elapsedSec = elapsedSec.toList(),
+                batteryTempC = batteryTempC.toList(),
+            )
+        }
+        val step = ceil(cpu.size.toDouble() / CHART_SNAPSHOT_MAX_POINTS.toDouble()).toInt().coerceAtLeast(1)
+        val last = cpu.lastIndex
+        val keepIdx = ArrayList<Int>(CHART_SNAPSHOT_MAX_POINTS + 1)
+        var i = 0
+        while (i <= last) {
+            keepIdx.add(i)
+            i += step
+        }
+        if (keepIdx.lastOrNull() != last) keepIdx.add(last)
+        return ChartSnapshotSeries(
+            cpu = keepIdx.map { idx -> cpu[idx].toFloat() },
+            gpu = keepIdx.map { idx -> gpu[idx].toFloat() },
+            elapsedSec = keepIdx.map { idx -> elapsedSec[idx] },
+            batteryTempC = keepIdx.map { idx -> batteryTempC[idx] },
+        )
+    }
+
+    private fun JSONArray.toFiniteFloatList(defaultValue: Float): List<Float> {
+        val out = ArrayList<Float>(length())
+        for (i in 0 until length()) {
+            val d = optDouble(i, defaultValue.toDouble())
+            val f = d.toFloat()
+            out.add(if (f.isFinite()) f else defaultValue)
+        }
+        return out
+    }
+
+    private fun JSONArray.toBatteryTempFloatList(): List<Float> {
+        val out = ArrayList<Float>(length())
+        for (i in 0 until length()) {
+            if (isNull(i)) {
+                out.add(Float.NaN)
+                continue
+            }
+            val d = optDouble(i, Double.NaN)
+            val f = d.toFloat()
+            out.add(if (f.isFinite()) f else Float.NaN)
+        }
+        return out
+    }
+
+    private fun Float.finiteOrZero(): Float = if (isFinite()) this else 0f
 }
 
 data class LifetimeMiningStats(
@@ -232,3 +436,22 @@ data class LifetimeMiningStats(
 ) {
     val sumSessionAvgTotalHs: Double get() = sumSessionAvgCpuHs + sumSessionAvgGpuHs
 }
+
+data class ChartSnapshot(
+    val version: Int,
+    val sessionStartMs: Long,
+    val savedAtMs: Long,
+    val donutCpuShares: Long,
+    val donutGpuShares: Long,
+    val cpu: List<Float>,
+    val gpu: List<Float>,
+    val elapsedSec: List<Float>,
+    val batteryTempC: List<Float>,
+)
+
+private data class ChartSnapshotSeries(
+    val cpu: List<Float>,
+    val gpu: List<Float>,
+    val elapsedSec: List<Float>,
+    val batteryTempC: List<Float>,
+)

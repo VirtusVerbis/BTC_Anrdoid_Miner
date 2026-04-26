@@ -268,16 +268,11 @@ class MainActivity : AppCompatActivity() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             miningService = null
-            // Keep poll running so dashboard shows persisted counters; show persisted stats and clear chart only
+            // Keep poll running so dashboard shows persisted counters and persisted chart snapshots.
             handler.post {
                 updateStatsUi(statsRepository.get(), null)
                 updateLifetimeUi()
                 updateLifetimePanel2Ui()
-                chartHashrateFragment?.chartBinding?.let { c ->
-                    c.hashRateChart.data = null
-                    c.hashChartModeTitle.visibility = View.GONE
-                    c.hashRateChart.invalidate()
-                }
                 refreshDashboardFromPoll()
             }
         }
@@ -691,27 +686,32 @@ class MainActivity : AppCompatActivity() {
         updateBatteryTempUi()
         val service = miningService
         if (service != null) {
-            updateStatsUi(service.getStatus(), service)
-            updateChart(
-                service.getHashrateHistoryCpu(),
-                service.getHashrateHistoryGpu(),
-                service.getHashrateHistoryElapsedSec(),
-                service.getBatteryTempHistoryCelsius(),
-            )
-            val src = service.getSessionIdentifiedShareSourceCounts()
-            if (lastDonutIdentifiedCounts != src) {
-                if (updateSharesDonutChart(src.first, src.second)) {
-                    lastDonutIdentifiedCounts = src
+            val status = service.getStatus()
+            updateStatsUi(status, service)
+            val isMining = status.state == MiningStatus.State.Mining
+            if (isMining) {
+                val cpu = service.getHashrateHistoryCpu()
+                val gpu = service.getHashrateHistoryGpu()
+                val elapsed = service.getHashrateHistoryElapsedSec()
+                val batt = service.getBatteryTempHistoryCelsius()
+                val n = minOf(cpu.size, gpu.size, elapsed.size, batt.size)
+                if (n > 0) {
+                    updateChart(cpu, gpu, elapsed, batt)
+                } else {
+                    renderPersistedChartsOrIdleFallback()
                 }
+                val src = service.getSessionIdentifiedShareSourceCounts()
+                if (lastDonutIdentifiedCounts != src) {
+                    if (updateSharesDonutChart(src.first, src.second)) {
+                        lastDonutIdentifiedCounts = src
+                    }
+                }
+            } else {
+                renderPersistedChartsOrIdleFallback()
             }
         } else {
             updateStatsUi(statsRepository.get(), null)
-            val idle = 0L to 0L
-            if (lastDonutIdentifiedCounts != idle) {
-                if (updateSharesDonutChart(0L, 0L)) {
-                    lastDonutIdentifiedCounts = idle
-                }
-            }
+            renderPersistedChartsOrIdleFallback()
         }
         updateLifetimeUi()
         updateLifetimePanel2Ui()
@@ -729,6 +729,36 @@ class MainActivity : AppCompatActivity() {
             binding.autoTuneValue.setTextColor(color)
         } else {
             binding.autoTuneBlock.visibility = View.GONE
+        }
+    }
+
+    private fun renderPersistedChartsOrIdleFallback() {
+        val snapshot = statsRepository.getChartSnapshotOrNull()
+        if (snapshot != null) {
+            updateChart(
+                historyCpu = snapshot.cpu.map { it.toDouble() },
+                historyGpu = snapshot.gpu.map { it.toDouble() },
+                historyElapsedSec = snapshot.elapsedSec,
+                batteryTempHistoryCelsius = snapshot.batteryTempC,
+            )
+            val donut = snapshot.donutCpuShares to snapshot.donutGpuShares
+            if (lastDonutIdentifiedCounts != donut) {
+                if (updateSharesDonutChart(snapshot.donutCpuShares, snapshot.donutGpuShares)) {
+                    lastDonutIdentifiedCounts = donut
+                }
+            }
+        } else {
+            val idle = 0L to 0L
+            if (lastDonutIdentifiedCounts != idle) {
+                if (updateSharesDonutChart(0L, 0L)) {
+                    lastDonutIdentifiedCounts = idle
+                }
+            }
+            chartHashrateFragment?.chartBinding?.let { c ->
+                c.hashRateChart.data = null
+                c.hashChartModeTitle.visibility = View.GONE
+                c.hashRateChart.invalidate()
+            }
         }
     }
 

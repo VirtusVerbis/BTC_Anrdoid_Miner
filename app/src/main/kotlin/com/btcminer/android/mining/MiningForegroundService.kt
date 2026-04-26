@@ -125,9 +125,14 @@ class MiningForegroundService : Service() {
     private val hashrateHistoryElapsedSec = mutableListOf<Float>()
     /** Per-sample battery temperature in Celsius (aligned with CPU/GPU/elapsed entries). */
     private val batteryTempHistoryCelsius = mutableListOf<Float>()
+    @Volatile
+    private var lastChartSnapshotSaveMs: Long = 0L
+    @Volatile
+    private var lastMiningTimeCheckpointSaveMs: Long = 0L
     /** UI-only: hashrate history and notification. Heavy work runs on [sampleExecutor]; only startForeground on main. */
     private val sampleRunnable: Runnable = object : Runnable {
         override fun run() {
+            val self = this
             if (engine.isRunning()) {
                 sampleExecutor.execute {
                     val status = engine.getStatus()
@@ -147,18 +152,19 @@ class MiningForegroundService : Service() {
                             hashrateHistoryElapsedSec.add(elapsedSec)
                             batteryTempHistoryCelsius.add(tempC)
                         }
+                        maybePersistRuntimeSnapshots(force = false)
                     }
                     val contentText = if (MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) && status.connectionLost) getString(R.string.mining_reconnecting) else getString(R.string.mining_notification_text)
                     val notification = buildNotification(contentText)
                     handler.post {
                         if (engine.isRunning()) {
                             startForeground(NOTIFICATION_ID, notification)
-                            handler.postDelayed(sampleRunnable, 1000L)
+                            handler.postDelayed(self, 1000L)
                         }
                     }
                 }
             } else {
-                handler.postDelayed(this, 1000L)
+                handler.postDelayed(self, 1000L)
             }
         }
     }
@@ -350,6 +356,7 @@ class MiningForegroundService : Service() {
 
     private val saveStatsRunnable: Runnable = object : Runnable {
         override fun run() {
+            val self = this
             sampleExecutor.execute {
                 statsRepository.save(engine.getStatus())
                 if (engine.isRunning()) {
@@ -359,7 +366,7 @@ class MiningForegroundService : Service() {
                     }
                 }
                 handler.post {
-                    if (engine.isRunning()) handler.postDelayed(saveStatsRunnable, STATS_SAVE_INTERVAL_MS)
+                    if (engine.isRunning()) handler.postDelayed(self, STATS_SAVE_INTERVAL_MS)
                 }
             }
         }
@@ -460,6 +467,7 @@ class MiningForegroundService : Service() {
         super.onCreate()
         configRepository = MiningConfigRepository(applicationContext)
         statsRepository = MiningStatsRepository(applicationContext)
+        statsRepository.reconcileMiningTimeCheckpoint()
         pendingSharesRepository = PendingSharesRepository(applicationContext)
     }
 
@@ -495,6 +503,7 @@ class MiningForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = LocalBinder()
 
     override fun onDestroy() {
+        maybePersistRuntimeSnapshots(force = true)
         handler.removeCallbacks(sampleRunnable)
         handler.removeCallbacks(saveStatsRunnable)
         sampleExecutor.shutdown()
@@ -578,7 +587,11 @@ class MiningForegroundService : Service() {
             }
             Handler(Looper.getMainLooper()).post {
                 statsRepository.clearHeatStopForNewSession()
+                statsRepository.clearChartSnapshot()
+                statsRepository.clearMiningTimeCheckpoint()
                 miningStartTimeMillis = System.currentTimeMillis()
+                lastChartSnapshotSaveMs = 0L
+                lastMiningTimeCheckpointSaveMs = 0L
                 recordShareSessionBaselines()
                 val c = configRepository.getConfig()
                 if (c.autoTuningByBatteryTemp) {
@@ -656,7 +669,11 @@ class MiningForegroundService : Service() {
                 miningStartTimeMillis?.let { oldStart ->
                     statsRepository.addTotalMiningTimeMs((System.currentTimeMillis() - oldStart).coerceAtLeast(0L))
                 }
+                statsRepository.clearMiningTimeCheckpoint()
+                statsRepository.clearChartSnapshot()
                 miningStartTimeMillis = System.currentTimeMillis()
+                lastChartSnapshotSaveMs = 0L
+                lastMiningTimeCheckpointSaveMs = 0L
                 recordShareSessionBaselines()
                 val c = configRepository.getConfig()
                 if (c.autoTuningByBatteryTemp) {
@@ -854,7 +871,45 @@ class MiningForegroundService : Service() {
         if (heatStop && heatStopTempC != null) {
             statsRepository.setHeatStopSnapshot(delta, heatStopTempC)
         }
+        statsRepository.clearMiningTimeCheckpoint()
         miningStartTimeMillis = null
+    }
+
+    private fun maybePersistRuntimeSnapshots(force: Boolean) {
+        val start = miningStartTimeMillis ?: return
+        val now = System.currentTimeMillis()
+
+        if (force || now - lastMiningTimeCheckpointSaveMs >= MINING_TIME_CHECKPOINT_INTERVAL_MS) {
+            statsRepository.saveMiningTimeCheckpoint(start, now)
+            lastMiningTimeCheckpointSaveMs = now
+        }
+
+        if (force || now - lastChartSnapshotSaveMs >= CHART_SNAPSHOT_SAVE_INTERVAL_MS) {
+            val cpuHist: List<Double>
+            val gpuHist: List<Double>
+            val elapsedHist: List<Float>
+            val battHist: List<Float>
+            synchronized(hashrateHistoryLock) {
+                cpuHist = hashrateHistoryCpu.toList()
+                gpuHist = hashrateHistoryGpu.toList()
+                elapsedHist = hashrateHistoryElapsedSec.toList()
+                battHist = batteryTempHistoryCelsius.toList()
+            }
+            if (cpuHist.isNotEmpty() && gpuHist.isNotEmpty() && elapsedHist.isNotEmpty() && battHist.isNotEmpty()) {
+                val src = getSessionIdentifiedShareSourceCounts()
+                statsRepository.saveChartSnapshot(
+                    cpu = cpuHist,
+                    gpu = gpuHist,
+                    elapsedSec = elapsedHist,
+                    batteryTempC = battHist,
+                    donutCpuShares = src.first,
+                    donutGpuShares = src.second,
+                    sessionStartMs = start,
+                    savedAtMs = now,
+                )
+                lastChartSnapshotSaveMs = now
+            }
+        }
     }
 
     private fun tearDownMiningEngineAndHistories() {
@@ -877,6 +932,7 @@ class MiningForegroundService : Service() {
 
     private fun shutdownSessionDueToBatteryOverheat(tempAtStopC: Float) {
         AppLog.d(LOG_TAG) { "shutdownSessionDueToBatteryOverheat temp=${tempAtStopC}C" }
+        maybePersistRuntimeSnapshots(force = true)
         persistSessionWallClockSnapshotsAndTotal(heatStop = true, heatStopTempC = tempAtStopC)
         setOverheatBannerFlag(true)
         showOverheatNotification()
@@ -899,6 +955,7 @@ class MiningForegroundService : Service() {
 
     private fun stopMining() {
         AppLog.d(LOG_TAG) { "stopMining()" }
+        maybePersistRuntimeSnapshots(force = true)
         persistSessionWallClockSnapshotsAndTotal(heatStop = false, heatStopTempC = null)
         tearDownMiningEngineAndHistories()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -1030,6 +1087,8 @@ class MiningForegroundService : Service() {
         /** Rolling window (seconds) for CPU utilization %; samples older than this are dropped. */
         const val CPU_UTILIZATION_ROLLING_WINDOW_SEC = 60
         private const val STATS_SAVE_INTERVAL_MS = 60_000L
+        private const val CHART_SNAPSHOT_SAVE_INTERVAL_MS = 10_000L
+        private const val MINING_TIME_CHECKPOINT_INTERVAL_MS = 10_000L
         /** ~1 dashboard sample/s; chunk session averages into ~10 min segments, then mean of chunk means. */
         private const val LIFETIME_SESSION_AVG_CHUNK_SAMPLES = 10 * 60
         private const val LOG_TAG = "Mining"
