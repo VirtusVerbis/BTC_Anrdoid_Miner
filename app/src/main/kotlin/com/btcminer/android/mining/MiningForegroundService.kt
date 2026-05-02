@@ -67,6 +67,12 @@ class MiningForegroundService : Service() {
                     ).show()
                 }
             },
+            onSessionBestDifficultyRecord = { recordedAtMs, difficulty ->
+                handler.post {
+                    val start = miningStartTimeMillis ?: return@post
+                    statsRepository.appendBestDifficultyEvent(recordedAtMs, difficulty, start)
+                }
+            },
         )
         e.loadPersistedStats(statsRepository.get())
         e
@@ -414,6 +420,7 @@ class MiningForegroundService : Service() {
     private fun recordShareSessionBaselines() {
         statsRepository.saveLastStoppedSessionShareDisplay(0L, 0L, 0L)
         statsRepository.saveLastStoppedSessionBestBlockDisplay(0.0, 0L)
+        statsRepository.clearLastStoppedSessionStartWallMs()
         engine.resetSessionScopeDisplay()
         val s = engine.getStatus()
         val bySource = engine.getIdentifiedSharesBySource()
@@ -868,6 +875,7 @@ class MiningForegroundService : Service() {
         statsRepository.addTotalMiningTimeMs(delta)
         statsRepository.saveLastStoppedSessionShareDisplay(acc, rej, idf)
         statsRepository.saveLastStoppedSessionBestBlockDisplay(engine.getSessionBestShareDifficulty(), blockDelta)
+        statsRepository.saveLastStoppedSessionStartWallMs(start)
         if (heatStop && heatStopTempC != null) {
             statsRepository.setHeatStopSnapshot(delta, heatStopTempC)
         }

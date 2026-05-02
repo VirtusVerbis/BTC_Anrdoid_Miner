@@ -5,8 +5,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.ServiceConnection
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.os.BatteryManager
@@ -26,11 +28,13 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
+import androidx.lifecycle.lifecycleScope
 import com.btcminer.android.config.ConfigActivity
 import com.btcminer.android.config.MiningConfigRepository
 import com.btcminer.android.databinding.ActivityMainBinding
 import com.btcminer.android.mining.MiningConstraints
 import com.btcminer.android.mining.MiningForegroundService
+import com.btcminer.android.mining.BestDifficultyChartEvent
 import com.btcminer.android.mining.MiningStatsRepository
 import com.btcminer.android.mining.MiningStatus
 import com.btcminer.android.mining.NativeMiner
@@ -39,6 +43,8 @@ import com.btcminer.android.mining.StratumOutboundSubmitSource
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
+import com.github.mikephil.charting.data.ScatterData
+import com.github.mikephil.charting.data.ScatterDataSet
 import com.github.mikephil.charting.data.PieData
 import com.github.mikephil.charting.data.PieDataSet
 import com.github.mikephil.charting.data.PieEntry
@@ -48,24 +54,45 @@ import com.github.mikephil.charting.listener.OnChartValueSelectedListener
 import com.github.mikephil.charting.listener.ChartTouchListener
 import com.github.mikephil.charting.listener.OnChartGestureListener
 import com.github.mikephil.charting.charts.PieChart
+import com.github.mikephil.charting.charts.ScatterChart
 import com.github.mikephil.charting.components.YAxis
 import com.github.mikephil.charting.components.Legend
 import com.github.mikephil.charting.components.LegendEntry
 import com.btcminer.android.network.CertPins
 import com.btcminer.android.util.BitcoinAddressValidator
+import com.btcminer.android.util.FractalPlotKind
+import com.btcminer.android.util.MandelbrotEscapeRenderer
 import com.btcminer.android.util.NumberFormatUtils
 import com.btcminer.android.util.StratumJsonUiFormatter
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.tabs.TabLayoutMediator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import java.math.BigDecimal
+import kotlin.math.ln
+import kotlin.math.log10
+import kotlin.math.pow
 import java.net.URLEncoder
+import java.util.ArrayDeque
 import java.util.Locale
 import java.util.Scanner
 import java.util.concurrent.TimeUnit
+
+private data class MandelbrotRenderSnapshot(
+    val sdPrev: Double,
+    val sdNew: Double,
+    val sessionLnAnchor: Double,
+    val sessionLnPeak: Double,
+    val rollingLnMin: Double?,
+    val rollingLnMax: Double?,
+)
 
 class MainActivity : AppCompatActivity() {
 
@@ -78,6 +105,14 @@ class MainActivity : AppCompatActivity() {
         /** Rolling window size for the short hash rate chart (matches prior ~2 min at 1 Hz). */
         private const val HASHRATE_CHART_TWO_MIN_SAMPLES = 120
         private const val STATE_HASH_CHART_MODE = "hashChartMode"
+        private const val STATE_BEST_DIFF_CHART_X_MODE = "bestDiffChartXMode"
+
+        private const val BEST_DIFF_CHART_EPS_SEC = 1e-3
+        private const val BEST_DIFF_CHART_EPS_DIFF = 1e-18
+
+        private const val MANDEL_MAX_BITMAP_DIM = 512
+        private const val MANDEL_EPS_PREV = 1e-18
+        private const val MANDEL_ROLLING_LN_COUNT = 8
     }
 
     private enum class HashChartMode {
@@ -93,9 +128,24 @@ class MainActivity : AppCompatActivity() {
 
     private var hashChartMode = HashChartMode.TwoMinute
 
+    private enum class BestDifficultyChartXMode {
+        LifetimeRelativeLog,
+        SessionElapsedLinear,
+        ;
+
+        fun toggle(): BestDifficultyChartXMode = when (this) {
+            LifetimeRelativeLog -> SessionElapsedLinear
+            SessionElapsedLinear -> LifetimeRelativeLog
+        }
+    }
+
+    private var bestDifficultyChartXMode = BestDifficultyChartXMode.LifetimeRelativeLog
+
     private lateinit var binding: ActivityMainBinding
     private lateinit var configRepository: MiningConfigRepository
     private val statsRepository by lazy { MiningStatsRepository(applicationContext) }
+
+    private val appFirstInstallTimeMs: Long by lazy { computeFirstInstallTimeMs() }
 
     private var page1Fragment: DashboardStatsPage1Fragment? = null
     private var page2Fragment: DashboardStatsPage2Fragment? = null
@@ -105,7 +155,24 @@ class MainActivity : AppCompatActivity() {
     private var dashboardTabMediator: TabLayoutMediator? = null
     private var chartHashrateFragment: ChartHashrateFragment? = null
     private var chartSharesDonutFragment: ChartSharesDonutFragment? = null
+    private var chartBestDifficultyFragment: ChartBestDifficultyFragment? = null
+    private var chartMandelbrotFragment: ChartMandelbrotFragment? = null
     private var chartTabMediator: TabLayoutMediator? = null
+
+    private var mandelbrotRenderJob: Job? = null
+    /** Session best difficulty already committed for Mandelbrot triggers (optimistic; avoids skipped steps under rapid improvements). */
+    private var mandelbrotLastRenderedSessionBest: Double = 0.0
+    private var mandelbrotSessionKey: Long? = null
+    /** [ln] of first session-best used for Mandelbrot this session; null until first improvement. */
+    private var mandelbrotSessionLnAnchor: Double? = null
+    private val mandelbrotRollingLnHighs = ArrayDeque<Double>(MANDEL_ROLLING_LN_COUNT)
+    /** Last fractal index rendered ([FractalPlotKind.entries]); -1 before first render this session. */
+    private var fractalPlotOrdinal: Int = -1
+    /** Latest difficulty snapshot for tap-to-rerender without a new session best. */
+    private var mandelbrotRenderSnapshot: MandelbrotRenderSnapshot? = null
+    private var mandelbrotDisplayedBitmap: Bitmap? = null
+    /** Matches [mandelbrotDisplayedBitmap]; used for caption after tab switch / rotation. */
+    private var lastRenderedFractalPlotKind: FractalPlotKind? = null
     /** Last session CPU/GPU identified counts passed to [updateSharesDonutChart]; null forces next refresh. */
     private var lastDonutIdentifiedCounts: Pair<Long, Long>? = null
     /** Keeps donut hole label aligned with [PieChart] layout; removed when donut fragment view is destroyed. */
@@ -129,6 +196,14 @@ class MainActivity : AppCompatActivity() {
                     lastDonutIdentifiedCounts = null
                     setupSharesDonutChart()
                 }
+                is ChartBestDifficultyFragment -> {
+                    chartBestDifficultyFragment = f
+                    setupBestDifficultyChart()
+                }
+                is ChartMandelbrotFragment -> {
+                    chartMandelbrotFragment = f
+                    setupMandelbrotView()
+                }
                 else -> return
             }
             refreshDashboardFromPoll()
@@ -150,6 +225,8 @@ class MainActivity : AppCompatActivity() {
                     donutChartForLayoutListener = null
                     chartSharesDonutFragment = null
                 }
+                is ChartBestDifficultyFragment -> if (chartBestDifficultyFragment === f) chartBestDifficultyFragment = null
+                is ChartMandelbrotFragment -> if (chartMandelbrotFragment === f) chartMandelbrotFragment = null
             }
         }
     }
@@ -289,6 +366,10 @@ class MainActivity : AppCompatActivity() {
         savedInstanceState?.getString(STATE_HASH_CHART_MODE)?.let { saved ->
             hashChartMode = runCatching { HashChartMode.valueOf(saved) }.getOrDefault(HashChartMode.TwoMinute)
         }
+        savedInstanceState?.getString(STATE_BEST_DIFF_CHART_X_MODE)?.let { saved ->
+            bestDifficultyChartXMode = runCatching { BestDifficultyChartXMode.valueOf(saved) }
+                .getOrDefault(BestDifficultyChartXMode.LifetimeRelativeLog)
+        }
         configRepository = MiningConfigRepository(applicationContext)
 
         // Phase 1: verify native miner loads and responds
@@ -343,9 +424,16 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_HASH_CHART_MODE, hashChartMode.name)
+        outState.putString(STATE_BEST_DIFF_CHART_X_MODE, bestDifficultyChartXMode.name)
     }
 
     override fun onDestroy() {
+        mandelbrotRenderJob?.cancel()
+        mandelbrotRenderJob = null
+        mandelbrotDisplayedBitmap?.recycle()
+        mandelbrotDisplayedBitmap = null
+        lastRenderedFractalPlotKind = null
+        mandelbrotRenderSnapshot = null
         dashboardTabMediator?.detach()
         dashboardTabMediator = null
         chartTabMediator?.detach()
@@ -595,6 +683,225 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupBestDifficultyChart() {
+        val cb = chartBestDifficultyFragment?.chartBinding ?: return
+        val chart = cb.bestDifficultyChart
+        val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
+        chart.description.isEnabled = false
+        chart.legend.isEnabled = true
+        chart.legend.textColor = chartTextColor
+        chart.legend.verticalAlignment = Legend.LegendVerticalAlignment.TOP
+        chart.legend.horizontalAlignment = Legend.LegendHorizontalAlignment.RIGHT
+        chart.legend.orientation = Legend.LegendOrientation.VERTICAL
+        chart.legend.setDrawInside(false)
+        chart.legend.form = Legend.LegendForm.CIRCLE
+        chart.xAxis.setDrawGridLines(true)
+        chart.xAxis.textColor = chartTextColor
+        chart.axisLeft.setDrawGridLines(true)
+        chart.axisLeft.textColor = chartTextColor
+        chart.axisRight.isEnabled = false
+        chart.setTouchEnabled(true)
+        chart.isDragEnabled = false
+        chart.setScaleEnabled(false)
+        chart.setPinchZoom(false)
+        chart.isHighlightPerTapEnabled = false
+        chart.isHighlightPerDragEnabled = false
+        chart.setExtraOffsets(8f, 8f, 8f, 8f)
+        chart.setOnChartGestureListener(object : OnChartGestureListener {
+            override fun onChartGestureStart(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
+            override fun onChartGestureEnd(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
+            override fun onChartLongPressed(me: MotionEvent?) {}
+            override fun onChartDoubleTapped(me: MotionEvent?) {}
+            override fun onChartSingleTapped(me: MotionEvent?) {
+                bestDifficultyChartXMode = bestDifficultyChartXMode.toggle()
+                refreshBestDifficultyChart()
+            }
+
+            override fun onChartFling(me1: MotionEvent?, me2: MotionEvent?, velocityX: Float, velocityY: Float) {}
+            override fun onChartScale(me: MotionEvent?, scaleX: Float, scaleY: Float) {}
+            override fun onChartTranslate(me: MotionEvent?, dX: Float, dY: Float) {}
+        })
+        chart.contentDescription = getString(R.string.best_difficulty_chart_a11y_toggle_hint)
+        refreshBestDifficultyChart()
+    }
+
+    private fun setupMandelbrotView() {
+        val bb = chartMandelbrotFragment?.chartBinding ?: return
+        bb.mandelbrotCaption.setTextColor(ContextCompat.getColor(this, R.color.chart_axis_legend))
+        bb.mandelbrotImage.isClickable = true
+        bb.mandelbrotImage.setOnClickListener { cycleFractalPlotAndRender() }
+        val bmp = mandelbrotDisplayedBitmap
+        if (bmp != null && !bmp.isRecycled) {
+            bb.mandelbrotImage.setImageBitmap(bmp)
+            bb.mandelbrotPlaceholder.visibility = View.GONE
+        } else {
+            bb.mandelbrotImage.setImageDrawable(null)
+            bb.mandelbrotPlaceholder.visibility = View.VISIBLE
+        }
+        lastRenderedFractalPlotKind?.let { kind ->
+            bb.mandelbrotImage.contentDescription = getString(R.string.fractal_chart_image_a11y_with_kind, fractalDisplayName(kind))
+        } ?: run {
+            bb.mandelbrotImage.contentDescription = getString(R.string.mandelbrot_chart_image_a11y)
+        }
+        updateFractalChartCaption(lastRenderedFractalPlotKind)
+    }
+
+    private fun cycleFractalPlotAndRender() {
+        val snap = mandelbrotRenderSnapshot ?: return
+        val container = chartMandelbrotFragment?.view ?: return
+        val vw = container.width
+        val vh = container.height
+        if (vw <= 0 || vh <= 0) return
+        val bw = minOf(vw, MANDEL_MAX_BITMAP_DIM)
+        val bh = minOf(maxOf(1, bw * vh / vw), MANDEL_MAX_BITMAP_DIM)
+        val n = FractalPlotKind.entries.size
+        fractalPlotOrdinal = (fractalPlotOrdinal + 1) % n
+        val plotKind = FractalPlotKind.entries[fractalPlotOrdinal]
+        enqueueFractalBitmapJob(bw, bh, snap, plotKind, commitSessionBestTo = null)
+    }
+
+    /**
+     * Renders off main thread; optionally commits [mandelbrotLastRenderedSessionBest] when [commitSessionBestTo] non-null (mining path).
+     */
+    private fun enqueueFractalBitmapJob(
+        bw: Int,
+        bh: Int,
+        snap: MandelbrotRenderSnapshot,
+        plotKind: FractalPlotKind,
+        commitSessionBestTo: Double?,
+    ) {
+        mandelbrotRenderJob?.cancel()
+        mandelbrotRenderJob = lifecycleScope.launch {
+            val bmp = try {
+                withContext(Dispatchers.Default) {
+                    MandelbrotEscapeRenderer.render(
+                        bw,
+                        bh,
+                        snap.sdPrev,
+                        snap.sdNew,
+                        snap.sessionLnAnchor,
+                        snap.sessionLnPeak,
+                        snap.rollingLnMin,
+                        snap.rollingLnMax,
+                        plotKind,
+                    )
+                }
+            } catch (_: OutOfMemoryError) {
+                null
+            }
+            if (bmp == null || !isActive) {
+                bmp?.recycle()
+                return@launch
+            }
+            commitSessionBestTo?.let { mandelbrotLastRenderedSessionBest = it }
+            mandelbrotDisplayedBitmap?.recycle()
+            mandelbrotDisplayedBitmap = bmp
+            lastRenderedFractalPlotKind = plotKind
+            chartMandelbrotFragment?.chartBinding?.let { b ->
+                b.mandelbrotImage.setImageBitmap(bmp)
+                b.mandelbrotPlaceholder.visibility = View.GONE
+                b.mandelbrotImage.contentDescription = getString(
+                    R.string.fractal_chart_image_a11y_with_kind,
+                    fractalDisplayName(plotKind),
+                )
+                updateFractalChartCaption(plotKind)
+            }
+        }
+    }
+
+    private fun fractalDisplayName(kind: FractalPlotKind): String = when (kind) {
+        FractalPlotKind.Mandelbrot -> getString(R.string.fractal_name_mandelbrot)
+        FractalPlotKind.Julia -> getString(R.string.fractal_name_julia)
+        FractalPlotKind.BurningShip -> getString(R.string.fractal_name_burning_ship)
+        FractalPlotKind.Multibrot -> getString(R.string.fractal_name_multibrot)
+        FractalPlotKind.Tricorn -> getString(R.string.fractal_name_tricorn)
+        FractalPlotKind.Phoenix -> getString(R.string.fractal_name_phoenix)
+        FractalPlotKind.Newton -> getString(R.string.fractal_name_newton)
+    }
+
+    private fun updateFractalChartCaption(kind: FractalPlotKind?) {
+        val captionView = chartMandelbrotFragment?.chartBinding?.mandelbrotCaption ?: return
+        if (kind == null) {
+            captionView.text = ""
+            return
+        }
+        captionView.text = getString(R.string.fractal_chart_caption_pattern, fractalDisplayName(kind))
+    }
+
+    /**
+     * Redraws Mandelbrot only when session best share difficulty increases during mining.
+     * Last bitmap persists while idle (plan parity with other charts).
+     */
+    private fun refreshMandelbrotIfNeeded() {
+        val svc = miningService ?: return
+        if (svc.getStatus().state != MiningStatus.State.Mining) return
+        val sessionStart = svc.getMiningStartTimeMillis() ?: return
+
+        if (mandelbrotSessionKey != sessionStart) {
+            mandelbrotSessionKey = sessionStart
+            mandelbrotLastRenderedSessionBest = 0.0
+            mandelbrotSessionLnAnchor = null
+            mandelbrotRollingLnHighs.clear()
+            fractalPlotOrdinal = -1
+            mandelbrotRenderSnapshot = null
+            lastRenderedFractalPlotKind = null
+            updateFractalChartCaption(null)
+            mandelbrotRenderJob?.cancel()
+            mandelbrotRenderJob = null
+        }
+
+        val sessionBest = svc.getSessionBestDifficultyForDisplay()
+        if (!sessionBest.isFinite() || sessionBest <= mandelbrotLastRenderedSessionBest) return
+
+        val sdPrev = if (mandelbrotLastRenderedSessionBest <= 0.0) MANDEL_EPS_PREV else mandelbrotLastRenderedSessionBest
+        val sdNew = sessionBest
+
+        val lnNew = ln(sdNew)
+        if (mandelbrotSessionLnAnchor == null) {
+            mandelbrotSessionLnAnchor = lnNew
+        }
+        mandelbrotRollingLnHighs.addLast(lnNew)
+        while (mandelbrotRollingLnHighs.size > MANDEL_ROLLING_LN_COUNT) {
+            mandelbrotRollingLnHighs.removeFirst()
+        }
+        val rollingLnMin: Double?
+        val rollingLnMax: Double?
+        if (mandelbrotRollingLnHighs.size >= 2) {
+            rollingLnMin = mandelbrotRollingLnHighs.minOrNull()
+            rollingLnMax = mandelbrotRollingLnHighs.maxOrNull()
+        } else {
+            rollingLnMin = null
+            rollingLnMax = null
+        }
+        val sessionLnAnchor = mandelbrotSessionLnAnchor!!
+        val sessionLnPeak = lnNew
+
+        val container = chartMandelbrotFragment?.view ?: return
+        val vw = container.width
+        val vh = container.height
+        if (vw <= 0 || vh <= 0) {
+            container.post { refreshMandelbrotIfNeeded() }
+            return
+        }
+
+        val bw = minOf(vw, MANDEL_MAX_BITMAP_DIM)
+        val bh = minOf(maxOf(1, bw * vh / vw), MANDEL_MAX_BITMAP_DIM)
+
+        val n = FractalPlotKind.entries.size
+        fractalPlotOrdinal = (fractalPlotOrdinal + 1) % n
+        val plotKind = FractalPlotKind.entries[fractalPlotOrdinal]
+        val snap = MandelbrotRenderSnapshot(
+            sdPrev,
+            sdNew,
+            sessionLnAnchor,
+            sessionLnPeak,
+            rollingLnMin,
+            rollingLnMax,
+        )
+        mandelbrotRenderSnapshot = snap
+        enqueueFractalBitmapJob(bw, bh, snap, plotKind, commitSessionBestTo = sdNew)
+    }
+
     private fun syncDonutRimLabels() {
         val bb = chartSharesDonutFragment?.chartBinding ?: return
         SharesDonutRimLabelHelper.updateIfHighlighted(
@@ -730,6 +1037,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             binding.autoTuneBlock.visibility = View.GONE
         }
+        refreshBestDifficultyChart()
+        refreshMandelbrotIfNeeded()
     }
 
     private fun renderPersistedChartsOrIdleFallback() {
@@ -937,6 +1246,159 @@ class MainActivity : AppCompatActivity() {
         } else {
             String.format(Locale.US, "%d:%02d", m, s)
         }
+    }
+
+    private fun computeFirstInstallTimeMs(): Long {
+        return try {
+            val pm = packageManager
+            val pkg = packageName
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0)).firstInstallTime
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(pkg, 0).firstInstallTime
+            }
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    private fun formatRelativeDurationAxis(sec: Double): String {
+        val s = sec.toLong().coerceAtLeast(0L)
+        val d = s / 86400L
+        val h = (s % 86400L) / 3600L
+        return if (d > 0L) {
+            String.format(Locale.US, "%dd %dh", d, h)
+        } else {
+            formatElapsedChartAxisSeconds(sec.toFloat())
+        }
+    }
+
+    private fun formatDifficultyChartAxis(d: Double): String =
+        when {
+            d >= 1e9 -> String.format(Locale.US, "%.3e", d)
+            d >= 1.0 -> String.format(Locale.US, "%.6g", d)
+            else -> String.format(Locale.US, "%.4g", d)
+        }
+
+    private fun refreshBestDifficultyChart() {
+        val events = statsRepository.getBestDifficultyEvents()
+        val svc = miningService
+        val mining = svc?.getStatus()?.state == MiningStatus.State.Mining
+        val sessionStart = if (mining) {
+            svc?.getMiningStartTimeMillis()
+        } else {
+            statsRepository.getLastStoppedSessionStartWallMs()
+        }
+        updateBestDifficultyChart(events, sessionStart)
+    }
+
+    private fun updateBestDifficultyChart(events: List<BestDifficultyChartEvent>, currentSessionStartMs: Long?) {
+        val cb = chartBestDifficultyFragment?.chartBinding ?: return
+        val chart = cb.bestDifficultyChart
+        val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
+        val orange = ContextCompat.getColor(this, R.color.bitcoin_orange)
+        val green = Color.parseColor("#4CAF50")
+
+        if (events.isEmpty()) {
+            chart.data = null
+            cb.bestDiffChartModeTitle.visibility = View.GONE
+            chart.invalidate()
+            return
+        }
+
+        val installMs = appFirstInstallTimeMs.takeIf { it > 0L }
+            ?: events.minOfOrNull { it.tWallMs }?.coerceAtLeast(0L)
+            ?: System.currentTimeMillis()
+
+        val diffAxisFormatter = object : ValueFormatter() {
+            override fun getFormattedValue(value: Float): String {
+                val d = 10.0.pow(value.toDouble()).coerceAtLeast(BEST_DIFF_CHART_EPS_DIFF)
+                return formatDifficultyChartAxis(d)
+            }
+        }
+
+        when (bestDifficultyChartXMode) {
+            BestDifficultyChartXMode.LifetimeRelativeLog -> {
+                chart.legend.isEnabled = true
+                chart.xAxis.valueFormatter = object : ValueFormatter() {
+                    override fun getFormattedValue(value: Float): String {
+                        val sec = 10.0.pow(value.toDouble()).coerceAtLeast(BEST_DIFF_CHART_EPS_SEC)
+                        return formatRelativeDurationAxis(sec)
+                    }
+                }
+                chart.xAxis.isGranularityEnabled = false
+                chart.axisLeft.valueFormatter = diffAxisFormatter
+
+                val orangeEntries = ArrayList<Entry>(events.size)
+                val greenEntries = ArrayList<Entry>()
+                for (e in events) {
+                    val relSec = ((e.tWallMs - installMs) / 1000.0).coerceAtLeast(BEST_DIFF_CHART_EPS_SEC)
+                    val lx = log10(relSec).toFloat()
+                    val ly = log10(e.difficulty.coerceAtLeast(BEST_DIFF_CHART_EPS_DIFF)).toFloat()
+                    orangeEntries.add(Entry(lx, ly))
+                    if (currentSessionStartMs != null && e.sessionStartWallMs == currentSessionStartMs) {
+                        greenEntries.add(Entry(lx, ly))
+                    }
+                }
+                val orangeSet = ScatterDataSet(orangeEntries, getString(R.string.best_difficulty_chart_legend_all)).apply {
+                    color = orange
+                    scatterShapeSize = 7f
+                    setScatterShape(ScatterChart.ScatterShape.CIRCLE)
+                }
+                chart.data = if (greenEntries.isEmpty()) {
+                    ScatterData(orangeSet)
+                } else {
+                    val greenSet = ScatterDataSet(greenEntries, getString(R.string.best_difficulty_chart_legend_session)).apply {
+                        color = green
+                        scatterShapeSize = 9f
+                        setScatterShape(ScatterChart.ScatterShape.CIRCLE)
+                    }
+                    ScatterData(orangeSet, greenSet)
+                }
+                cb.bestDiffChartModeTitle.text = getString(R.string.best_difficulty_chart_title_lifetime)
+            }
+            BestDifficultyChartXMode.SessionElapsedLinear -> {
+                chart.axisLeft.valueFormatter = diffAxisFormatter
+                if (currentSessionStartMs == null) {
+                    chart.data = null
+                    chart.legend.isEnabled = false
+                    cb.bestDiffChartModeTitle.visibility = View.VISIBLE
+                    cb.bestDiffChartModeTitle.text = getString(R.string.best_difficulty_chart_title_session)
+                    cb.bestDiffChartModeTitle.setTextColor(chartTextColor)
+                    chart.invalidate()
+                    return
+                }
+                chart.legend.isEnabled = true
+                chart.xAxis.valueFormatter = object : ValueFormatter() {
+                    override fun getFormattedValue(value: Float): String = formatElapsedChartAxisSeconds(value)
+                }
+                chart.xAxis.isGranularityEnabled = false
+                val sessionEvents = events.filter { it.sessionStartWallMs == currentSessionStartMs }
+                val greenEntries = sessionEvents.map { e ->
+                    val elapsedSec = ((e.tWallMs - currentSessionStartMs) / 1000f).coerceAtLeast(0f)
+                    val ly = log10(e.difficulty.coerceAtLeast(BEST_DIFF_CHART_EPS_DIFF)).toFloat()
+                    Entry(elapsedSec, ly)
+                }
+                chart.data = if (greenEntries.isEmpty()) {
+                    null
+                } else {
+                    val greenSet = ScatterDataSet(greenEntries, getString(R.string.best_difficulty_chart_legend_session)).apply {
+                        color = green
+                        scatterShapeSize = 9f
+                        setScatterShape(ScatterChart.ScatterShape.CIRCLE)
+                    }
+                    ScatterData(greenSet)
+                }
+                cb.bestDiffChartModeTitle.text = getString(R.string.best_difficulty_chart_title_session)
+            }
+        }
+        chart.legend.textColor = chartTextColor
+        val data = chart.data
+        chart.legend.isEnabled = data != null && data.dataSetCount > 0
+        cb.bestDiffChartModeTitle.visibility = View.VISIBLE
+        cb.bestDiffChartModeTitle.setTextColor(chartTextColor)
+        chart.invalidate()
     }
 
     private fun updateChart(

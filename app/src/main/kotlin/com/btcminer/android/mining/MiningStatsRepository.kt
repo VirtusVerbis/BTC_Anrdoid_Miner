@@ -21,6 +21,9 @@ import kotlin.math.ceil
  *
  * **Last stopped session** best share difficulty and block-template delta (panel #1 while idle): same lifecycle.
  *
+ * **Last stopped session** wall start ms (best-difficulty chart Session mode while idle): [saveLastStoppedSessionStartWallMs] /
+ * [clearLastStoppedSessionStartWallMs]; same lifecycle as other last-stopped panel prefs.
+ *
  * **Total mining time** (wall clock summed across sessions): [addTotalMiningTimeMs], cleared only via [saveZeros].
  *
  * **Heat stop** (last 43°C hard stop: session ms + °C at stop): [setHeatStopSnapshot] / [clearHeatStopForNewSession];
@@ -122,6 +125,22 @@ class MiningStatsRepository(context: Context) {
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY, bestDifficulty.toRawBits())
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA, blockTemplatesDelta)
             .apply()
+    }
+
+    /** Wall-clock session start of the last cleanly ended session; used for Session-mode chart when idle. */
+    fun getLastStoppedSessionStartWallMs(): Long? {
+        val v = prefs.getLong(KEY_LAST_STOPPED_SESSION_START_WALL_MS, 0L)
+        return v.takeIf { it > 0L }
+    }
+
+    fun saveLastStoppedSessionStartWallMs(sessionStartWallMs: Long) {
+        val start = sessionStartWallMs.coerceAtLeast(0L)
+        if (start <= 0L) return
+        prefs.edit().putLong(KEY_LAST_STOPPED_SESSION_START_WALL_MS, start).apply()
+    }
+
+    fun clearLastStoppedSessionStartWallMs() {
+        prefs.edit().remove(KEY_LAST_STOPPED_SESSION_START_WALL_MS).apply()
     }
 
     fun getTotalMiningTimeMs(): Long = prefs.getLong(KEY_TOTAL_MINING_TIME_MS, 0L)
@@ -297,6 +316,7 @@ class MiningStatsRepository(context: Context) {
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_IDENTIFIED, 0L)
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY, 0.0.toRawBits())
             .putLong(KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA, 0L)
+            .remove(KEY_LAST_STOPPED_SESSION_START_WALL_MS)
             .putLong(KEY_TOTAL_MINING_TIME_MS, 0L)
             .remove(KEY_CHART_SNAPSHOT_JSON)
             .remove(KEY_CHART_SNAPSHOT_SAVED_AT_MS)
@@ -304,7 +324,67 @@ class MiningStatsRepository(context: Context) {
             .remove(KEY_MINING_TIME_CHECKPOINT_SESSION_START_MS)
             .remove(KEY_MINING_TIME_CHECKPOINT_TOTAL_MS)
             .remove(KEY_MINING_TIME_CHECKPOINT_SAVED_AT_MS)
+            .remove(KEY_BEST_DIFFICULTY_EVENTS_JSON)
             .apply()
+    }
+
+    /** Append-only history for best-difficulty chart; trimmed FIFO when over cap. Not cleared by chart snapshot clear. */
+    fun appendBestDifficultyEvent(tWallMs: Long, difficulty: Double, sessionStartWallMs: Long) {
+        val t = tWallMs.coerceAtLeast(0L)
+        val ss = sessionStartWallMs.coerceAtLeast(0L)
+        if (!difficulty.isFinite() || difficulty <= 0.0 || t <= 0L || ss <= 0L) return
+
+        runCatching {
+            val raw = prefs.getString(KEY_BEST_DIFFICULTY_EVENTS_JSON, null)
+            val arr = when {
+                raw.isNullOrEmpty() -> JSONArray()
+                else -> {
+                    val root = runCatching { JSONObject(raw) }.getOrNull()
+                    root?.optJSONArray("events") ?: JSONArray()
+                }
+            }
+            arr.put(
+                JSONObject().apply {
+                    put("t", t)
+                    put("d", difficulty)
+                    put("ss", ss)
+                },
+            )
+            val trimmed = JSONArray()
+            val startIdx = maxOf(0, arr.length() - BEST_DIFFICULTY_EVENTS_MAX)
+            for (i in startIdx until arr.length()) {
+                trimmed.put(arr.get(i))
+            }
+            prefs.edit()
+                .putString(
+                    KEY_BEST_DIFFICULTY_EVENTS_JSON,
+                    JSONObject().apply {
+                        put("v", BEST_DIFFICULTY_EVENTS_VERSION)
+                        put("events", trimmed)
+                    }.toString(),
+                )
+                .apply()
+        }.onFailure { e ->
+            AppLog.e(LOG_TAG) { "appendBestDifficultyEvent failed: ${e.message}" }
+        }
+    }
+
+    /** Ordered oldest-first; empty if missing or invalid. */
+    fun getBestDifficultyEvents(): List<BestDifficultyChartEvent> {
+        val raw = prefs.getString(KEY_BEST_DIFFICULTY_EVENTS_JSON, null) ?: return emptyList()
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyList()
+        val arr = root.optJSONArray("events") ?: return emptyList()
+        val out = ArrayList<BestDifficultyChartEvent>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val t = o.optLong("t", 0L)
+            val d = o.optDouble("d", Double.NaN)
+            val ss = o.optLong("ss", 0L)
+            if (t > 0L && ss > 0L && d.isFinite() && d > 0.0) {
+                out.add(BestDifficultyChartEvent(tWallMs = t, difficulty = d, sessionStartWallMs = ss))
+            }
+        }
+        return out
     }
 
     /** Lifetime aggregates shown on dashboard page 2. */
@@ -355,6 +435,7 @@ class MiningStatsRepository(context: Context) {
         private const val KEY_LAST_STOPPED_SESSION_DISPLAY_IDENTIFIED = "last_stopped_session_display_identified"
         private const val KEY_LAST_STOPPED_SESSION_DISPLAY_BEST_DIFFICULTY = "last_stopped_session_display_best_difficulty"
         private const val KEY_LAST_STOPPED_SESSION_DISPLAY_BLOCK_TEMPLATES_DELTA = "last_stopped_session_display_block_templates_delta"
+        private const val KEY_LAST_STOPPED_SESSION_START_WALL_MS = "last_stopped_session_start_wall_ms"
         private const val KEY_TOTAL_MINING_TIME_MS = "total_mining_time_ms"
         private const val KEY_MINING_TIME_CHECKPOINT_SESSION_START_MS = "mining_time_checkpoint_session_start_ms"
         private const val KEY_MINING_TIME_CHECKPOINT_TOTAL_MS = "mining_time_checkpoint_total_ms"
@@ -365,6 +446,9 @@ class MiningStatsRepository(context: Context) {
         private const val CHART_SNAPSHOT_VERSION = 1
         private const val CHART_SNAPSHOT_MAX_POINTS = 1_200
         private const val CHART_SNAPSHOT_STALE_MS = 24 * 60 * 60 * 1000L
+        private const val KEY_BEST_DIFFICULTY_EVENTS_JSON = "best_difficulty_events_json"
+        private const val BEST_DIFFICULTY_EVENTS_VERSION = 1
+        private const val BEST_DIFFICULTY_EVENTS_MAX = 3000
         private const val LOG_TAG = "MiningStatsRepository"
         private const val KEY_HEAT_STOP_SESSION_MS = "heat_stop_session_ms"
         private const val KEY_HEAT_STOP_TEMP_CELSIUS_BITS = "heat_stop_temp_c_bits"
@@ -447,6 +531,13 @@ data class ChartSnapshot(
     val gpu: List<Float>,
     val elapsedSec: List<Float>,
     val batteryTempC: List<Float>,
+)
+
+/** Single session-best improvement for best-difficulty scatter chart ([MiningStatsRepository.appendBestDifficultyEvent]). */
+data class BestDifficultyChartEvent(
+    val tWallMs: Long,
+    val difficulty: Double,
+    val sessionStartWallMs: Long,
 )
 
 private data class ChartSnapshotSeries(

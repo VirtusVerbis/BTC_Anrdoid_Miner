@@ -33,6 +33,8 @@ class NativeMiningEngine(
     private val isBothWifiAndDataUnavailable: (() -> Boolean)? = null,
     private val statsLogExtra: (() -> String)? = null,
     private val onGpuUnavailable: (() -> Unit)? = null,
+    /** Invoked on miner thread when session best share difficulty strictly increases. */
+    private val onSessionBestDifficultyRecord: ((recordedAtMs: Long, difficulty: Double) -> Unit)? = null,
 ) : MiningEngine {
 
     companion object {
@@ -750,7 +752,11 @@ class NativeMiningEngine(
                 val header80 = StratumHeaderBuilder.header76WithNonce(found.header76, found.nonceU32)
                 val diff = StratumHeaderBuilder.difficultyFromHeader80(header80)
                 bestDifficultyRef.updateAndGet { maxOf(it, diff) }
-                sessionBestShareDifficultyRef.updateAndGet { maxOf(it, diff) }
+                val prevSessionBest = sessionBestShareDifficultyRef.get()
+                val newSessionBest = sessionBestShareDifficultyRef.updateAndGet { maxOf(it, diff) }
+                if (newSessionBest > prevSessionBest) {
+                    onSessionBestDifficultyRecord?.invoke(System.currentTimeMillis(), newSessionBest)
+                }
                 identifiedShares.incrementAndGet()
                 when (shareSourceFromFoundTag(found.source)) {
                     StratumOutboundSubmitSource.Cpu -> identifiedSharesCpu.incrementAndGet()

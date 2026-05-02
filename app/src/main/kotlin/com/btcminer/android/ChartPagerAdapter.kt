@@ -6,11 +6,13 @@ import androidx.viewpager2.adapter.FragmentStateAdapter
 
 class ChartPagerAdapter(activity: AppCompatActivity) : FragmentStateAdapter(activity) {
 
-    override fun getItemCount(): Int = 2
+    override fun getItemCount(): Int = 4
 
     override fun createFragment(position: Int): Fragment = when (position) {
         0 -> ChartHashrateFragment()
         1 -> ChartSharesDonutFragment()
+        2 -> ChartBestDifficultyFragment()
+        3 -> ChartMandelbrotFragment()
         else -> throw IllegalArgumentException("position=$position")
     }
 }
