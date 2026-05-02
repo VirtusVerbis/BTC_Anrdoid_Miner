@@ -36,6 +36,8 @@ object MandelbrotEscapeRenderer {
     private const val CENTER_PAN_SCALE = 0.5
     /** Visual tuning: shift Burning Ship view toward negative Im (hull). Adjust if frame still empty. */
     private const val BURNING_SHIP_CENTER_OFFSET_IM = -0.55
+    /** Burning Ship only: widen viewport vs other kinds (1.5 ≈ 50% more zoom out). */
+    private const val BURNING_SHIP_SPAN_SCALE = 6
     /** Visual tuning: Tricorn bias vs Mandelbrot anchor (tune for denser set in frame). */
     private const val TRICORN_CENTER_OFFSET_RE = -0.10
     private const val TRICORN_CENTER_OFFSET_IM = -0.20
@@ -165,6 +167,10 @@ object MandelbrotEscapeRenderer {
         span *= 1.0 + A_SPAN_HASH * (2.0 * unitSpan - 1.0)
         span *= 1.0 + DLOG_SPAN_COEF * tanhD + DLOG_SPAN_COEF2 * tanh(dLog * 0.52)
         span = span.coerceIn(SPAN_MIN, SPAN_MAX)
+        if (plotKind == FractalPlotKind.BurningShip) {
+            span *= BURNING_SHIP_SPAN_SCALE
+            span = span.coerceIn(SPAN_MIN, SPAN_MAX * BURNING_SHIP_SPAN_SCALE)
+        }
 
         val aspect = w.toDouble() / h.toDouble()
         val spanRe = span * aspect
