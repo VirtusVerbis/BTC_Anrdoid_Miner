@@ -36,9 +36,12 @@ object MandelbrotEscapeRenderer {
     private const val CENTER_PAN_SCALE = 0.5
     /** Visual tuning: shift Burning Ship view toward negative Im (hull). Adjust if frame still empty. */
     private const val BURNING_SHIP_CENTER_OFFSET_IM = -0.55
-    /** Visual tuning: small Tricorn bias vs Mandelbrot anchor. */
-    private const val TRICORN_CENTER_OFFSET_RE = -0.06
-    private const val TRICORN_CENTER_OFFSET_IM = -0.12
+    /** Visual tuning: Tricorn bias vs Mandelbrot anchor (tune for denser set in frame). */
+    private const val TRICORN_CENTER_OFFSET_RE = -0.10
+    private const val TRICORN_CENTER_OFFSET_IM = -0.20
+    /** Visual tuning: pull Newton (z^d−1 basins) toward z≈0 vs Mandelbrot-anchored center. */
+    private const val NEWTON_CENTER_OFFSET_RE = 1.12
+    private const val NEWTON_CENTER_OFFSET_IM = 0.16
 
     /** Dominant weight for session-relative zoom vs global ln(sdNew) band. */
     private const val W_SESSION_SPAN = 0.88
@@ -144,6 +147,10 @@ object MandelbrotEscapeRenderer {
             FractalPlotKind.Tricorn -> {
                 centerRe += TRICORN_CENTER_OFFSET_RE
                 centerIm += TRICORN_CENTER_OFFSET_IM
+            }
+            FractalPlotKind.Newton -> {
+                centerRe += NEWTON_CENTER_OFFSET_RE
+                centerIm += NEWTON_CENTER_OFFSET_IM
             }
             else -> Unit
         }
