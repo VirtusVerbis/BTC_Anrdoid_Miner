@@ -8,6 +8,14 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <View
+        android:id="@+id/best_difficulty_chart_tap_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent"
+        android:clickable="true"
+        android:focusable="true" />
+
     <TextView
         android:id="@+id/best_diff_chart_mode_title"
         android:layout_width="wrap_content"

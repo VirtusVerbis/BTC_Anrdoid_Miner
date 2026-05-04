@@ -5,7 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.content.ServiceConnection
 import android.content.res.Configuration
 import android.graphics.Bitmap
@@ -79,6 +78,7 @@ import java.math.BigDecimal
 import kotlin.math.ln
 import kotlin.math.log10
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import java.net.URLEncoder
 import java.util.ArrayDeque
 import java.util.Locale
@@ -107,7 +107,6 @@ class MainActivity : AppCompatActivity() {
         private const val STATE_HASH_CHART_MODE = "hashChartMode"
         private const val STATE_BEST_DIFF_CHART_X_MODE = "bestDiffChartXMode"
 
-        private const val BEST_DIFF_CHART_EPS_SEC = 1e-3
         private const val BEST_DIFF_CHART_EPS_DIFF = 1e-18
 
         private const val MANDEL_MAX_BITMAP_DIM = 512
@@ -129,23 +128,21 @@ class MainActivity : AppCompatActivity() {
     private var hashChartMode = HashChartMode.TwoMinute
 
     private enum class BestDifficultyChartXMode {
-        LifetimeRelativeLog,
+        HistoricalLinear,
         SessionElapsedLinear,
         ;
 
         fun toggle(): BestDifficultyChartXMode = when (this) {
-            LifetimeRelativeLog -> SessionElapsedLinear
-            SessionElapsedLinear -> LifetimeRelativeLog
+            HistoricalLinear -> SessionElapsedLinear
+            SessionElapsedLinear -> HistoricalLinear
         }
     }
 
-    private var bestDifficultyChartXMode = BestDifficultyChartXMode.LifetimeRelativeLog
+    private var bestDifficultyChartXMode = BestDifficultyChartXMode.HistoricalLinear
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var configRepository: MiningConfigRepository
     private val statsRepository by lazy { MiningStatsRepository(applicationContext) }
-
-    private val appFirstInstallTimeMs: Long by lazy { computeFirstInstallTimeMs() }
 
     private var page1Fragment: DashboardStatsPage1Fragment? = null
     private var page2Fragment: DashboardStatsPage2Fragment? = null
@@ -367,8 +364,11 @@ class MainActivity : AppCompatActivity() {
             hashChartMode = runCatching { HashChartMode.valueOf(saved) }.getOrDefault(HashChartMode.TwoMinute)
         }
         savedInstanceState?.getString(STATE_BEST_DIFF_CHART_X_MODE)?.let { saved ->
-            bestDifficultyChartXMode = runCatching { BestDifficultyChartXMode.valueOf(saved) }
-                .getOrDefault(BestDifficultyChartXMode.LifetimeRelativeLog)
+            bestDifficultyChartXMode = when (saved) {
+                "LifetimeRelativeLog" -> BestDifficultyChartXMode.HistoricalLinear
+                else -> runCatching { BestDifficultyChartXMode.valueOf(saved) }
+                    .getOrDefault(BestDifficultyChartXMode.HistoricalLinear)
+            }
         }
         configRepository = MiningConfigRepository(applicationContext)
 
@@ -706,22 +706,13 @@ class MainActivity : AppCompatActivity() {
         chart.setPinchZoom(false)
         chart.isHighlightPerTapEnabled = false
         chart.isHighlightPerDragEnabled = false
-        chart.setExtraOffsets(8f, 8f, 8f, 8f)
-        chart.setOnChartGestureListener(object : OnChartGestureListener {
-            override fun onChartGestureStart(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
-            override fun onChartGestureEnd(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
-            override fun onChartLongPressed(me: MotionEvent?) {}
-            override fun onChartDoubleTapped(me: MotionEvent?) {}
-            override fun onChartSingleTapped(me: MotionEvent?) {
-                bestDifficultyChartXMode = bestDifficultyChartXMode.toggle()
-                refreshBestDifficultyChart()
-            }
-
-            override fun onChartFling(me1: MotionEvent?, me2: MotionEvent?, velocityX: Float, velocityY: Float) {}
-            override fun onChartScale(me: MotionEvent?, scaleX: Float, scaleY: Float) {}
-            override fun onChartTranslate(me: MotionEvent?, dX: Float, dY: Float) {}
-        })
-        chart.contentDescription = getString(R.string.best_difficulty_chart_a11y_toggle_hint)
+        chart.xAxis.labelRotationAngle = -45f
+        chart.setExtraOffsets(8f, 8f, 24f, 8f)
+        chart.setOnChartGestureListener(null)
+        val tapHint = getString(R.string.best_difficulty_chart_a11y_toggle_hint)
+        chart.contentDescription = tapHint
+        cb.bestDifficultyChartTapOverlay.contentDescription = tapHint
+        cb.bestDifficultyChartTapOverlay.setOnClickListener { toggleBestDifficultyChartMode() }
         refreshBestDifficultyChart()
     }
 
@@ -1248,21 +1239,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun computeFirstInstallTimeMs(): Long {
-        return try {
-            val pm = packageManager
-            val pkg = packageName
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0)).firstInstallTime
-            } else {
-                @Suppress("DEPRECATION")
-                pm.getPackageInfo(pkg, 0).firstInstallTime
-            }
-        } catch (_: Exception) {
-            0L
-        }
-    }
-
     private fun formatRelativeDurationAxis(sec: Double): String {
         val s = sec.toLong().coerceAtLeast(0L)
         val d = s / 86400L
@@ -1272,6 +1248,28 @@ class MainActivity : AppCompatActivity() {
         } else {
             formatElapsedChartAxisSeconds(sec.toFloat())
         }
+    }
+
+    /** X-axis labels for best-difficulty ordinal charts; [spanSec] picks compact style. */
+    private fun formatBestDiffAxisElapsedSec(elapsedSec: Double, spanSec: Double): String {
+        val esp = elapsedSec.coerceAtLeast(0.0)
+        val span = spanSec.coerceAtLeast(0.0)
+        val s = esp.toLong()
+        if (span >= 86400.0) {
+            val d = s / 86400L
+            val h = (s % 86400L) / 3600L
+            return String.format(Locale.US, "%dd %dh", d, h)
+        }
+        if (span > 600.0) {
+            val h = s / 3600L
+            val m = (s % 3600L) / 60L
+            return if (h > 0L) {
+                String.format(Locale.US, "%d:%02d", h, m)
+            } else {
+                String.format(Locale.US, "%dm", m)
+            }
+        }
+        return formatElapsedChartAxisSeconds(esp.toFloat())
     }
 
     private fun formatDifficultyChartAxis(d: Double): String =
@@ -1293,23 +1291,17 @@ class MainActivity : AppCompatActivity() {
         updateBestDifficultyChart(events, sessionStart)
     }
 
+    private fun toggleBestDifficultyChartMode() {
+        bestDifficultyChartXMode = bestDifficultyChartXMode.toggle()
+        refreshBestDifficultyChart()
+    }
+
     private fun updateBestDifficultyChart(events: List<BestDifficultyChartEvent>, currentSessionStartMs: Long?) {
         val cb = chartBestDifficultyFragment?.chartBinding ?: return
         val chart = cb.bestDifficultyChart
         val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
         val orange = ContextCompat.getColor(this, R.color.bitcoin_orange)
         val green = Color.parseColor("#4CAF50")
-
-        if (events.isEmpty()) {
-            chart.data = null
-            cb.bestDiffChartModeTitle.visibility = View.GONE
-            chart.invalidate()
-            return
-        }
-
-        val installMs = appFirstInstallTimeMs.takeIf { it > 0L }
-            ?: events.minOfOrNull { it.tWallMs }?.coerceAtLeast(0L)
-            ?: System.currentTimeMillis()
 
         val diffAxisFormatter = object : ValueFormatter() {
             override fun getFormattedValue(value: Float): String {
@@ -1319,76 +1311,104 @@ class MainActivity : AppCompatActivity() {
         }
 
         when (bestDifficultyChartXMode) {
-            BestDifficultyChartXMode.LifetimeRelativeLog -> {
-                chart.legend.isEnabled = true
-                chart.xAxis.valueFormatter = object : ValueFormatter() {
-                    override fun getFormattedValue(value: Float): String {
-                        val sec = 10.0.pow(value.toDouble()).coerceAtLeast(BEST_DIFF_CHART_EPS_SEC)
-                        return formatRelativeDurationAxis(sec)
-                    }
-                }
-                chart.xAxis.isGranularityEnabled = false
+            BestDifficultyChartXMode.HistoricalLinear -> {
                 chart.axisLeft.valueFormatter = diffAxisFormatter
 
-                val orangeEntries = ArrayList<Entry>(events.size)
-                val greenEntries = ArrayList<Entry>()
-                for (e in events) {
-                    val relSec = ((e.tWallMs - installMs) / 1000.0).coerceAtLeast(BEST_DIFF_CHART_EPS_SEC)
-                    val lx = log10(relSec).toFloat()
-                    val ly = log10(e.difficulty.coerceAtLeast(BEST_DIFF_CHART_EPS_DIFF)).toFloat()
-                    orangeEntries.add(Entry(lx, ly))
-                    if (currentSessionStartMs != null && e.sessionStartWallMs == currentSessionStartMs) {
-                        greenEntries.add(Entry(lx, ly))
-                    }
-                }
-                val orangeSet = ScatterDataSet(orangeEntries, getString(R.string.best_difficulty_chart_legend_all)).apply {
-                    color = orange
-                    scatterShapeSize = 7f
-                    setScatterShape(ScatterChart.ScatterShape.CIRCLE)
-                }
-                chart.data = if (greenEntries.isEmpty()) {
-                    ScatterData(orangeSet)
+                if (events.isEmpty()) {
+                    chart.data = null
+                    chart.xAxis.resetAxisMinimum()
+                    chart.xAxis.resetAxisMaximum()
+                    chart.xAxis.isGranularityEnabled = false
                 } else {
-                    val greenSet = ScatterDataSet(greenEntries, getString(R.string.best_difficulty_chart_legend_session)).apply {
-                        color = green
-                        scatterShapeSize = 9f
-                        setScatterShape(ScatterChart.ScatterShape.CIRCLE)
+                    val t0Ms = events.first().tWallMs
+                    val spanSec = ((events.last().tWallMs - t0Ms) / 1000.0).coerceAtLeast(0.0)
+                    chart.xAxis.valueFormatter = object : ValueFormatter() {
+                        override fun getFormattedValue(value: Float): String {
+                            val idx = value.roundToInt().coerceIn(0, events.lastIndex)
+                            val el = (events[idx].tWallMs - t0Ms) / 1000.0
+                            return formatBestDiffAxisElapsedSec(el, spanSec)
+                        }
                     }
-                    ScatterData(orangeSet, greenSet)
+
+                    val orangeEntries = ArrayList<Entry>(events.size)
+                    val greenEntries = ArrayList<Entry>()
+                    events.forEachIndexed { i, e ->
+                        val ly = log10(e.difficulty.coerceAtLeast(BEST_DIFF_CHART_EPS_DIFF)).toFloat()
+                        orangeEntries.add(Entry(i.toFloat(), ly))
+                        if (currentSessionStartMs != null && e.sessionStartWallMs == currentSessionStartMs) {
+                            greenEntries.add(Entry(i.toFloat(), ly))
+                        }
+                    }
+
+                    val orangeSet = ScatterDataSet(orangeEntries, getString(R.string.best_difficulty_chart_legend_all)).apply {
+                        color = orange
+                        scatterShapeSize = 7f
+                        setScatterShape(ScatterChart.ScatterShape.CIRCLE)
+                        setDrawValues(false)
+                    }
+                    chart.data = if (greenEntries.isEmpty()) {
+                        ScatterData(orangeSet)
+                    } else {
+                        val greenSet = ScatterDataSet(greenEntries, getString(R.string.best_difficulty_chart_legend_session)).apply {
+                            color = green
+                            scatterShapeSize = 9f
+                            setScatterShape(ScatterChart.ScatterShape.CIRCLE)
+                            setDrawValues(false)
+                        }
+                        ScatterData(orangeSet, greenSet)
+                    }
+
+                    val n = events.size
+                    chart.xAxis.axisMinimum = 0f
+                    chart.xAxis.axisMaximum = (n - 1).coerceAtLeast(0).toFloat() + 0.5f
+                    chart.xAxis.isGranularityEnabled = true
+                    chart.xAxis.granularity = 1f
+                    chart.xAxis.setLabelCount(minOf(6, maxOf(2, n)), false)
                 }
                 cb.bestDiffChartModeTitle.text = getString(R.string.best_difficulty_chart_title_lifetime)
             }
             BestDifficultyChartXMode.SessionElapsedLinear -> {
+                chart.xAxis.resetAxisMinimum()
+                chart.xAxis.resetAxisMaximum()
                 chart.axisLeft.valueFormatter = diffAxisFormatter
+
                 if (currentSessionStartMs == null) {
                     chart.data = null
-                    chart.legend.isEnabled = false
-                    cb.bestDiffChartModeTitle.visibility = View.VISIBLE
-                    cb.bestDiffChartModeTitle.text = getString(R.string.best_difficulty_chart_title_session)
-                    cb.bestDiffChartModeTitle.setTextColor(chartTextColor)
-                    chart.invalidate()
-                    return
-                }
-                chart.legend.isEnabled = true
-                chart.xAxis.valueFormatter = object : ValueFormatter() {
-                    override fun getFormattedValue(value: Float): String = formatElapsedChartAxisSeconds(value)
-                }
-                chart.xAxis.isGranularityEnabled = false
-                val sessionEvents = events.filter { it.sessionStartWallMs == currentSessionStartMs }
-                val greenEntries = sessionEvents.map { e ->
-                    val elapsedSec = ((e.tWallMs - currentSessionStartMs) / 1000f).coerceAtLeast(0f)
-                    val ly = log10(e.difficulty.coerceAtLeast(BEST_DIFF_CHART_EPS_DIFF)).toFloat()
-                    Entry(elapsedSec, ly)
-                }
-                chart.data = if (greenEntries.isEmpty()) {
-                    null
+                    chart.xAxis.isGranularityEnabled = false
                 } else {
-                    val greenSet = ScatterDataSet(greenEntries, getString(R.string.best_difficulty_chart_legend_session)).apply {
-                        color = green
-                        scatterShapeSize = 9f
-                        setScatterShape(ScatterChart.ScatterShape.CIRCLE)
+                    val sessionStart = currentSessionStartMs
+                    val sessionEvents = events.filter { it.sessionStartWallMs == sessionStart }
+                    val greenEntries = ArrayList<Entry>(sessionEvents.size)
+                    for ((i, e) in sessionEvents.withIndex()) {
+                        val ly = log10(e.difficulty.coerceAtLeast(BEST_DIFF_CHART_EPS_DIFF)).toFloat()
+                        greenEntries.add(Entry(i.toFloat(), ly))
                     }
-                    ScatterData(greenSet)
+                    if (greenEntries.isEmpty()) {
+                        chart.data = null
+                        chart.xAxis.isGranularityEnabled = false
+                    } else {
+                        val spanSec = ((sessionEvents.last().tWallMs - sessionStart) / 1000.0).coerceAtLeast(0.0)
+                        chart.xAxis.valueFormatter = object : ValueFormatter() {
+                            override fun getFormattedValue(value: Float): String {
+                                val idx = value.roundToInt().coerceIn(0, sessionEvents.lastIndex)
+                                val el = (sessionEvents[idx].tWallMs - sessionStart) / 1000.0
+                                return formatBestDiffAxisElapsedSec(el, spanSec)
+                            }
+                        }
+                        val greenSet = ScatterDataSet(greenEntries, getString(R.string.best_difficulty_chart_legend_session)).apply {
+                            color = green
+                            scatterShapeSize = 9f
+                            setScatterShape(ScatterChart.ScatterShape.CIRCLE)
+                            setDrawValues(false)
+                        }
+                        chart.data = ScatterData(greenSet)
+                        val m = sessionEvents.size
+                        chart.xAxis.axisMinimum = 0f
+                        chart.xAxis.axisMaximum = (m - 1).coerceAtLeast(0).toFloat() + 0.5f
+                        chart.xAxis.isGranularityEnabled = true
+                        chart.xAxis.granularity = 1f
+                        chart.xAxis.setLabelCount(minOf(6, maxOf(2, m)), false)
+                    }
                 }
                 cb.bestDiffChartModeTitle.text = getString(R.string.best_difficulty_chart_title_session)
             }

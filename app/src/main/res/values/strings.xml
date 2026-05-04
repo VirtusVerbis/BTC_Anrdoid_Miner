@@ -105,11 +105,11 @@
     <string name="hash_chart_title_2min">2 min</string>
     <string name="hash_chart_title_session">Session</string>
     <string name="hash_chart_a11y_toggle_hint">Hash rate chart. Tap to switch between 2 minute and session history.</string>
-    <string name="best_difficulty_chart_title_lifetime">Lifetime (log)</string>
+    <string name="best_difficulty_chart_title_lifetime">History</string>
     <string name="best_difficulty_chart_title_session">Session</string>
     <string name="best_difficulty_chart_legend_all">All time</string>
     <string name="best_difficulty_chart_legend_session">This session</string>
-    <string name="best_difficulty_chart_a11y_toggle_hint">Best difficulty chart. Tap to switch between lifetime log scale and session elapsed time.</string>
+    <string name="best_difficulty_chart_a11y_toggle_hint">Best difficulty chart. Tap to switch between history (event order, wall-clock gaps not shown) and this session (improvements in order).</string>
     <string name="mandelbrot_chart_placeholder">Mandelbrot art appears when session best difficulty improves while mining.</string>
     <string name="fractal_chart_caption_pattern">%1$s · tap to cycle</string>
     <string name="fractal_name_mandelbrot">Mandelbrot</string>
