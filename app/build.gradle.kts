@@ -46,6 +46,11 @@ android {
         viewBinding = true
         buildConfig = true
     }
+    sourceSets {
+        getByName("main") {
+            assets.srcDirs("src/assets", "src/main/assets")
+        }
+    }
 }
 
 dependencies {

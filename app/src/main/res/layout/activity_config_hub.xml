@@ -25,4 +25,11 @@
         android:textColor="@color/black"
         app:backgroundTint="@color/bitcoin_orange" />
 
+    <com.google.android.material.switchmaterial.SwitchMaterial
+        android:id="@+id/switch_hub_digital_rain_master"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="@string/digital_rain_master_switch_label" />
+
 </LinearLayout>

@@ -1,10 +1,11 @@
 /*
- * OpenGL ES 2.0 Digital Rain: atlas-textured monospace glyphs (parity with DigitalRainView).
+ * OpenGL ES 2.0 Digital Rain: atlas-textured glyphs (parity with DigitalRainView typeface/atlas).
  */
 
 package com.btcminer.android.ui.digitalrain.gl
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
@@ -13,6 +14,7 @@ import android.opengl.Matrix
 import android.os.SystemClock
 import android.util.Log
 import com.btcminer.android.ui.digitalrain.DigitalRainAnimMode
+import com.btcminer.android.ui.digitalrain.DigitalRainGlyphAtlasMode
 import com.btcminer.android.ui.digitalrain.DigitalRainGlyphSampling
 import com.btcminer.android.ui.digitalrain.DigitalRainMessageGlyphSource
 import com.btcminer.android.ui.digitalrain.DigitalRainSettings
@@ -76,6 +78,12 @@ class DigitalRainGlRenderer(
 
     private var vertexBuffer: FloatBuffer = allocateFloatBuffer(INITIAL_FLOAT_CAPACITY)
     private var vertexCount = 0
+
+    /** Cached supported glyph pools (GPU atlas keys). */
+    private var bvfBodyPool: CharArray = charArrayOf()
+    private var bvfKeyPool: CharArray = charArrayOf()
+    private var bvfBodyUvPool: Array<FloatArray> = emptyArray()
+    private var bvfKeyUvPool: Array<FloatArray> = emptyArray()
 
     fun applySettings(newSettings: DigitalRainSettings) {
         settings = DigitalRainSettingsRepository.normalize(newSettings)
@@ -183,8 +191,10 @@ class DigitalRainGlRenderer(
 
     private fun ensureAtlasReady(): Boolean {
         val key = atlasCacheKey()
-        if (atlasUploaded && key == atlasKeyCached && charToUv.isNotEmpty() && textureId != 0) {
-            return true
+        if (atlasUploaded && key == atlasKeyCached && charToUv.isNotEmpty() && textureId != 0) return true
+
+        if (settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
+            return ensureBundledBitcoinVsFiatAtlasReady(key)
         }
 
         val maxSize = IntArray(1)
@@ -197,8 +207,13 @@ class DigitalRainGlRenderer(
         }
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        val filter = if (settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
+            GLES20.GL_NEAREST
+        } else {
+            GLES20.GL_LINEAR
+        }
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, filter)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, filter)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, built.bitmap, 0)
@@ -208,12 +223,86 @@ class DigitalRainGlRenderer(
         fallbackChar = built.fallbackChar
         atlasKeyCached = key
         atlasUploaded = true
+
+        // Update supported pools from atlas keys.
+        val keys = charToUv.keys
+        bvfBodyPool = keys
+            .asSequence()
+            .filter { it != built.fallbackChar }
+            .toList()
+            .toCharArray()
+        val keySet = charArrayOf('\u20BF', '\u26A1').toSet()
+        bvfKeyPool = keys
+            .asSequence()
+            .filter { it in keySet }
+            .toList()
+            .toCharArray()
+
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
         return true
     }
 
+    private fun ensureBundledBitcoinVsFiatAtlasReady(key: Int): Boolean {
+        try {
+            val decoded = context.assets.open(BitcoinVsFiatAtlasManifest.ASSET_PATH).use { stream ->
+                BitmapFactory.decodeStream(stream)
+            }
+            if (decoded == null) {
+                Log.e(TAG, "Failed to decode bundled atlas: ${BitcoinVsFiatAtlasManifest.ASSET_PATH}")
+                postGpuFailure()
+                return false
+            }
+            if (decoded.width != BitcoinVsFiatAtlasManifest.TEXTURE_WIDTH ||
+                decoded.height != BitcoinVsFiatAtlasManifest.TEXTURE_HEIGHT
+            ) {
+                Log.e(
+                    TAG,
+                    "Bundled atlas size ${decoded.width}x${decoded.height} does not match " +
+                        "spec ${BitcoinVsFiatAtlasManifest.TEXTURE_WIDTH}x${BitcoinVsFiatAtlasManifest.TEXTURE_HEIGHT}",
+                )
+                decoded.recycle()
+                postGpuFailure()
+                return false
+            }
+            val manifest = BitcoinVsFiatAtlasManifest.buildForSettings(settings, lineWidthPx, letterHeightPx)
+            if (manifest.charToUv.isEmpty()) {
+                Log.e(TAG, "BVF manifest has empty charToUv")
+                decoded.recycle()
+                postGpuFailure()
+                return false
+            }
+
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, decoded, 0)
+            decoded.recycle()
+
+            charToUv = manifest.charToUv
+            fallbackChar = manifest.fallbackChar
+            atlasKeyCached = key
+            atlasUploaded = true
+
+            bvfBodyUvPool = manifest.bodyUvPool
+            bvfKeyUvPool = manifest.keyUvPool
+            bvfBodyPool = charArrayOf()
+            bvfKeyPool = charArrayOf('\u20BF', '\u26A1')
+
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+            return true
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to load bundled BVF atlas", t)
+            postGpuFailure()
+            return false
+        }
+    }
+
     private fun atlasCacheKey(): Int {
-        var h = settings.alphabetOnly.hashCode()
+        var h = settings.glyphAtlasMode.ordinal
+        h = 31 * h + settings.showcaseMessage.hashCode()
+        h = 31 * h + settings.alphabetOnly.hashCode()
         h = 31 * h + settings.asciiRange1Start
         h = 31 * h + settings.asciiRange1End
         h = 31 * h + settings.asciiRange2Start
@@ -267,6 +356,14 @@ class DigitalRainGlRenderer(
 
     private fun uvForChar(ch: Char): FloatArray =
         charToUv[ch] ?: charToUv[fallbackChar] ?: floatArrayOf(0f, 0f, 1f, 1f)
+
+    private fun randomFromPool(pool: CharArray): Char {
+        if (pool.isEmpty()) return fallbackChar
+        return pool[rng.nextInt(pool.size)]
+    }
+
+    private fun randomUvFromPool(pool: Array<FloatArray>): FloatArray =
+        if (pool.isEmpty()) uvForChar(fallbackChar) else pool[rng.nextInt(pool.size)]
 
     private fun rainTickFrameMs(): Long = settings.matrixFrameMs
 
@@ -353,36 +450,48 @@ class DigitalRainGlRenderer(
                 }
                 val yT = linePos[i] + currentY
                 val yB = yT + letterH
-                val ch = when (runtimeMode) {
-                    DigitalRainAnimMode.MATRIX -> DigitalRainGlyphSampling.randomGlyphChar(rng, settings)
-                    DigitalRainAnimMode.TEXT -> DigitalRainMessageGlyphSource.messageCharLooped(message, phase + j)
+                val uv = when (runtimeMode) {
+                    DigitalRainAnimMode.MATRIX,
+                    DigitalRainAnimMode.TEXT,
+                    -> if (settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
+                        if (isKeyColumn) randomUvFromPool(bvfKeyUvPool) else randomUvFromPool(bvfBodyUvPool)
+                    } else {
+                        val ch = if (runtimeMode == DigitalRainAnimMode.MATRIX) {
+                            DigitalRainGlyphSampling.randomGlyphChar(rng, settings)
+                        } else {
+                            DigitalRainMessageGlyphSource.messageCharLooped(message, phase + j)
+                        }
+                        uvForChar(ch)
+                    }
                     DigitalRainAnimMode.SHOWCASE -> {
                         if (cursor >= message.length) exhausted = true
                         val (nextCh, nextCursor) = DigitalRainMessageGlyphSource.nextGlyphOrSpace(message, cursor)
                         cursor = nextCursor
-                        nextCh
+                        uvForChar(nextCh)
                     }
                 }
-                floatsWritten += writeTexturedGlyphQuad(xL, yT, xR, yB, uvForChar(ch), bodyColor)
+                floatsWritten += writeTexturedGlyphQuad(xL, yT, xR, yB, uv, bodyColor)
                 currentY += letterH
             }
 
-            val headCh = when (runtimeMode) {
-                DigitalRainAnimMode.MATRIX -> if (isKeyColumn) {
-                    keyHead
-                } else {
-                    DigitalRainGlyphSampling.randomGlyphChar(rng, settings)
+            val headUv = when (runtimeMode) {
+                DigitalRainAnimMode.MATRIX -> when {
+                    isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                        randomUvFromPool(bvfKeyUvPool)
+                    isKeyColumn -> uvForChar(keyHead)
+                    else -> if (settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) randomUvFromPool(bvfBodyUvPool) else uvForChar(DigitalRainGlyphSampling.randomGlyphChar(rng, settings))
                 }
-                DigitalRainAnimMode.TEXT -> if (isKeyColumn) {
-                    keyHead
-                } else {
-                    DigitalRainMessageGlyphSource.messageCharLooped(message, phase + len)
+                DigitalRainAnimMode.TEXT -> when {
+                    isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                        randomUvFromPool(bvfKeyUvPool)
+                    isKeyColumn -> uvForChar(keyHead)
+                    else -> if (settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) randomUvFromPool(bvfBodyUvPool) else uvForChar(DigitalRainMessageGlyphSource.messageCharLooped(message, phase + len))
                 }
                 DigitalRainAnimMode.SHOWCASE -> {
                     if (cursor >= message.length) exhausted = true
                     val (nextCh, nextCursor) = DigitalRainMessageGlyphSource.nextGlyphOrSpace(message, cursor)
                     cursor = nextCursor
-                    nextCh
+                    uvForChar(nextCh)
                 }
             }
             floatsWritten += writeTexturedGlyphQuad(
@@ -390,7 +499,7 @@ class DigitalRainGlRenderer(
                 linePos[i] + currentY,
                 xR,
                 linePos[i] + currentY + letterH,
-                uvForChar(headCh),
+                headUv,
                 Triple(headR, headG, headB),
             )
             advanceColumn(i)
@@ -524,7 +633,7 @@ class DigitalRainGlRenderer(
         if (selectionCount <= 0) return
         val selectedColumns = (0 until numColumns).toMutableList().apply { shuffle(rng) }.take(selectionCount)
         for (columnIndex in selectedColumns) {
-            columnKeyHeadChar[columnIndex] = DigitalRainGlyphSampling.randomAbcChar(rng)
+            columnKeyHeadChar[columnIndex] = DigitalRainGlyphSampling.randomKeyHeadChar(rng, settings)
         }
     }
 
@@ -563,7 +672,7 @@ class DigitalRainGlRenderer(
         available.shuffle(rng)
         var ai = 0
         while (active < target && ai < available.size) {
-            columnKeyHeadChar[available[ai]] = DigitalRainGlyphSampling.randomAbcChar(rng)
+            columnKeyHeadChar[available[ai]] = DigitalRainGlyphSampling.randomKeyHeadChar(rng, settings)
             ai++
             active++
         }
@@ -768,7 +877,7 @@ class DigitalRainGlRenderer(
             varying vec2 v_TexCoord;
             varying vec4 v_Color;
             void main() {
-                vec4 tex = texture2D(u_Texture, vec2(v_TexCoord.x, 1.0 - v_TexCoord.y));
+                vec4 tex = texture2D(u_Texture, v_TexCoord);
                 gl_FragColor = tex * v_Color;
             }
         """

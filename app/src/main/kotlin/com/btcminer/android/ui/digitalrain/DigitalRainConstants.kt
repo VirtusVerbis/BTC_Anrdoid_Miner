@@ -23,6 +23,9 @@ object DigitalRainConstants {
     /** Active animation mode default. */
     val ANIM_MODE: DigitalRainAnimMode = DigitalRainAnimMode.MATRIX
 
+    /** Matrix = ASCII sliders; Bitcoin vs Fiat = Unicode currency / ₿ / ⚡ pool. */
+    val GLYPH_ATLAS_MODE: DigitalRainGlyphAtlasMode = DigitalRainGlyphAtlasMode.MATRIX
+
     // --- Geometry (Arduino DEFAULT_* / setBigText) ---
     const val DEFAULT_LINE_WIDTH = 12
     const val DEFAULT_LETTER_HEIGHT = 14

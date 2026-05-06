@@ -1,5 +1,5 @@
 /*
- * Monospace glyph atlas for GLES Digital Rain (matches Canvas font metrics).
+ * Glyph atlas for GLES Digital Rain (typeface matches Canvas via [DigitalRainGlyphTypography]).
  */
 
 package com.btcminer.android.ui.digitalrain.gl
@@ -8,8 +8,11 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Typeface
 import android.util.Log
+import com.btcminer.android.ui.digitalrain.DigitalRainGlyphCharsets
+import com.btcminer.android.ui.digitalrain.DigitalRainGlyphTypography
+import com.btcminer.android.ui.digitalrain.DigitalRainGlyphAtlasMode
+import com.btcminer.android.ui.digitalrain.DigitalRainMessageGlyphSource
 import com.btcminer.android.ui.digitalrain.DigitalRainSettings
 import kotlin.math.ceil
 import kotlin.math.max
@@ -26,16 +29,17 @@ object RainGlyphAtlas {
         val fallbackChar: Char,
     )
 
-    /** Characters that may appear in matrix cells (plus fallback glyph). */
-    fun charsetForSettings(settings: DigitalRainSettings): List<Char> =
-        if (settings.alphabetOnly) {
-            ('A'..'Z').toList() + ('a'..'z').toList()
-        } else {
-            buildSet {
-                for (c in settings.asciiRange1Start until settings.asciiRange1End) add(c.toChar())
-                for (c in settings.asciiRange2Start until settings.asciiRange2End) add(c.toChar())
-            }.sorted()
+    /** Matrix body charset plus showcase/TEXT message code units for GPU atlas coverage. */
+    fun charsetForSettings(settings: DigitalRainSettings): List<Char> {
+        val base = when (settings.glyphAtlasMode) {
+            DigitalRainGlyphAtlasMode.MATRIX ->
+                DigitalRainGlyphCharsets.matrixCharsetForSettings(settings)
+            DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                DigitalRainGlyphCharsets.bitcoinVsFiatMatrixChars().distinct().sorted()
         }
+        val msg = DigitalRainMessageGlyphSource.sanitizeMessage(settings.showcaseMessage)
+        return (base.toSet() + msg.toSet()).sorted()
+    }
 
     fun glyphTextSizePx(settings: DigitalRainSettings, lineWidthPx: Int, letterHeightPx: Int): Float =
         max(
@@ -45,6 +49,23 @@ object RainGlyphAtlas {
                 else settings.fontScale * 0.42f
                 ),
         )
+
+    /** Final ordered chars used for atlas population (post-hasGlyph filter + fallback). */
+    fun resolvedCharsForSettings(
+        settings: DigitalRainSettings,
+        lineWidthPx: Int,
+        letterHeightPx: Int,
+    ): List<Char> {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = DigitalRainGlyphTypography.typefaceFor(settings)
+            style = Paint.Style.FILL
+            color = Color.WHITE
+            textSize = glyphTextSizePx(settings, lineWidthPx, letterHeightPx)
+        }
+        val baseChars = charsetForSettings(settings)
+        val supported = baseChars.filter { paint.hasGlyph(it.toString()) }
+        return (supported + '?').distinct().sorted()
+    }
 
     /**
      * @param maxTextureSize from GLES GL_MAX_TEXTURE_SIZE; rejects oversize atlases.
@@ -56,15 +77,14 @@ object RainGlyphAtlas {
         maxTextureSize: Int,
     ): BuiltAtlas? {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = Typeface.MONOSPACE
+            typeface = DigitalRainGlyphTypography.typefaceFor(settings)
             style = Paint.Style.FILL
             color = Color.WHITE
             textSize = glyphTextSizePx(settings, lineWidthPx, letterHeightPx)
         }
         val fm = paint.fontMetrics
 
-        val baseChars = charsetForSettings(settings)
-        val chars = (baseChars + '?').distinct().sorted()
+        val chars = resolvedCharsForSettings(settings, lineWidthPx, letterHeightPx)
         if (chars.isEmpty()) {
             Log.e(TAG, "empty charset")
             return null

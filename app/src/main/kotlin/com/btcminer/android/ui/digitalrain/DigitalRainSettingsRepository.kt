@@ -14,9 +14,13 @@ class DigitalRainSettingsRepository(context: Context) {
         val animOrdinal = prefs.getInt(KEY_ANIM_MODE, d.animMode.ordinal)
             .coerceIn(0, DigitalRainAnimMode.entries.lastIndex)
         val animMode = DigitalRainAnimMode.entries[animOrdinal]
+        val atlasOrdinal = prefs.getInt(KEY_GLYPH_ATLAS_MODE, d.glyphAtlasMode.ordinal)
+            .coerceIn(0, DigitalRainGlyphAtlasMode.entries.lastIndex)
+        val glyphAtlasMode = DigitalRainGlyphAtlasMode.entries[atlasOrdinal]
         return normalize(
             DigitalRainSettings(
                 animMode = animMode,
+                glyphAtlasMode = glyphAtlasMode,
                 defaultLineWidth = prefs.getInt(KEY_LINE_WIDTH, d.defaultLineWidth),
                 defaultLetterHeight = prefs.getInt(KEY_LETTER_HEIGHT, d.defaultLetterHeight),
                 fontScale = prefs.getInt(KEY_FONT_SCALE, d.fontScale),
@@ -60,6 +64,7 @@ class DigitalRainSettingsRepository(context: Context) {
         val n = normalize(settings)
         prefs.edit().apply {
             putInt(KEY_ANIM_MODE, n.animMode.ordinal)
+            putInt(KEY_GLYPH_ATLAS_MODE, n.glyphAtlasMode.ordinal)
             putInt(KEY_LINE_WIDTH, n.defaultLineWidth)
             putInt(KEY_LETTER_HEIGHT, n.defaultLetterHeight)
             putInt(KEY_FONT_SCALE, n.fontScale)
@@ -108,6 +113,7 @@ class DigitalRainSettingsRepository(context: Context) {
         private const val PREFS_NAME = "digital_rain_settings"
 
         private const val KEY_ANIM_MODE = "anim_mode"
+        private const val KEY_GLYPH_ATLAS_MODE = "glyph_atlas_mode"
         private const val KEY_LINE_WIDTH = "line_width"
         private const val KEY_LETTER_HEIGHT = "letter_height"
         private const val KEY_FONT_SCALE = "font_scale"
@@ -165,8 +171,11 @@ class DigitalRainSettingsRepository(context: Context) {
             val (r2s, r2e) = clampAscii(s.asciiRange2Start, s.asciiRange2End)
 
             val msg = s.showcaseMessage.take(SHOWCASE_MESSAGE_MAX_LEN)
+            val atlasOrdinal = s.glyphAtlasMode.ordinal.coerceIn(0, DigitalRainGlyphAtlasMode.entries.lastIndex)
+            val glyphAtlasMode = DigitalRainGlyphAtlasMode.entries[atlasOrdinal]
 
             return s.copy(
+                glyphAtlasMode = glyphAtlasMode,
                 defaultLineWidth = s.defaultLineWidth.coerceIn(LINE_WIDTH_MIN, LINE_WIDTH_MAX),
                 defaultLetterHeight = s.defaultLetterHeight.coerceIn(LETTER_HEIGHT_MIN, LETTER_HEIGHT_MAX),
                 fontScale = s.fontScale.coerceIn(FONT_SCALE_MIN, FONT_SCALE_MAX),

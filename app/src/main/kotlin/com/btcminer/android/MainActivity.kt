@@ -379,11 +379,18 @@ class MainActivity : AppCompatActivity() {
         syncRainBackdropBackend()
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
             stopRainBackdrop()
-            startRainBackdrop()
+            if (isDigitalRainMasterEnabled()) {
+                startRainBackdrop()
+            }
         }
     }
 
     private fun syncRainBackdropBackend() {
+        if (!isDigitalRainMasterEnabled()) {
+            binding.digitalRainView.visibility = View.GONE
+            binding.digitalRainGlView.visibility = View.GONE
+            return
+        }
         val useGpu = DigitalRainPreferences(applicationContext).getRenderBackend() ==
             DigitalRainRenderBackend.OPENGL_GPU
         binding.digitalRainView.visibility = if (useGpu) View.GONE else View.VISIBLE
@@ -391,6 +398,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRainBackdrop() {
+        if (!isDigitalRainMasterEnabled()) {
+            stopRainBackdrop()
+            return
+        }
         val useGpu = DigitalRainPreferences(applicationContext).getRenderBackend() ==
             DigitalRainRenderBackend.OPENGL_GPU
         if (useGpu) {
@@ -406,6 +417,9 @@ class MainActivity : AppCompatActivity() {
         binding.digitalRainView.stopRain()
         binding.digitalRainGlView.stopRain()
     }
+
+    private fun isDigitalRainMasterEnabled(): Boolean =
+        DigitalRainPreferences(applicationContext).isDigitalRainEnabled()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

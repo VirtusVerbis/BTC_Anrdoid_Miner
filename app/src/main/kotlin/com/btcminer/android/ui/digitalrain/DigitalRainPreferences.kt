@@ -48,9 +48,17 @@ class DigitalRainPreferences(private val context: Context) {
         ).apply()
     }
 
+    fun isDigitalRainEnabled(): Boolean =
+        prefs.getBoolean(KEY_MASTER_ENABLED, false)
+
+    fun setDigitalRainEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_MASTER_ENABLED, enabled).apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "digital_rain_prefs"
         private const val KEY_RENDER_BACKEND = "render_backend"
+        private const val KEY_MASTER_ENABLED = "master_enabled"
         private const val VALUE_CPU = "canvas_cpu"
         private const val VALUE_GPU = "opengl_gpu"
 

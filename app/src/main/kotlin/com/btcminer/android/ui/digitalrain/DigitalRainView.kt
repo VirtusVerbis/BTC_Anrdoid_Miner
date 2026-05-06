@@ -11,7 +11,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
-import android.graphics.Typeface
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.Choreographer
@@ -33,7 +32,7 @@ class DigitalRainView @JvmOverloads constructor(
     private val stripRect = RectF()
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.MONOSPACE
+        typeface = DigitalRainGlyphTypography.typefaceFor(DigitalRainSettings.defaults())
         style = Paint.Style.FILL
     }
 
@@ -139,13 +138,27 @@ class DigitalRainView @JvmOverloads constructor(
         } else {
             settings.defaultLetterHeight.coerceAtLeast(1)
         }
-        baseGlyphTextSize = max(
+        var candidateTextSize = max(
             letterHeightPx * 0.92f,
             lineWidthPx * (
                 if (settings.useBigText) settings.fontScale * 0.45f
                 else settings.fontScale * 0.42f
                 ),
         )
+        glyphPaint.typeface = DigitalRainGlyphTypography.typefaceFor(settings)
+        if (settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
+            glyphPaint.textSize = candidateTextSize
+            val maxGlyphWidth = DigitalRainGlyphCharsets
+                .bitcoinVsFiatMatrixChars()
+                .distinct()
+                .maxOfOrNull { ch -> glyphPaint.measureText(ch.toString()) }
+                ?: 0f
+            val targetWidth = (lineWidthPx - BVF_GLYPH_WIDTH_PAD_PX).coerceAtLeast(1).toFloat()
+            if (maxGlyphWidth > targetWidth) {
+                candidateTextSize *= (targetWidth / maxGlyphWidth)
+            }
+        }
+        baseGlyphTextSize = candidateTextSize
         glyphPaint.textSize = baseGlyphTextSize
     }
 
@@ -200,6 +213,19 @@ class DigitalRainView @JvmOverloads constructor(
 
     private fun rainTickFrameMs(): Long = settings.matrixFrameMs
 
+    private fun computeDepthStripBounds(startX: Float, depthScale: Float): Pair<Float, Float> {
+        val renderStripWidth = lineWidthPx.toFloat() * depthScale.coerceAtLeast(1f)
+        val centerX = startX + lineWidthPx * 0.5f
+        val viewRight = viewW.toFloat().coerceAtLeast(0f)
+        var left = (centerX - renderStripWidth * 0.5f).coerceIn(0f, viewRight)
+        var right = (centerX + renderStripWidth * 0.5f).coerceIn(0f, viewRight)
+        if (right <= left) {
+            left = startX.coerceIn(0f, viewRight)
+            right = (left + lineWidthPx).coerceIn(left, viewRight)
+        }
+        return left to right
+    }
+
     private fun drawMatrixRain(canvas: Canvas) {
         val base565 = rgb888To565(settings.rainTextR, settings.rainTextG, settings.rainTextB)
         val keyOrangeBase565 = rgb888To565(BITCOIN_ORANGE_R, BITCOIN_ORANGE_G, BITCOIN_ORANGE_B)
@@ -209,10 +235,11 @@ class DigitalRainView @JvmOverloads constructor(
             val keyHead = columnKeyHeadChar.getOrNull(i) ?: NO_KEY_HEAD
             val isKeyColumn = keyHead != NO_KEY_HEAD
             val startX = i * lineWidthPx.toFloat()
-            stripRect.set(startX, 0f, startX + lineWidthPx, viewH.toFloat())
+            val m = columnDepthDrawScale(i)
+            val (stripLeft, stripRight) = computeDepthStripBounds(startX, m)
+            stripRect.set(stripLeft, 0f, stripRight, viewH.toFloat())
             canvas.drawRect(stripRect, bgPaint)
 
-            val m = columnDepthDrawScale(i)
             canvas.save()
             canvas.clipRect(stripRect)
             glyphPaint.textSize = baseGlyphTextSize * m
@@ -235,14 +262,25 @@ class DigitalRainView @JvmOverloads constructor(
                 }
                 glyphPaint.color = bodyColor
                 val baseline = linePos[i] + currentY - fm.ascent
-                canvas.drawText(DigitalRainGlyphSampling.randomGlyphString(rng, settings), 0, 1, startX, baseline, glyphPaint)
+                val bodyGlyph =
+                    if (isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
+                        DigitalRainGlyphSampling.randomBitcoinVsFiatKeyStreakChar(rng, settings).toString()
+                    } else {
+                        DigitalRainGlyphSampling.randomGlyphString(rng, settings)
+                    }
+                canvas.drawText(bodyGlyph, 0, 1, stripLeft, baseline, glyphPaint)
                 currentY += letterStep
             }
 
             glyphPaint.color = headRgb
-            val headChar = if (isKeyColumn) keyHead.toString() else DigitalRainGlyphSampling.randomGlyphString(rng, settings)
+            val headChar = when {
+                isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                    DigitalRainGlyphSampling.randomBitcoinVsFiatKeyStreakChar(rng, settings).toString()
+                isKeyColumn -> keyHead.toString()
+                else -> DigitalRainGlyphSampling.randomGlyphString(rng, settings)
+            }
             val headBaseline = linePos[i] + currentY - fm.ascent
-            canvas.drawText(headChar, 0, 1, startX, headBaseline, glyphPaint)
+            canvas.drawText(headChar, 0, 1, stripLeft, headBaseline, glyphPaint)
             canvas.restore()
             glyphPaint.textSize = baseGlyphTextSize
             advanceColumn(i)
@@ -260,10 +298,11 @@ class DigitalRainView @JvmOverloads constructor(
             val keyHead = columnKeyHeadChar.getOrNull(i) ?: NO_KEY_HEAD
             val isKeyColumn = keyHead != NO_KEY_HEAD
             val startX = i * lineWidthPx.toFloat()
-            stripRect.set(startX, 0f, startX + lineWidthPx, viewH.toFloat())
+            val m = columnDepthDrawScale(i)
+            val (stripLeft, stripRight) = computeDepthStripBounds(startX, m)
+            stripRect.set(stripLeft, 0f, stripRight, viewH.toFloat())
             canvas.drawRect(stripRect, bgPaint)
 
-            val m = columnDepthDrawScale(i)
             canvas.save()
             canvas.clipRect(stripRect)
             glyphPaint.textSize = baseGlyphTextSize * m
@@ -287,19 +326,27 @@ class DigitalRainView @JvmOverloads constructor(
                 }
                 glyphPaint.color = bodyColor
                 val baseline = linePos[i] + currentY - fm.ascent
-                val ch = DigitalRainMessageGlyphSource.messageCharLooped(message, phase + j)
-                canvas.drawText(ch.toString(), 0, 1, startX, baseline, glyphPaint)
+                val ch =
+                    if (isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
+                        DigitalRainGlyphSampling.randomBitcoinVsFiatKeyStreakChar(rng, settings)
+                    } else {
+                        DigitalRainMessageGlyphSource.messageCharLooped(message, phase + j)
+                    }
+                canvas.drawText(ch.toString(), 0, 1, stripLeft, baseline, glyphPaint)
                 currentY += letterStep
             }
 
             glyphPaint.color = headRgb
-            val headChar = if (isKeyColumn) {
-                keyHead.toString()
-            } else {
-                DigitalRainMessageGlyphSource.messageCharLooped(message, phase + len).toString()
-            }
+            val headChar =
+                if (isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
+                    DigitalRainGlyphSampling.randomBitcoinVsFiatKeyStreakChar(rng, settings).toString()
+                } else if (isKeyColumn) {
+                    keyHead.toString()
+                } else {
+                    DigitalRainMessageGlyphSource.messageCharLooped(message, phase + len).toString()
+                }
             val headBaseline = linePos[i] + currentY - fm.ascent
-            canvas.drawText(headChar, 0, 1, startX, headBaseline, glyphPaint)
+            canvas.drawText(headChar, 0, 1, stripLeft, headBaseline, glyphPaint)
             canvas.restore()
             glyphPaint.textSize = baseGlyphTextSize
             advanceColumn(i)
@@ -395,7 +442,7 @@ class DigitalRainView @JvmOverloads constructor(
         if (selectionCount <= 0) return
         val selectedColumns = (0 until numColumns).toMutableList().apply { shuffle(rng) }.take(selectionCount)
         for (columnIndex in selectedColumns) {
-            columnKeyHeadChar[columnIndex] = DigitalRainGlyphSampling.randomAbcChar(rng)
+            columnKeyHeadChar[columnIndex] = DigitalRainGlyphSampling.randomKeyHeadChar(rng, settings)
         }
     }
 
@@ -441,7 +488,7 @@ class DigitalRainView @JvmOverloads constructor(
         available.shuffle(rng)
         var ai = 0
         while (active < target && ai < available.size) {
-            columnKeyHeadChar[available[ai]] = DigitalRainGlyphSampling.randomAbcChar(rng)
+            columnKeyHeadChar[available[ai]] = DigitalRainGlyphSampling.randomKeyHeadChar(rng, settings)
             ai++
             active++
         }
@@ -501,6 +548,7 @@ class DigitalRainView @JvmOverloads constructor(
     private fun randomInclusive(min: Int, max: Int): Int = rng.nextInt(min, max + 1)
 
     companion object {
+        private const val BVF_GLYPH_WIDTH_PAD_PX = 2
         private const val NO_KEY_HEAD = '\u0000'
         private const val DEPTH_MULT_EPS = 1e-3f
         private const val SHOWCASE_REPEAT_DELAY_MS = 60_000L

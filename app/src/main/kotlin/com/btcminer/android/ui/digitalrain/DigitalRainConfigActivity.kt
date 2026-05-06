@@ -3,6 +3,7 @@ package com.btcminer.android.ui.digitalrain
 import android.graphics.Rect
 import android.os.Bundle
 import android.view.View
+import android.widget.AdapterView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.btcminer.android.R
@@ -26,6 +27,21 @@ class DigitalRainConfigActivity : AppCompatActivity() {
         title = getString(R.string.digital_rain_title)
 
         populateUi(repo.load())
+        binding.drSpinnerGlyphAtlas.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: AdapterView<*>?,
+                    view: View?,
+                    position: Int,
+                    id: Long,
+                ) {
+                    applyMatrixCharacterControlsEnabled(
+                        position == DigitalRainGlyphAtlasMode.MATRIX.ordinal,
+                    )
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
         wireSliderLabelUpdates()
         binding.drSwitchDepthEnabled.setOnCheckedChangeListener { _, _ ->
             applyDepthControlsEnabled(binding.drSwitchDepthEnabled.isChecked)
@@ -109,6 +125,11 @@ class DigitalRainConfigActivity : AppCompatActivity() {
         binding.drSliderKeyLengthCols.value = s.keyLengthColumns.toFloat().coerceIn(0f, 128f)
         binding.drSwitchBitcoinOrange.isChecked = s.bitcoinOrangeKeyHighlight
 
+        binding.drSpinnerGlyphAtlas.setSelection(
+            s.glyphAtlasMode.ordinal.coerceIn(0, DigitalRainGlyphAtlasMode.entries.lastIndex),
+        )
+        applyMatrixCharacterControlsEnabled(s.glyphAtlasMode == DigitalRainGlyphAtlasMode.MATRIX)
+
         binding.drSpinnerAnimMode.setSelection(s.animMode.ordinal.coerceIn(0, DigitalRainAnimMode.entries.lastIndex))
         binding.drSliderTextFrame.value = s.textFrameMs.toFloat().coerceIn(50f, 5000f)
         binding.drShowcaseMessageInput.setText(s.showcaseMessage)
@@ -140,8 +161,11 @@ class DigitalRainConfigActivity : AppCompatActivity() {
 
     private fun collectUi(): DigitalRainSettings {
         val animOrdinal = binding.drSpinnerAnimMode.selectedItemPosition.coerceIn(0, DigitalRainAnimMode.entries.lastIndex)
+        val atlasOrdinal = binding.drSpinnerGlyphAtlas.selectedItemPosition
+            .coerceIn(0, DigitalRainGlyphAtlasMode.entries.lastIndex)
         return DigitalRainSettings(
             animMode = DigitalRainAnimMode.entries[animOrdinal],
+            glyphAtlasMode = DigitalRainGlyphAtlasMode.entries[atlasOrdinal],
             defaultLineWidth = binding.drSliderLineWidth.value.roundToInt(),
             defaultLetterHeight = binding.drSliderLetterHeight.value.roundToInt(),
             fontScale = binding.drSliderFontScale.value.roundToInt(),
@@ -238,5 +262,17 @@ class DigitalRainConfigActivity : AppCompatActivity() {
         binding.drSliderDepthMaxScale.isEnabled = depthOn
         binding.drLabelDepthStreakCount.alpha = if (depthOn) 1f else 0.5f
         binding.drLabelDepthMaxScale.alpha = if (depthOn) 1f else 0.5f
+    }
+
+    private fun applyMatrixCharacterControlsEnabled(enabled: Boolean) {
+        val alpha = if (enabled) 1f else 0.5f
+        binding.drSwitchAlphabetOnly.isEnabled = enabled
+        binding.drSwitchAlphabetOnly.alpha = alpha
+        binding.drSliderAscii1Start.isEnabled = enabled
+        binding.drSliderAscii1End.isEnabled = enabled
+        binding.drSliderAscii2Start.isEnabled = enabled
+        binding.drSliderAscii2End.isEnabled = enabled
+        binding.drLabelAsciiRange1.alpha = alpha
+        binding.drLabelAsciiRange2.alpha = alpha
     }
 }

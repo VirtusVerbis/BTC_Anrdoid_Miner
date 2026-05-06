@@ -7,6 +7,7 @@ package com.btcminer.android.ui.digitalrain
 /** Persisted tunables for [DigitalRainView]; defaults equal shipped [DigitalRainConstants]. */
 data class DigitalRainSettings(
     val animMode: DigitalRainAnimMode,
+    val glyphAtlasMode: DigitalRainGlyphAtlasMode,
     val defaultLineWidth: Int,
     val defaultLetterHeight: Int,
     val fontScale: Int,
@@ -45,6 +46,7 @@ data class DigitalRainSettings(
     companion object {
         fun defaults(): DigitalRainSettings = DigitalRainSettings(
             animMode = DigitalRainConstants.ANIM_MODE,
+            glyphAtlasMode = DigitalRainConstants.GLYPH_ATLAS_MODE,
             defaultLineWidth = DigitalRainConstants.DEFAULT_LINE_WIDTH,
             defaultLetterHeight = DigitalRainConstants.DEFAULT_LETTER_HEIGHT,
             fontScale = DigitalRainConstants.FONT_SCALE,

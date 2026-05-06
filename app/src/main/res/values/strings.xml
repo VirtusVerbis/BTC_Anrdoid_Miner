@@ -8,7 +8,12 @@
     <!-- Configuration -->
     <string name="config_title">Configuration</string>
     <string name="digital_rain_title">Digital Rain</string>
+    <string name="digital_rain_master_switch_label">Digital Rain On/Off</string>
+    <string name="switch_on">On</string>
+    <string name="switch_off">Off</string>
     <string name="digital_rain_section_render_backend">Renderer</string>
+    <string name="digital_rain_section_glyph_atlas">Glyph atlas</string>
+    <string name="digital_rain_glyph_atlas_mode">Preset</string>
     <string name="digital_rain_use_opengl_backdrop">OpenGL ES backdrop</string>
     <string name="digital_rain_gpu_fallback">OpenGL rain failed to start; switched back to Canvas.</string>
     <string name="mining_config">Mining</string>
@@ -50,6 +55,11 @@
     <string name="digital_rain_bitcoin_orange">Bitcoin Orange</string>
     <string name="digital_rain_text_frame_ms">TEXT tick interval (ms)</string>
     <string name="digital_rain_showcase_message">Text / Showcase Message</string>
+
+    <string-array name="digital_rain_glyph_atlas_labels">
+        <item>Matrix</item>
+        <item>Bitcoin vs Fiat</item>
+    </string-array>
 
     <string-array name="digital_rain_anim_labels">
         <item>MATRIX</item>
