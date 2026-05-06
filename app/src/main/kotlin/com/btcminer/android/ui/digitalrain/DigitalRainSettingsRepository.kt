@@ -222,6 +222,6 @@ class DigitalRainSettingsRepository(context: Context) {
         private const val SHOWCASE_MESSAGE_MAX_LEN = 500
         private const val DEPTH_STREAK_COUNT_MAX = 128
         private const val DEPTH_SCALE_PERCENT_MIN = 101
-        private const val DEPTH_SCALE_PERCENT_MAX = 400
+        private const val DEPTH_SCALE_PERCENT_MAX = 600
     }
 }

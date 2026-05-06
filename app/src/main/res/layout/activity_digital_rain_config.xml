@@ -249,7 +249,7 @@
             android:stepSize="1"
             android:value="130"
             android:valueFrom="101"
-            android:valueTo="300"
+            android:valueTo="600"
             app:labelBehavior="gone" />
 
         <!-- Colors -->

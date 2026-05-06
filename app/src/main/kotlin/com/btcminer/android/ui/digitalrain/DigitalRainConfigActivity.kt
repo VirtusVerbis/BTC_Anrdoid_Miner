@@ -83,7 +83,7 @@ class DigitalRainConfigActivity : AppCompatActivity() {
 
         binding.drSwitchDepthEnabled.isChecked = s.depthEnabled
         binding.drSliderDepthStreakCount.value = s.depthStreakCount.toFloat().coerceIn(1f, 128f)
-        binding.drSliderDepthMaxScale.value = s.depthMaxScalePercent.toFloat().coerceIn(101f, 300f)
+        binding.drSliderDepthMaxScale.value = s.depthMaxScalePercent.toFloat().coerceIn(101f, 600f)
         applyDepthControlsEnabled(s.depthEnabled)
 
         binding.drSliderHeadR.value = s.headCharR.toFloat()
