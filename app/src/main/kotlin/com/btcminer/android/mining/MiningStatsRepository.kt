@@ -3,9 +3,22 @@ package com.btcminer.android.mining
 import android.content.Context
 import android.content.SharedPreferences
 import com.btcminer.android.AppLog
+import com.btcminer.android.util.FractalPlotKind
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.ceil
+
+/** Loaded from prefs for idle fractal chart restore; see [MiningStatsRepository.saveFractalChartState]. */
+data class PersistedFractalChartState(
+    val sdPrev: Double,
+    val sdNew: Double,
+    val sessionLnAnchor: Double,
+    val sessionLnPeak: Double,
+    val rollingLnMin: Double?,
+    val rollingLnMax: Double?,
+    val fractalPlotOrdinal: Int,
+    val lastPlotKindOrdinal: Int,
+)
 
 /**
  * Persists five dashboard counters (accepted/rejected/identified shares, best difficulty, block templates)
@@ -28,6 +41,9 @@ import kotlin.math.ceil
  *
  * **Heat stop** (last 43°C hard stop: session ms + °C at stop): [setHeatStopSnapshot] / [clearHeatStopForNewSession];
  * not cleared by [saveZeros].
+ *
+ * **Fractal chart** (idle restore): [saveFractalChartState] / [loadFractalChartState]; cleared by [clearFractalChartState],
+ * [saveZeros], new mining session / Start Mining in UI.
  */
 class MiningStatsRepository(context: Context) {
 
@@ -298,6 +314,82 @@ class MiningStatsRepository(context: Context) {
             .apply()
     }
 
+    fun saveFractalChartState(
+        sdPrev: Double,
+        sdNew: Double,
+        sessionLnAnchor: Double,
+        sessionLnPeak: Double,
+        rollingLnMin: Double?,
+        rollingLnMax: Double?,
+        fractalPlotOrdinal: Int,
+        lastPlotKindOrdinal: Int,
+    ) {
+        if (!sdPrev.isFinite() || !sdNew.isFinite() || sdNew <= 0.0) return
+        if (!sessionLnAnchor.isFinite() || !sessionLnPeak.isFinite()) return
+        val nKinds = FractalPlotKind.entries.size
+        if (lastPlotKindOrdinal !in 0 until nKinds) return
+        if (fractalPlotOrdinal !in -1 until nKinds) return
+        rollingLnMin?.let { if (!it.isFinite()) return }
+        rollingLnMax?.let { if (!it.isFinite()) return }
+        runCatching {
+            val o = JSONObject().apply {
+                put("v", FRACTAL_CHART_STATE_VERSION)
+                put("sdPrev", sdPrev)
+                put("sdNew", sdNew)
+                put("sessionLnAnchor", sessionLnAnchor)
+                put("sessionLnPeak", sessionLnPeak)
+                rollingLnMin?.let { put("rollingLnMin", it) }
+                rollingLnMax?.let { put("rollingLnMax", it) }
+                put("fractalPlotOrdinal", fractalPlotOrdinal)
+                put("lastPlotKindOrdinal", lastPlotKindOrdinal)
+            }
+            prefs.edit().putString(KEY_FRACTAL_CHART_STATE_JSON, o.toString()).apply()
+        }.onFailure { e ->
+            AppLog.e(LOG_TAG) { "saveFractalChartState failed: ${e.message}" }
+        }
+    }
+
+    fun loadFractalChartState(): PersistedFractalChartState? {
+        val raw = prefs.getString(KEY_FRACTAL_CHART_STATE_JSON, null) ?: return null
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        if (root.optInt("v", 0) != FRACTAL_CHART_STATE_VERSION) return null
+        val sdPrev = root.optDouble("sdPrev", Double.NaN)
+        val sdNew = root.optDouble("sdNew", Double.NaN)
+        val sessionLnAnchor = root.optDouble("sessionLnAnchor", Double.NaN)
+        val sessionLnPeak = root.optDouble("sessionLnPeak", Double.NaN)
+        val rollingLnMin = if (root.has("rollingLnMin")) {
+            val x = root.optDouble("rollingLnMin", Double.NaN)
+            if (!x.isFinite()) return null
+            x
+        } else null
+        val rollingLnMax = if (root.has("rollingLnMax")) {
+            val x = root.optDouble("rollingLnMax", Double.NaN)
+            if (!x.isFinite()) return null
+            x
+        } else null
+        val fractalPlotOrdinal = root.optInt("fractalPlotOrdinal", -999)
+        val lastPlotKindOrdinal = root.optInt("lastPlotKindOrdinal", -999)
+        val nKinds = FractalPlotKind.entries.size
+        if (!sdPrev.isFinite() || !sdNew.isFinite() || sdNew <= 0.0) return null
+        if (!sessionLnAnchor.isFinite() || !sessionLnPeak.isFinite()) return null
+        if (lastPlotKindOrdinal !in 0 until nKinds) return null
+        if (fractalPlotOrdinal !in -1 until nKinds) return null
+        return PersistedFractalChartState(
+            sdPrev = sdPrev,
+            sdNew = sdNew,
+            sessionLnAnchor = sessionLnAnchor,
+            sessionLnPeak = sessionLnPeak,
+            rollingLnMin = rollingLnMin,
+            rollingLnMax = rollingLnMax,
+            fractalPlotOrdinal = fractalPlotOrdinal,
+            lastPlotKindOrdinal = lastPlotKindOrdinal,
+        )
+    }
+
+    fun clearFractalChartState() {
+        prefs.edit().remove(KEY_FRACTAL_CHART_STATE_JSON).apply()
+    }
+
     /**
      * Writes zeros for the five persisted counters. Used only when user resets via Config.
      */
@@ -325,6 +417,7 @@ class MiningStatsRepository(context: Context) {
             .remove(KEY_MINING_TIME_CHECKPOINT_TOTAL_MS)
             .remove(KEY_MINING_TIME_CHECKPOINT_SAVED_AT_MS)
             .remove(KEY_BEST_DIFFICULTY_EVENTS_JSON)
+            .remove(KEY_FRACTAL_CHART_STATE_JSON)
             .apply()
     }
 
@@ -449,6 +542,8 @@ class MiningStatsRepository(context: Context) {
         private const val KEY_BEST_DIFFICULTY_EVENTS_JSON = "best_difficulty_events_json"
         private const val BEST_DIFFICULTY_EVENTS_VERSION = 1
         private const val BEST_DIFFICULTY_EVENTS_MAX = 3000
+        private const val KEY_FRACTAL_CHART_STATE_JSON = "fractal_chart_state_json"
+        private const val FRACTAL_CHART_STATE_VERSION = 1
         private const val LOG_TAG = "MiningStatsRepository"
         private const val KEY_HEAT_STOP_SESSION_MS = "heat_stop_session_ms"
         private const val KEY_HEAT_STOP_TEMP_CELSIUS_BITS = "heat_stop_temp_c_bits"

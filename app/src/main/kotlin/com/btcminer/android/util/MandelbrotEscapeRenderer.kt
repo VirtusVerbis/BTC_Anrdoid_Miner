@@ -209,7 +209,11 @@ object MandelbrotEscapeRenderer {
         val pixels = IntArray(w * h)
         var idx = 0
         for (py in 0 until h) {
-            val zIm0 = imMax - (imMax - imMin) * py / hm1
+            val zIm0 = if (plotKind == FractalPlotKind.BurningShip) {
+                imMin + (imMax - imMin) * py / hm1
+            } else {
+                imMax - (imMax - imMin) * py / hm1
+            }
             for (px in 0 until w) {
                 val zRe0 = reMin + (reMax - reMin) * px / wm1
                 val iter = when (plotKind) {

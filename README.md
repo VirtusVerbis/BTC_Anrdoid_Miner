@@ -8,6 +8,8 @@ Cursor AI
 References:
 https://github.com/BitMaker-hub/NerdMiner_v2/releases
 
+**Digital rain (Matrix-style background)** — The main-screen animation adapts the column/trail logic from [Arduino DigitalRain Matrix](https://github.com/0015/Arduino_DigitalRain_Matrix) by Eric Nam ([`DigitalRainAnimation.hpp`](https://github.com/0015/Arduino_DigitalRain_Matrix/blob/main/src/DigitalRainAnimation.hpp)), **MIT License**. Kotlin implementation: [`app/src/main/kotlin/com/btcminer/android/ui/digitalrain/`](app/src/main/kotlin/com/btcminer/android/ui/digitalrain/).
+
 
 Note: This app can be tested against the Public-Pool with Signet support - found here:
 

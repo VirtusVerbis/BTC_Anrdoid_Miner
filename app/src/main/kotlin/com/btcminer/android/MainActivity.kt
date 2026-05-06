@@ -25,10 +25,14 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.lifecycleScope
-import com.btcminer.android.config.ConfigActivity
+import com.btcminer.android.config.ConfigHubActivity
+import com.btcminer.android.ui.digitalrain.DigitalRainPreferences
+import com.btcminer.android.ui.digitalrain.DigitalRainRenderBackend
+import com.btcminer.android.ui.digitalrain.DigitalRainSettingsRepository
 import com.btcminer.android.config.MiningConfigRepository
 import com.btcminer.android.databinding.ActivityMainBinding
 import com.btcminer.android.mining.MiningConstraints
@@ -81,6 +85,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import java.net.URLEncoder
 import java.util.ArrayDeque
+import java.util.LinkedHashSet
 import java.util.Locale
 import java.util.Scanner
 import java.util.concurrent.TimeUnit
@@ -92,6 +97,13 @@ private data class MandelbrotRenderSnapshot(
     val sessionLnPeak: Double,
     val rollingLnMin: Double?,
     val rollingLnMax: Double?,
+)
+
+private data class FractalBitmapCacheKey(
+    val snap: MandelbrotRenderSnapshot,
+    val bw: Int,
+    val bh: Int,
+    val plotKind: FractalPlotKind,
 )
 
 class MainActivity : AppCompatActivity() {
@@ -157,6 +169,7 @@ class MainActivity : AppCompatActivity() {
     private var chartTabMediator: TabLayoutMediator? = null
 
     private var mandelbrotRenderJob: Job? = null
+    private var fractalPrewarmJob: Job? = null
     /** Session best difficulty already committed for Mandelbrot triggers (optimistic; avoids skipped steps under rapid improvements). */
     private var mandelbrotLastRenderedSessionBest: Double = 0.0
     private var mandelbrotSessionKey: Long? = null
@@ -170,6 +183,8 @@ class MainActivity : AppCompatActivity() {
     private var mandelbrotDisplayedBitmap: Bitmap? = null
     /** Matches [mandelbrotDisplayedBitmap]; used for caption after tab switch / rotation. */
     private var lastRenderedFractalPlotKind: FractalPlotKind? = null
+    /** Reuse renders when cycling [FractalPlotKind] for the same [MandelbrotRenderSnapshot] and size. */
+    private val fractalBitmapCache = mutableMapOf<FractalBitmapCacheKey, Bitmap>()
     /** Last session CPU/GPU identified counts passed to [updateSharesDonutChart]; null forces next refresh. */
     private var lastDonutIdentifiedCounts: Pair<Long, Long>? = null
     /** Keeps donut hole label aligned with [PieChart] layout; removed when donut fragment view is destroyed. */
@@ -338,6 +353,7 @@ class MainActivity : AppCompatActivity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             miningService = (binder as? MiningForegroundService.LocalBinder)?.getService()
             lastDonutIdentifiedCounts = null
+            tryRestoreIdleFractalArt()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -355,6 +371,41 @@ class MainActivity : AppCompatActivity() {
     private val requestNotificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { _ -> tryStartMiningService() }
+
+    private fun applyDigitalRainSettings() {
+        val settings = DigitalRainSettingsRepository(applicationContext).load()
+        binding.digitalRainView.applySettings(settings)
+        binding.digitalRainGlView.applySettings(settings)
+        syncRainBackdropBackend()
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            stopRainBackdrop()
+            startRainBackdrop()
+        }
+    }
+
+    private fun syncRainBackdropBackend() {
+        val useGpu = DigitalRainPreferences(applicationContext).getRenderBackend() ==
+            DigitalRainRenderBackend.OPENGL_GPU
+        binding.digitalRainView.visibility = if (useGpu) View.GONE else View.VISIBLE
+        binding.digitalRainGlView.visibility = if (useGpu) View.VISIBLE else View.GONE
+    }
+
+    private fun startRainBackdrop() {
+        val useGpu = DigitalRainPreferences(applicationContext).getRenderBackend() ==
+            DigitalRainRenderBackend.OPENGL_GPU
+        if (useGpu) {
+            binding.digitalRainView.stopRain()
+            binding.digitalRainGlView.startRain()
+        } else {
+            binding.digitalRainGlView.stopRain()
+            binding.digitalRainView.startRain()
+        }
+    }
+
+    private fun stopRainBackdrop() {
+        binding.digitalRainView.stopRain()
+        binding.digitalRainGlView.stopRain()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -383,7 +434,7 @@ class MainActivity : AppCompatActivity() {
         ).show()
 
         binding.buttonConfig.setOnClickListener {
-            startActivity(Intent(this, ConfigActivity::class.java))
+            startActivity(Intent(this, ConfigHubActivity::class.java))
         }
         binding.buttonStartMining.setOnClickListener { onStartMiningClicked() }
         binding.buttonStopMining.setOnClickListener { onStopMiningClicked() }
@@ -417,6 +468,16 @@ class MainActivity : AppCompatActivity() {
         }.also { it.attach() }
         binding.chartPager.setCurrentItem(0, false)
 
+        binding.digitalRainGlView.onGpuInitFailedListener = {
+            DigitalRainPreferences(this).setRenderBackend(DigitalRainRenderBackend.CANVAS_CPU)
+            syncRainBackdropBackend()
+            stopRainBackdrop()
+            startRainBackdrop()
+            Toast.makeText(this, R.string.digital_rain_gpu_fallback, Toast.LENGTH_LONG).show()
+        }
+
+        applyDigitalRainSettings()
+
         // Initialize lastBitcoinAddress to detect changes when returning from Config
         lastBitcoinAddress = configRepository.getConfig().bitcoinAddress.trim()
     }
@@ -428,10 +489,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        mandelbrotRenderJob?.cancel()
-        mandelbrotRenderJob = null
-        mandelbrotDisplayedBitmap?.recycle()
-        mandelbrotDisplayedBitmap = null
+        recycleAllFractalBitmapMemory()
         lastRenderedFractalPlotKind = null
         mandelbrotRenderSnapshot = null
         dashboardTabMediator?.detach()
@@ -442,8 +500,15 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    override fun onPause() {
+        binding.digitalRainGlView.onPause()
+        super.onPause()
+    }
+
     override fun onResume() {
         super.onResume()
+        binding.digitalRainGlView.onResume()
+        applyDigitalRainSettings()
         // Check if Bitcoin address changed in Config and trigger immediate fetch
         val currentAddress = configRepository.getConfig().bitcoinAddress.trim()
         if (currentAddress != lastBitcoinAddress) {
@@ -464,6 +529,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        startRainBackdrop()
         handler.post(pollRunnable)
         handler.post(flashRunnable)
         handler.post(mempoolFetchRunnable)
@@ -476,6 +542,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        stopRainBackdrop()
         try {
             unbindService(connection)
         } catch (_: Exception) { }
@@ -716,6 +783,87 @@ class MainActivity : AppCompatActivity() {
         refreshBestDifficultyChart()
     }
 
+    private fun fractalBitmapCacheKey(snap: MandelbrotRenderSnapshot, bw: Int, bh: Int, plotKind: FractalPlotKind) =
+        FractalBitmapCacheKey(snap, bw, bh, plotKind)
+
+    private fun isBitmapRetainedInFractalCache(bmp: Bitmap?): Boolean {
+        if (bmp == null) return false
+        return fractalBitmapCache.values.any { it === bmp }
+    }
+
+    private fun recycleAllFractalBitmapMemory() {
+        fractalPrewarmJob?.cancel()
+        fractalPrewarmJob = null
+        mandelbrotRenderJob?.cancel()
+        mandelbrotRenderJob = null
+        val unique = LinkedHashSet<Bitmap>()
+        fractalBitmapCache.values.forEach { unique.add(it) }
+        mandelbrotDisplayedBitmap?.let { unique.add(it) }
+        unique.forEach { if (!it.isRecycled) it.recycle() }
+        fractalBitmapCache.clear()
+        mandelbrotDisplayedBitmap = null
+    }
+
+    /** New session-best render: drop cached types for the old snapshot; keep current frame until the new render completes. */
+    private fun invalidateFractalBitmapCacheForSnapshotChange() {
+        fractalPrewarmJob?.cancel()
+        fractalPrewarmJob = null
+        val keep = mandelbrotDisplayedBitmap
+        fractalBitmapCache.values.forEach { bmp ->
+            if (bmp !== keep && !bmp.isRecycled) bmp.recycle()
+        }
+        fractalBitmapCache.clear()
+    }
+
+    private fun applyFractalBitmapToUi(bmp: Bitmap, plotKind: FractalPlotKind) {
+        val prev = mandelbrotDisplayedBitmap
+        chartMandelbrotFragment?.chartBinding?.let { b ->
+            b.mandelbrotImage.setImageBitmap(bmp)
+            b.mandelbrotPlaceholder.visibility = View.GONE
+            b.mandelbrotImage.contentDescription = getString(
+                R.string.fractal_chart_image_a11y_with_kind,
+                fractalDisplayName(plotKind),
+            )
+            updateFractalChartCaption(plotKind)
+        }
+        mandelbrotDisplayedBitmap = bmp
+        lastRenderedFractalPlotKind = plotKind
+        if (prev != null && prev !== bmp && !isBitmapRetainedInFractalCache(prev)) {
+            prev.recycle()
+        }
+        persistFractalChartStateIfApplicable()
+    }
+
+    private fun persistFractalChartStateIfApplicable() {
+        val snap = mandelbrotRenderSnapshot ?: return
+        val kind = lastRenderedFractalPlotKind ?: return
+        statsRepository.saveFractalChartState(
+            sdPrev = snap.sdPrev,
+            sdNew = snap.sdNew,
+            sessionLnAnchor = snap.sessionLnAnchor,
+            sessionLnPeak = snap.sessionLnPeak,
+            rollingLnMin = snap.rollingLnMin,
+            rollingLnMax = snap.rollingLnMax,
+            fractalPlotOrdinal = fractalPlotOrdinal,
+            lastPlotKindOrdinal = kind.ordinal,
+        )
+    }
+
+    /** Clears fractal bitmaps and Mandelbrot session fields; used when starting mining and when service session changes. */
+    private fun purgeFractalStateForNewMiningSession() {
+        statsRepository.clearFractalChartState()
+        recycleAllFractalBitmapMemory()
+        mandelbrotSessionKey = null
+        mandelbrotLastRenderedSessionBest = 0.0
+        mandelbrotSessionLnAnchor = null
+        mandelbrotRollingLnHighs.clear()
+        fractalPlotOrdinal = -1
+        mandelbrotRenderSnapshot = null
+        lastRenderedFractalPlotKind = null
+        updateFractalChartCaption(null)
+        setupMandelbrotView()
+    }
+
     private fun setupMandelbrotView() {
         val bb = chartMandelbrotFragment?.chartBinding ?: return
         bb.mandelbrotCaption.setTextColor(ContextCompat.getColor(this, R.color.chart_axis_legend))
@@ -735,6 +883,43 @@ class MainActivity : AppCompatActivity() {
             bb.mandelbrotImage.contentDescription = getString(R.string.mandelbrot_chart_image_a11y)
         }
         updateFractalChartCaption(lastRenderedFractalPlotKind)
+        chartMandelbrotFragment?.view?.post { tryRestoreIdleFractalArt() }
+    }
+
+    /** Loads persisted fractal snapshot when idle and re-renders (deterministic); skips if mining or memory already holds art. */
+    private fun tryRestoreIdleFractalArt() {
+        val svc = miningService ?: return
+        if (svc.getStatus().state == MiningStatus.State.Mining) return
+        if (mandelbrotRenderSnapshot != null) return
+        val shown = mandelbrotDisplayedBitmap
+        if (shown != null && !shown.isRecycled) return
+
+        val container = chartMandelbrotFragment?.view ?: return
+        val vw = container.width
+        val vh = container.height
+        if (vw <= 0 || vh <= 0) {
+            container.post { tryRestoreIdleFractalArt() }
+            return
+        }
+
+        val loaded = statsRepository.loadFractalChartState() ?: return
+        val snap = MandelbrotRenderSnapshot(
+            loaded.sdPrev,
+            loaded.sdNew,
+            loaded.sessionLnAnchor,
+            loaded.sessionLnPeak,
+            loaded.rollingLnMin,
+            loaded.rollingLnMax,
+        )
+        mandelbrotRenderSnapshot = snap
+        fractalPlotOrdinal = loaded.fractalPlotOrdinal
+        mandelbrotLastRenderedSessionBest = snap.sdNew
+        mandelbrotSessionLnAnchor = snap.sessionLnAnchor
+
+        val bw = minOf(vw, MANDEL_MAX_BITMAP_DIM)
+        val bh = minOf(maxOf(1, bw * vh / vw), MANDEL_MAX_BITMAP_DIM)
+        val plotKind = FractalPlotKind.entries[loaded.lastPlotKindOrdinal]
+        enqueueFractalBitmapJob(bw, bh, snap, plotKind, commitSessionBestTo = null, prewarmAfterRender = true)
     }
 
     private fun cycleFractalPlotAndRender() {
@@ -760,8 +945,20 @@ class MainActivity : AppCompatActivity() {
         snap: MandelbrotRenderSnapshot,
         plotKind: FractalPlotKind,
         commitSessionBestTo: Double?,
+        prewarmAfterRender: Boolean = false,
     ) {
         mandelbrotRenderJob?.cancel()
+        val key = fractalBitmapCacheKey(snap, bw, bh, plotKind)
+        val cached = fractalBitmapCache[key]
+        if (cached != null && !cached.isRecycled) {
+            mandelbrotRenderJob = null
+            commitSessionBestTo?.let { mandelbrotLastRenderedSessionBest = it }
+            applyFractalBitmapToUi(cached, plotKind)
+            if (commitSessionBestTo != null || prewarmAfterRender) {
+                startFractalPrewarmAfterSnapshot(snap, bw, bh)
+            }
+            return
+        }
         mandelbrotRenderJob = lifecycleScope.launch {
             val bmp = try {
                 withContext(Dispatchers.Default) {
@@ -785,17 +982,49 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
             commitSessionBestTo?.let { mandelbrotLastRenderedSessionBest = it }
-            mandelbrotDisplayedBitmap?.recycle()
-            mandelbrotDisplayedBitmap = bmp
-            lastRenderedFractalPlotKind = plotKind
-            chartMandelbrotFragment?.chartBinding?.let { b ->
-                b.mandelbrotImage.setImageBitmap(bmp)
-                b.mandelbrotPlaceholder.visibility = View.GONE
-                b.mandelbrotImage.contentDescription = getString(
-                    R.string.fractal_chart_image_a11y_with_kind,
-                    fractalDisplayName(plotKind),
-                )
-                updateFractalChartCaption(plotKind)
+            fractalBitmapCache[key] = bmp
+            applyFractalBitmapToUi(bmp, plotKind)
+            if (commitSessionBestTo != null || prewarmAfterRender) {
+                startFractalPrewarmAfterSnapshot(snap, bw, bh)
+            }
+        }
+    }
+
+    /** Fills [fractalBitmapCache] for every [FractalPlotKind] at this snapshot; does not change the visible image. */
+    private fun startFractalPrewarmAfterSnapshot(snap: MandelbrotRenderSnapshot, bw: Int, bh: Int) {
+        fractalPrewarmJob?.cancel()
+        fractalPrewarmJob = lifecycleScope.launch {
+            for (kind in FractalPlotKind.entries) {
+                if (!isActive) return@launch
+                if (mandelbrotRenderSnapshot != snap) return@launch
+                val key = fractalBitmapCacheKey(snap, bw, bh, kind)
+                if (fractalBitmapCache.containsKey(key)) continue
+                val bmp = try {
+                    withContext(Dispatchers.Default) {
+                        MandelbrotEscapeRenderer.render(
+                            bw,
+                            bh,
+                            snap.sdPrev,
+                            snap.sdNew,
+                            snap.sessionLnAnchor,
+                            snap.sessionLnPeak,
+                            snap.rollingLnMin,
+                            snap.rollingLnMax,
+                            kind,
+                        )
+                    }
+                } catch (_: OutOfMemoryError) {
+                    null
+                }
+                if (!isActive) {
+                    bmp?.recycle()
+                    return@launch
+                }
+                if (mandelbrotRenderSnapshot != snap) {
+                    bmp?.recycle()
+                    return@launch
+                }
+                if (bmp != null) fractalBitmapCache[key] = bmp
             }
         }
     }
@@ -837,12 +1066,15 @@ class MainActivity : AppCompatActivity() {
             mandelbrotRenderSnapshot = null
             lastRenderedFractalPlotKind = null
             updateFractalChartCaption(null)
-            mandelbrotRenderJob?.cancel()
-            mandelbrotRenderJob = null
+            recycleAllFractalBitmapMemory()
+            statsRepository.clearFractalChartState()
+            setupMandelbrotView()
         }
 
         val sessionBest = svc.getSessionBestDifficultyForDisplay()
         if (!sessionBest.isFinite() || sessionBest <= mandelbrotLastRenderedSessionBest) return
+
+        invalidateFractalBitmapCacheForSnapshotChange()
 
         val sdPrev = if (mandelbrotLastRenderedSessionBest <= 0.0) MANDEL_EPS_PREV else mandelbrotLastRenderedSessionBest
         val sdNew = sessionBest
@@ -1625,6 +1857,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun tryStartMiningService() {
+        purgeFractalStateForNewMiningSession()
         startService(Intent(this, MiningForegroundService::class.java).apply {
             action = MiningForegroundService.ACTION_START
         })

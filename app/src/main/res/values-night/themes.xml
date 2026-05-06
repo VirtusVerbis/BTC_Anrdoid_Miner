@@ -8,6 +8,6 @@
         <item name="colorSurfaceVariant">#FF49454F</item>
         <item name="colorOnSurfaceVariant">#FFCAC4D0</item>
         <item name="colorOutline">#FF938F99</item>
-        <item name="android:windowBackground">#FF1C1B1F</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
     </style>
 </resources>

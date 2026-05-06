@@ -7,6 +7,55 @@
 
     <!-- Configuration -->
     <string name="config_title">Configuration</string>
+    <string name="digital_rain_title">Digital Rain</string>
+    <string name="digital_rain_section_render_backend">Renderer</string>
+    <string name="digital_rain_use_opengl_backdrop">OpenGL ES backdrop</string>
+    <string name="digital_rain_gpu_fallback">OpenGL rain failed to start; switched back to Canvas.</string>
+    <string name="mining_config">Mining</string>
+    <string name="digital_rain_config_placeholder">Digital Rain settings — coming soon.</string>
+    <string name="digital_rain_save">Save</string>
+    <string name="digital_rain_restore_defaults">Restore defaults</string>
+    <string name="digital_rain_saved">Digital Rain settings saved.</string>
+    <string name="digital_rain_defaults_restored">Restored default Digital Rain settings.</string>
+    <string name="digital_rain_section_motion">Motion</string>
+    <string name="digital_rain_section_colors">Colors</string>
+    <string name="digital_rain_section_character">Characters</string>
+    <string name="digital_rain_section_depth">Depth</string>
+    <string name="digital_rain_depth_enabled">Enable depth</string>
+    <string name="digital_rain_depth_streak_count">Number of streaks</string>
+    <string name="digital_rain_depth_max_scale_percent">Streak size %</string>
+    <string name="digital_rain_section_key_mode">Key mode</string>
+    <string name="digital_rain_section_reserved">Animation mode &amp; text (reserved)</string>
+    <string name="digital_rain_anim_mode">Animation mode</string>
+    <string name="digital_rain_matrix_frame_ms">Matrix tick interval (ms)</string>
+    <string name="digital_rain_line_len_min">Trail length min</string>
+    <string name="digital_rain_line_len_max">Trail length max</string>
+    <string name="digital_rain_line_speed_min">Speed min</string>
+    <string name="digital_rain_line_speed_max">Speed max</string>
+    <string name="digital_rain_column_y_multiplier">Column Y multiplier</string>
+    <string name="digital_rain_line_width">Column width (px)</string>
+    <string name="digital_rain_letter_height">Letter height (px)</string>
+    <string name="digital_rain_font_scale">Font scale hint</string>
+    <string name="digital_rain_use_big_text">Large glyphs</string>
+    <string name="digital_rain_head_rgb">Head character RGB</string>
+    <string name="digital_rain_rain_rgb">Rain RGB</string>
+    <string name="digital_rain_background_rgb">Background RGB</string>
+    <string name="digital_rain_alphabet_only">Letters only (A–Z / a–z)</string>
+    <string name="digital_rain_ascii_range_1">ASCII range 1 (start / end exclusive)</string>
+    <string name="digital_rain_ascii_range_2">ASCII range 2 (start / end exclusive)</string>
+    <string name="digital_rain_enable_key_mode">Enable random key highlight</string>
+    <string name="digital_rain_sticky_key_highlights">Sticky highlights</string>
+    <string name="digital_rain_key_reset_sec">Key refresh interval (s)</string>
+    <string name="digital_rain_key_length_cols">Key columns (0 = all columns)</string>
+    <string name="digital_rain_bitcoin_orange">Bitcoin Orange</string>
+    <string name="digital_rain_text_frame_ms">TEXT tick interval (ms)</string>
+    <string name="digital_rain_showcase_message">Text / Showcase Message</string>
+
+    <string-array name="digital_rain_anim_labels">
+        <item>MATRIX</item>
+        <item>TEXT</item>
+        <item>SHOWCASE</item>
+    </string-array>
     <string name="config_save">Save</string>
     <string name="config_stratum_url">Pool URL (host)</string>
     <string name="config_stratum_url_hint">e.g. stratum.example.com</string>

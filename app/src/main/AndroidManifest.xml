@@ -28,9 +28,19 @@
             </intent-filter>
         </activity>
         <activity
-            android:name=".config.ConfigActivity"
+            android:name=".config.ConfigHubActivity"
             android:exported="false"
             android:parentActivityName=".MainActivity"
+            android:screenOrientation="portrait" />
+        <activity
+            android:name=".config.ConfigActivity"
+            android:exported="false"
+            android:parentActivityName=".config.ConfigHubActivity"
+            android:screenOrientation="portrait" />
+        <activity
+            android:name=".ui.digitalrain.DigitalRainConfigActivity"
+            android:exported="false"
+            android:parentActivityName=".config.ConfigHubActivity"
             android:screenOrientation="portrait" />
         <receiver
             android:name=".mining.AlarmWakeReceiver"

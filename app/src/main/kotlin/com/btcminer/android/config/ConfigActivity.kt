@@ -367,7 +367,7 @@ class ConfigActivity : AppCompatActivity() {
                             action = MiningForegroundService.ACTION_RESTART
                         })
                         Toast.makeText(this@ConfigActivity, R.string.config_saved, Toast.LENGTH_SHORT).show()
-                        finish()
+                        finishAndReturnToMainDashboard()
                     }
                 } catch (e: Exception) {
                     val errMsg = e.message
@@ -383,7 +383,7 @@ class ConfigActivity : AppCompatActivity() {
         }
 
         if (config == loadedConfig) {
-            finish()
+            finishAndReturnToMainDashboard()
             return
         }
         repository.saveConfig(config)
@@ -391,6 +391,6 @@ class ConfigActivity : AppCompatActivity() {
             action = MiningForegroundService.ACTION_RESTART
         })
         Toast.makeText(this, R.string.config_saved, Toast.LENGTH_SHORT).show()
-        finish()
+        finishAndReturnToMainDashboard()
     }
 }
