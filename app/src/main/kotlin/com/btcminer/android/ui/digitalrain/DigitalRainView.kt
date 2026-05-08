@@ -7,10 +7,12 @@
 package com.btcminer.android.ui.digitalrain
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RectF
+import android.graphics.PorterDuff
+import android.graphics.Rect
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.Choreographer
@@ -29,11 +31,33 @@ class DigitalRainView @JvmOverloads constructor(
     private val choreographer = Choreographer.getInstance()
     private val rng = Random.Default
 
-    private val stripRect = RectF()
-    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = DigitalRainGlyphTypography.typefaceFor(DigitalRainSettings.defaults())
         style = Paint.Style.FILL
+    }
+
+    private val satoshiBitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+
+    private val satoshiFlashPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+    }
+
+    @Volatile
+    private var satoshiBackdropBitmap: Bitmap? = null
+
+    @Volatile
+    private var satoshiPortraitVisible = false
+
+    @Volatile
+    private var satoshiFlashWhite = false
+
+    /** Portrait + flash are drawn inside this view; rain is between portrait and flash. Call from main thread. */
+    fun setSatoshiBackdrop(bitmap: Bitmap?, showPortrait: Boolean, flashWhite: Boolean) {
+        satoshiBackdropBitmap = bitmap
+        satoshiPortraitVisible = showPortrait
+        satoshiFlashWhite = flashWhite
+        invalidate()
     }
 
     private var running = false
@@ -228,7 +252,6 @@ class DigitalRainView @JvmOverloads constructor(
         val msgLen = msg.length.coerceAtLeast(1)
         columnMessagePhase = IntArray(numColumns) { rng.nextInt(0, msgLen) }
 
-        bgPaint.color = Color.rgb(settings.rainBackgroundR, settings.rainBackgroundG, settings.rainBackgroundB)
         background = null
     }
 
@@ -236,13 +259,26 @@ class DigitalRainView @JvmOverloads constructor(
         super.onDraw(canvas)
 
         if (viewW <= 0 || viewH <= 0) return
-        canvas.drawRect(0f, 0f, viewW.toFloat(), viewH.toFloat(), bgPaint)
-        if (numColumns == 0) return
+        canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
 
-        when (runtimeMode) {
-            DigitalRainAnimMode.MATRIX -> drawMatrixRain(canvas)
-            DigitalRainAnimMode.TEXT -> drawTextModeRain(canvas)
-            DigitalRainAnimMode.SHOWCASE -> drawShowcaseRain(canvas)
+        if (satoshiPortraitVisible) {
+            val bmp = satoshiBackdropBitmap
+            if (bmp != null && !bmp.isRecycled) {
+                val dst = SatoshiBackdropFit.fitCenterRectF(bmp.width, bmp.height, viewW, viewH)
+                canvas.drawBitmap(bmp, null, Rect(dst.left.toInt(), dst.top.toInt(), dst.right.toInt(), dst.bottom.toInt()), satoshiBitmapPaint)
+            }
+        }
+
+        if (numColumns > 0) {
+            when (runtimeMode) {
+                DigitalRainAnimMode.MATRIX -> drawMatrixRain(canvas)
+                DigitalRainAnimMode.TEXT -> drawTextModeRain(canvas)
+                DigitalRainAnimMode.SHOWCASE -> drawShowcaseRain(canvas)
+            }
+        }
+
+        if (satoshiFlashWhite) {
+            canvas.drawRect(0f, 0f, viewW.toFloat(), viewH.toFloat(), satoshiFlashPaint)
         }
     }
 
@@ -272,11 +308,9 @@ class DigitalRainView @JvmOverloads constructor(
             val startX = i * lineWidthPx.toFloat()
             val m = columnDepthDrawScale(i)
             val (stripLeft, stripRight) = computeDepthStripBounds(startX, m)
-            stripRect.set(stripLeft, 0f, stripRight, viewH.toFloat())
-            canvas.drawRect(stripRect, bgPaint)
 
             canvas.save()
-            canvas.clipRect(stripRect)
+            canvas.clipRect(stripLeft, 0f, stripRight, viewH.toFloat())
             glyphPaint.textSize = baseGlyphTextSize * m
             val fm = glyphPaint.fontMetrics
             val letterStep = letterHeightPx.toFloat() * m
@@ -338,11 +372,9 @@ class DigitalRainView @JvmOverloads constructor(
             val startX = i * lineWidthPx.toFloat()
             val m = columnDepthDrawScale(i)
             val (stripLeft, stripRight) = computeDepthStripBounds(startX, m)
-            stripRect.set(stripLeft, 0f, stripRight, viewH.toFloat())
-            canvas.drawRect(stripRect, bgPaint)
 
             canvas.save()
-            canvas.clipRect(stripRect)
+            canvas.clipRect(stripLeft, 0f, stripRight, viewH.toFloat())
             glyphPaint.textSize = baseGlyphTextSize * m
             val fm = glyphPaint.fontMetrics
             val letterStep = letterHeightPx.toFloat() * m
@@ -400,8 +432,6 @@ class DigitalRainView @JvmOverloads constructor(
 
         for (i in 0 until numColumns) {
             val startX = i * lineWidthPx.toFloat()
-            stripRect.set(startX, 0f, startX + lineWidthPx, viewH.toFloat())
-            canvas.drawRect(stripRect, bgPaint)
 
             var currentY = -letterHeightPx.toFloat()
             val len = lineLength[i]

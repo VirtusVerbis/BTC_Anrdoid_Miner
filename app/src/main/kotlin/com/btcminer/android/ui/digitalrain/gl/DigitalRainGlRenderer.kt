@@ -5,6 +5,7 @@
 package com.btcminer.android.ui.digitalrain.gl
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.opengl.GLES20
@@ -19,6 +20,7 @@ import com.btcminer.android.ui.digitalrain.DigitalRainGlyphSampling
 import com.btcminer.android.ui.digitalrain.DigitalRainMessageGlyphSource
 import com.btcminer.android.ui.digitalrain.DigitalRainSettings
 import com.btcminer.android.ui.digitalrain.DigitalRainSettingsRepository
+import com.btcminer.android.ui.digitalrain.SatoshiBackdropFit
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -79,6 +81,26 @@ class DigitalRainGlRenderer(
     private var vertexBuffer: FloatBuffer = allocateFloatBuffer(INITIAL_FLOAT_CAPACITY)
     private var vertexCount = 0
 
+    private var satoshiTexId = 0
+    private var portraitProgram = 0
+    private var flashProgram = 0
+    private var portraitPositionHandle = 0
+    private var portraitTexCoordHandle = 0
+    private var portraitMvpHandle = 0
+    private var portraitSamplerHandle = 0
+    private var flashPositionHandle = 0
+    private var flashMvpHandle = 0
+    private var flashColorHandle = 0
+
+    private var satoshiBackdropBitmap: Bitmap? = null
+    private var satoshiPortraitVisible = false
+    private var satoshiFlashWhite = false
+    /** Last bitmap uploaded to [satoshiTexId]; cleared when surface recreates. */
+    private var satoshiTexUploadedSource: Bitmap? = null
+
+    private var portraitVertexBuffer: FloatBuffer = allocateFloatBuffer(PORTRAIT_FLOAT_CAPACITY)
+    private var flashVertexBuffer: FloatBuffer = allocateFloatBuffer(FLASH_FLOAT_CAPACITY)
+
     /** Cached supported glyph pools (GPU atlas keys). */
     private var bvfBodyPool: CharArray = charArrayOf()
     private var bvfKeyPool: CharArray = charArrayOf()
@@ -102,8 +124,17 @@ class DigitalRainGlRenderer(
             settings.rainBackgroundR / 255f,
             settings.rainBackgroundG / 255f,
             settings.rainBackgroundB / 255f,
-            1f,
+            0f,
         )
+    }
+
+    fun setSatoshiBackdrop(bitmap: Bitmap?, showPortrait: Boolean, flashWhite: Boolean) {
+        satoshiBackdropBitmap = bitmap
+        satoshiPortraitVisible = showPortrait
+        satoshiFlashWhite = flashWhite
+        if (bitmap == null) {
+            satoshiTexUploadedSource = null
+        }
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -111,7 +142,7 @@ class DigitalRainGlRenderer(
             settings.rainBackgroundR / 255f,
             settings.rainBackgroundG / 255f,
             settings.rainBackgroundB / 255f,
-            1f,
+            0f,
         )
         program = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         if (program == 0) {
@@ -125,12 +156,29 @@ class DigitalRainGlRenderer(
         mvpHandle = GLES20.glGetUniformLocation(program, "u_MVPMatrix")
         textureHandle = GLES20.glGetUniformLocation(program, "u_Texture")
 
-        val texIds = IntArray(1)
-        GLES20.glGenTextures(1, texIds, 0)
+        val texIds = IntArray(2)
+        GLES20.glGenTextures(2, texIds, 0)
         textureId = texIds[0]
+        satoshiTexId = texIds[1]
 
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+
+        portraitProgram = buildProgram(PORTRAIT_VERTEX_SHADER, PORTRAIT_FRAGMENT_SHADER)
+        flashProgram = buildProgram(FLASH_VERTEX_SHADER, FLASH_FRAGMENT_SHADER)
+        if (portraitProgram != 0) {
+            portraitPositionHandle = GLES20.glGetAttribLocation(portraitProgram, "a_Position")
+            portraitTexCoordHandle = GLES20.glGetAttribLocation(portraitProgram, "a_TexCoord")
+            portraitMvpHandle = GLES20.glGetUniformLocation(portraitProgram, "u_MVPMatrix")
+            portraitSamplerHandle = GLES20.glGetUniformLocation(portraitProgram, "u_Texture")
+        }
+        if (flashProgram != 0) {
+            flashPositionHandle = GLES20.glGetAttribLocation(flashProgram, "a_Position")
+            flashMvpHandle = GLES20.glGetUniformLocation(flashProgram, "u_MVPMatrix")
+            flashColorHandle = GLES20.glGetUniformLocation(flashProgram, "u_Color")
+        }
+
+        satoshiTexUploadedSource = null
 
         atlasUploaded = false
         charToUv = emptyMap()
@@ -159,34 +207,34 @@ class DigitalRainGlRenderer(
         val frameMs = rainTickFrameMs()
         val isTick = now - lastMatrixTickMs >= frameMs
 
-        if (!isTick) {
-            drawUploadedGeometry()
-            return
-        }
-        lastMatrixTickMs = now
-        frameNowMs = now
+        drawSatoshiPortraitBackdrop()
 
-        if (numColumns == 0) {
-            vertexCount = 0
-            return
-        }
+        if (isTick) {
+            lastMatrixTickMs = now
+            frameNowMs = now
 
-        if (!ensureAtlasReady()) {
-            vertexCount = 0
-            return
-        }
-
-        when (runtimeMode) {
-            DigitalRainAnimMode.MATRIX,
-            DigitalRainAnimMode.TEXT,
-            -> {
-                tickMatrixKeys(now)
-                tickDepthVacancies()
+            if (numColumns > 0) {
+                if (ensureAtlasReady()) {
+                    when (runtimeMode) {
+                        DigitalRainAnimMode.MATRIX,
+                        DigitalRainAnimMode.TEXT,
+                        -> {
+                            tickMatrixKeys(now)
+                            tickDepthVacancies()
+                        }
+                        DigitalRainAnimMode.SHOWCASE -> clearKeySelection()
+                    }
+                    uploadRainGeometry(runtimeMode == DigitalRainAnimMode.SHOWCASE)
+                } else {
+                    vertexCount = 0
+                }
+            } else {
+                vertexCount = 0
             }
-            DigitalRainAnimMode.SHOWCASE -> clearKeySelection()
         }
-        uploadRainGeometry(runtimeMode == DigitalRainAnimMode.SHOWCASE)
+
         drawUploadedGeometry()
+        drawWhiteFlashFullscreen()
     }
 
     private fun ensureAtlasReady(): Boolean {
@@ -323,6 +371,94 @@ class DigitalRainGlRenderer(
                 onGpuInitFailed()
             }
         }
+    }
+
+    private fun drawSatoshiPortraitBackdrop() {
+        if (portraitProgram == 0 || satoshiTexId == 0 || !satoshiPortraitVisible) return
+        val bmp = satoshiBackdropBitmap ?: return
+        if (bmp.isRecycled) return
+
+        if (satoshiTexUploadedSource !== bmp) {
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, satoshiTexId)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+            satoshiTexUploadedSource = bmp
+        }
+
+        val dst = SatoshiBackdropFit.fitCenterRectF(bmp.width, bmp.height, viewW, viewH)
+        val left = dst.left
+        val top = dst.top
+        val right = dst.right
+        val bottom = dst.bottom
+
+        portraitVertexBuffer.clear()
+        // Match CPU Canvas: screen top uses texture v=0 (GLUtils.texImage2D with this ortho).
+        putPortraitVert(left, top, 0f, 0f)
+        putPortraitVert(right, top, 1f, 0f)
+        putPortraitVert(left, bottom, 0f, 1f)
+        putPortraitVert(right, top, 1f, 0f)
+        putPortraitVert(right, bottom, 1f, 1f)
+        putPortraitVert(left, bottom, 0f, 1f)
+        portraitVertexBuffer.position(0)
+
+        GLES20.glUseProgram(portraitProgram)
+        GLES20.glUniformMatrix4fv(portraitMvpHandle, 1, false, mvpMatrix, 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, satoshiTexId)
+        GLES20.glUniform1i(portraitSamplerHandle, 0)
+
+        val stride = PORTRAIT_FLOATS_PER_VERTEX * BYTES_PER_FLOAT
+        GLES20.glEnableVertexAttribArray(portraitPositionHandle)
+        GLES20.glVertexAttribPointer(portraitPositionHandle, 2, GLES20.GL_FLOAT, false, stride, portraitVertexBuffer)
+        portraitVertexBuffer.position(2)
+        GLES20.glEnableVertexAttribArray(portraitTexCoordHandle)
+        GLES20.glVertexAttribPointer(portraitTexCoordHandle, 2, GLES20.GL_FLOAT, false, stride, portraitVertexBuffer)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6)
+
+        GLES20.glDisableVertexAttribArray(portraitPositionHandle)
+        GLES20.glDisableVertexAttribArray(portraitTexCoordHandle)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+    }
+
+    private fun putPortraitVert(x: Float, y: Float, u: Float, v: Float) {
+        portraitVertexBuffer.put(x)
+        portraitVertexBuffer.put(y)
+        portraitVertexBuffer.put(u)
+        portraitVertexBuffer.put(v)
+    }
+
+    private fun drawWhiteFlashFullscreen() {
+        if (!satoshiFlashWhite || flashProgram == 0) return
+
+        val w = viewW.toFloat()
+        val h = viewH.toFloat()
+        flashVertexBuffer.clear()
+        flashVertexBuffer.put(0f)
+        flashVertexBuffer.put(0f)
+        flashVertexBuffer.put(w)
+        flashVertexBuffer.put(0f)
+        flashVertexBuffer.put(0f)
+        flashVertexBuffer.put(h)
+        flashVertexBuffer.put(w)
+        flashVertexBuffer.put(0f)
+        flashVertexBuffer.put(w)
+        flashVertexBuffer.put(h)
+        flashVertexBuffer.put(0f)
+        flashVertexBuffer.put(h)
+        flashVertexBuffer.position(0)
+
+        GLES20.glUseProgram(flashProgram)
+        GLES20.glUniformMatrix4fv(flashMvpHandle, 1, false, mvpMatrix, 0)
+        GLES20.glUniform4f(flashColorHandle, 1f, 1f, 1f, 1f)
+        GLES20.glEnableVertexAttribArray(flashPositionHandle)
+        GLES20.glVertexAttribPointer(flashPositionHandle, 2, GLES20.GL_FLOAT, false, 0, flashVertexBuffer)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6)
+        GLES20.glDisableVertexAttribArray(flashPositionHandle)
     }
 
     private fun drawUploadedGeometry() {
@@ -822,6 +958,9 @@ class DigitalRainGlRenderer(
         private const val VERTICES_PER_QUAD = 6
         private const val TEXTURED_QUAD_FLOATS = VERTICES_PER_QUAD * FLOATS_PER_VERTEX
         private const val INITIAL_FLOAT_CAPACITY = 12288
+        private const val PORTRAIT_FLOATS_PER_VERTEX = 4
+        private const val PORTRAIT_FLOAT_CAPACITY = VERTICES_PER_QUAD * PORTRAIT_FLOATS_PER_VERTEX
+        private const val FLASH_FLOAT_CAPACITY = VERTICES_PER_QUAD * 2
 
         private fun allocateFloatBuffer(capacity: Int): FloatBuffer =
             ByteBuffer.allocateDirect(capacity * BYTES_PER_FLOAT).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -879,6 +1018,42 @@ class DigitalRainGlRenderer(
             void main() {
                 vec4 tex = texture2D(u_Texture, v_TexCoord);
                 gl_FragColor = tex * v_Color;
+            }
+        """
+
+        private const val PORTRAIT_VERTEX_SHADER = """
+            uniform mat4 u_MVPMatrix;
+            attribute vec4 a_Position;
+            attribute vec2 a_TexCoord;
+            varying vec2 v_TexCoord;
+            void main() {
+                v_TexCoord = a_TexCoord;
+                gl_Position = u_MVPMatrix * a_Position;
+            }
+        """
+
+        private const val PORTRAIT_FRAGMENT_SHADER = """
+            precision mediump float;
+            uniform sampler2D u_Texture;
+            varying vec2 v_TexCoord;
+            void main() {
+                gl_FragColor = texture2D(u_Texture, v_TexCoord);
+            }
+        """
+
+        private const val FLASH_VERTEX_SHADER = """
+            uniform mat4 u_MVPMatrix;
+            attribute vec4 a_Position;
+            void main() {
+                gl_Position = u_MVPMatrix * a_Position;
+            }
+        """
+
+        private const val FLASH_FRAGMENT_SHADER = """
+            precision mediump float;
+            uniform vec4 u_Color;
+            void main() {
+                gl_FragColor = u_Color;
             }
         """
     }

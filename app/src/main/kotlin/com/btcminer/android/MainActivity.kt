@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Rect
 import android.os.BatteryManager
@@ -114,6 +115,14 @@ class MainActivity : AppCompatActivity() {
         /** How often to fetch wallet balance from Mempool.space (ms). */
         private const val MEMPOOL_BALANCE_FETCH_INTERVAL_MS = 3_600_000L  // 1 hour
         private const val MEMPOOL_UTXO_URL = "https://mempool.space/api/address"
+        /** Delay before each Satoshi sequence starts. */
+        private const val SATOSHI_APPEAR_INTERVAL_MS = 10_000L//5 * 60_000L
+        /** Time Satoshi image remains visible before post-flash/hide. */
+        private const val SATOSHI_VISIBLE_DURATION_MS = 60_000L
+        /** Single on/off step duration for the white lightning flash effect. */
+        private const val SATOSHI_FLASH_STEP_DURATION_MS = 90L
+        /** Number of white flashes in each burst (pre and post). */
+        private const val SATOSHI_FLASH_COUNT = 2
         /** Rolling window size for the short hash rate chart (matches prior ~2 min at 1 Hz). */
         private const val HASHRATE_CHART_TWO_MIN_SAMPLES = 120
         private const val STATE_HASH_CHART_MODE = "hashChartMode"
@@ -264,7 +273,42 @@ class MainActivity : AppCompatActivity() {
     private var miningService: MiningForegroundService? = null
     private var lastBitcoinAddress: String = ""
     private val handler = Handler(Looper.getMainLooper())
+    private var satoshiBackdropBitmap: Bitmap? = null
+    private var satoshiLayerPortraitVisible = false
+    private var satoshiLayerFlashWhite = false
+    private var satoshiFlashStepsRemaining = 0
+    private var satoshiFlashVisiblePhase = true
+    private var satoshiFlashOnComplete: (() -> Unit)? = null
     private var flashPhase = false
+    private val satoshiSequenceRunnable: Runnable = Runnable {
+        startSatoshiFlashBurst {
+            showSatoshiImage()
+            handler.postDelayed(satoshiHideSequenceRunnable, SATOSHI_VISIBLE_DURATION_MS)
+        }
+    }
+    private val satoshiHideSequenceRunnable: Runnable = Runnable {
+        startSatoshiFlashBurst {
+            hideSatoshiLayerContent()
+            handler.postDelayed(satoshiSequenceRunnable, SATOSHI_APPEAR_INTERVAL_MS)
+        }
+    }
+    private val satoshiFlashRunnable = object : Runnable {
+        override fun run() {
+            if (satoshiFlashStepsRemaining <= 0) {
+                satoshiLayerFlashWhite = false
+                syncSatoshiBackdropToRain()
+                val onComplete = satoshiFlashOnComplete
+                satoshiFlashOnComplete = null
+                onComplete?.invoke()
+                return
+            }
+            satoshiLayerFlashWhite = satoshiFlashVisiblePhase
+            satoshiFlashVisiblePhase = !satoshiFlashVisiblePhase
+            satoshiFlashStepsRemaining--
+            syncSatoshiBackdropToRain()
+            handler.postDelayed(this, SATOSHI_FLASH_STEP_DURATION_MS)
+        }
+    }
     private val flashRunnable = object : Runnable {
         override fun run() {
             val service = miningService
@@ -377,6 +421,7 @@ class MainActivity : AppCompatActivity() {
         binding.digitalRainView.applySettings(settings)
         binding.digitalRainGlView.applySettings(settings)
         syncRainBackdropBackend()
+        syncSatoshiBackdropToRain()
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
             stopRainBackdrop()
             if (isDigitalRainMasterEnabled()) {
@@ -418,13 +463,79 @@ class MainActivity : AppCompatActivity() {
         binding.digitalRainGlView.stopRain()
     }
 
+    private fun syncSatoshiBackdropToRain() {
+        binding.digitalRainView.setSatoshiBackdrop(
+            satoshiBackdropBitmap,
+            satoshiLayerPortraitVisible,
+            satoshiLayerFlashWhite,
+        )
+        binding.digitalRainGlView.setSatoshiBackdrop(
+            satoshiBackdropBitmap,
+            satoshiLayerPortraitVisible,
+            satoshiLayerFlashWhite,
+        )
+    }
+
     private fun isDigitalRainMasterEnabled(): Boolean =
         DigitalRainPreferences(applicationContext).isDigitalRainEnabled()
+
+    private fun loadSatoshiLayerImage() {
+        satoshiBackdropBitmap = runCatching {
+            assets.open("Satoshi_Nakamoto.png").use { input ->
+                BitmapFactory.decodeStream(input)
+            }
+        }.getOrNull()
+        val bitmap = satoshiBackdropBitmap
+        if (bitmap != null) {
+            binding.satoshiImageView.setImageBitmap(bitmap)
+        } else {
+            binding.satoshiImageView.setImageDrawable(null)
+        }
+    }
+
+    private fun startSatoshiScheduler() {
+        stopSatoshiScheduler()
+        handler.postDelayed(satoshiSequenceRunnable, SATOSHI_APPEAR_INTERVAL_MS)
+    }
+
+    private fun stopSatoshiScheduler() {
+        handler.removeCallbacks(satoshiSequenceRunnable)
+        handler.removeCallbacks(satoshiHideSequenceRunnable)
+        handler.removeCallbacks(satoshiFlashRunnable)
+        satoshiFlashOnComplete = null
+        satoshiFlashStepsRemaining = 0
+        satoshiFlashVisiblePhase = true
+        hideSatoshiLayerContent()
+    }
+
+    private fun startSatoshiFlashBurst(onComplete: () -> Unit) {
+        handler.removeCallbacks(satoshiFlashRunnable)
+        satoshiFlashOnComplete = onComplete
+        satoshiFlashStepsRemaining = SATOSHI_FLASH_COUNT * 2
+        satoshiFlashVisiblePhase = true
+        handler.post(satoshiFlashRunnable)
+    }
+
+    private fun showSatoshiImage() {
+        satoshiLayerPortraitVisible = true
+        syncSatoshiBackdropToRain()
+    }
+
+    private fun hideSatoshiLayerContent() {
+        satoshiLayerPortraitVisible = false
+        satoshiLayerFlashWhite = false
+        binding.satoshiImageView.visibility = View.GONE
+        binding.satoshiFlashOverlay.visibility = View.GONE
+        syncSatoshiBackdropToRain()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        binding.satoshiLayerContainer.visibility = View.GONE
+        loadSatoshiLayerImage()
+        hideSatoshiLayerContent()
         savedInstanceState?.getString(STATE_HASH_CHART_MODE)?.let { saved ->
             hashChartMode = runCatching { HashChartMode.valueOf(saved) }.getOrDefault(HashChartMode.TwoMinute)
         }
@@ -544,6 +655,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         startRainBackdrop()
+        startSatoshiScheduler()
         handler.post(pollRunnable)
         handler.post(flashRunnable)
         handler.post(mempoolFetchRunnable)
@@ -557,6 +669,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         stopRainBackdrop()
+        stopSatoshiScheduler()
         try {
             unbindService(connection)
         } catch (_: Exception) { }

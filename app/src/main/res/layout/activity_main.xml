@@ -5,6 +5,29 @@
     android:layout_height="match_parent">
 
     <FrameLayout
+        android:id="@+id/satoshi_layer_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent">
+
+        <ImageView
+            android:id="@+id/satoshi_image_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:adjustViewBounds="true"
+            android:contentDescription="@null"
+            android:scaleType="fitCenter"
+            android:visibility="gone" />
+
+        <View
+            android:id="@+id/satoshi_flash_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@android:color/white"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <FrameLayout
         android:id="@+id/digital_rain_container"
         android:layout_width="match_parent"
         android:layout_height="match_parent">

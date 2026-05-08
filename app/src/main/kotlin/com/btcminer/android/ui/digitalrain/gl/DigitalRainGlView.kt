@@ -1,10 +1,12 @@
 /*
- * OpenGL ES 2 surface for Digital Rain backdrop (pairs with [com.btcminer.android.ui.digitalrain.DigitalRainView]).
+ * OpenGL ES surface for Digital Rain backdrop (pairs with [com.btcminer.android.ui.digitalrain.DigitalRainView]).
  */
 
 package com.btcminer.android.ui.digitalrain.gl
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.PixelFormat
 import android.opengl.GLSurfaceView
 import android.os.SystemClock
 import android.util.AttributeSet
@@ -43,6 +45,9 @@ class DigitalRainGlView @JvmOverloads constructor(
 
     init {
         setEGLContextClientVersion(2)
+        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        holder.setFormat(PixelFormat.TRANSLUCENT)
+        setZOrderOnTop(false)
         preserveEGLContextOnPause = true
         setRenderer(renderer)
         renderMode = RENDERMODE_WHEN_DIRTY
@@ -53,6 +58,13 @@ class DigitalRainGlView @JvmOverloads constructor(
         queueEvent {
             renderer.applySettings(normalized)
         }
+    }
+
+    fun setSatoshiBackdrop(bitmap: Bitmap?, showPortrait: Boolean, flashWhite: Boolean) {
+        queueEvent {
+            renderer.setSatoshiBackdrop(bitmap, showPortrait, flashWhite)
+        }
+        requestRender()
     }
 
     fun startRain() {
