@@ -21,11 +21,14 @@ import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
@@ -116,7 +119,7 @@ class MainActivity : AppCompatActivity() {
         private const val MEMPOOL_BALANCE_FETCH_INTERVAL_MS = 3_600_000L  // 1 hour
         private const val MEMPOOL_UTXO_URL = "https://mempool.space/api/address"
         /** Delay before each Satoshi sequence starts. */
-        private const val SATOSHI_APPEAR_INTERVAL_MS = 10_000L//5 * 60_000L
+        private const val SATOSHI_APPEAR_INTERVAL_MS = 3 * 60_000L
         /** Time Satoshi image remains visible before post-flash/hide. */
         private const val SATOSHI_VISIBLE_DURATION_MS = 60_000L
         /** Single on/off step duration for the white lightning flash effect. */
@@ -163,6 +166,14 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var configRepository: MiningConfigRepository
+
+    private var dashboardOverlayVisible = true
+    /** Screen Y (raw) at bottom of header tap band; updated while overlay visible; -1 until first layout. */
+    private var dashboardHeaderTapBottomPx = -1
+
+    private val dashboardHeaderGlobalLayoutListener = ViewTreeObserver.OnGlobalLayoutListener {
+        updateDashboardHeaderTapBottomCached()
+    }
     private val statsRepository by lazy { MiningStatsRepository(applicationContext) }
 
     private var page1Fragment: DashboardStatsPage1Fragment? = null
@@ -479,18 +490,47 @@ class MainActivity : AppCompatActivity() {
     private fun isDigitalRainMasterEnabled(): Boolean =
         DigitalRainPreferences(applicationContext).isDigitalRainEnabled()
 
+    private fun updateDashboardHeaderTapBottomCached() {
+        if (!dashboardOverlayVisible || binding.dashboardOverlay.visibility != View.VISIBLE) return
+        val header = binding.dashboardHeaderRow
+        if (header.height <= 0) return
+        val loc = IntArray(2)
+        header.getLocationOnScreen(loc)
+        dashboardHeaderTapBottomPx = loc[1] + header.height
+    }
+
+    private fun headerTapBandBottomPx(): Int {
+        if (dashboardHeaderTapBottomPx >= 0) return dashboardHeaderTapBottomPx
+        val insetTop = ViewCompat.getRootWindowInsets(binding.root)
+            ?.getInsets(WindowInsetsCompat.Type.statusBars())?.top ?: 0
+        val overlayPadTop = binding.dashboardOverlay.paddingTop
+        val approxHeaderRowPx = (56f * resources.displayMetrics.density).toInt()
+        return insetTop + overlayPadTop + approxHeaderRowPx
+    }
+
+    /** UI-only: does not touch mining service or rain lifecycle. */
+    private fun toggleDashboardOverlayVisibility() {
+        dashboardOverlayVisible = !dashboardOverlayVisible
+        binding.dashboardOverlay.visibility = if (dashboardOverlayVisible) View.VISIBLE else View.GONE
+        if (dashboardOverlayVisible) {
+            binding.dashboardHeaderRow.post { updateDashboardHeaderTapBottomCached() }
+        }
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_UP && ev.rawY <= headerTapBandBottomPx().toFloat()) {
+            toggleDashboardOverlayVisibility()
+            return true
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
     private fun loadSatoshiLayerImage() {
         satoshiBackdropBitmap = runCatching {
             assets.open("Satoshi_Nakamoto.png").use { input ->
                 BitmapFactory.decodeStream(input)
             }
         }.getOrNull()
-        val bitmap = satoshiBackdropBitmap
-        if (bitmap != null) {
-            binding.satoshiImageView.setImageBitmap(bitmap)
-        } else {
-            binding.satoshiImageView.setImageDrawable(null)
-        }
     }
 
     private fun startSatoshiScheduler() {
@@ -524,8 +564,6 @@ class MainActivity : AppCompatActivity() {
     private fun hideSatoshiLayerContent() {
         satoshiLayerPortraitVisible = false
         satoshiLayerFlashWhite = false
-        binding.satoshiImageView.visibility = View.GONE
-        binding.satoshiFlashOverlay.visibility = View.GONE
         syncSatoshiBackdropToRain()
     }
 
@@ -533,7 +571,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        binding.satoshiLayerContainer.visibility = View.GONE
         loadSatoshiLayerImage()
         hideSatoshiLayerContent()
         savedInstanceState?.getString(STATE_HASH_CHART_MODE)?.let { saved ->
@@ -603,6 +640,8 @@ class MainActivity : AppCompatActivity() {
 
         applyDigitalRainSettings()
 
+        binding.dashboardHeaderRow.viewTreeObserver.addOnGlobalLayoutListener(dashboardHeaderGlobalLayoutListener)
+
         // Initialize lastBitcoinAddress to detect changes when returning from Config
         lastBitcoinAddress = configRepository.getConfig().bitcoinAddress.trim()
     }
@@ -622,6 +661,7 @@ class MainActivity : AppCompatActivity() {
         chartTabMediator?.detach()
         chartTabMediator = null
         supportFragmentManager.unregisterFragmentLifecycleCallbacks(dashboardFragmentCallbacks)
+        binding.dashboardHeaderRow.viewTreeObserver.removeOnGlobalLayoutListener(dashboardHeaderGlobalLayoutListener)
         super.onDestroy()
     }
 
