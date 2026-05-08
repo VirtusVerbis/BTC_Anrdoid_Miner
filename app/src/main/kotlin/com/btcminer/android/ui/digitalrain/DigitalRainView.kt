@@ -88,6 +88,10 @@ class DigitalRainView @JvmOverloads constructor(
     /** Depth streak scale per column; `1f` = inactive. Sticky until wrap. */
     private var columnDepthMultiplier = FloatArray(0)
 
+    /** CPU BVF: prefiltered glyphs for current [glyphPaint] (rebuilt in [applyGeometryConstants]). */
+    private var bvfCpuBodyPool = CharArray(0)
+    private var bvfCpuKeyPool = CharArray(0)
+
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
@@ -160,7 +164,38 @@ class DigitalRainView @JvmOverloads constructor(
         }
         baseGlyphTextSize = candidateTextSize
         glyphPaint.textSize = baseGlyphTextSize
+        rebuildBvfCpuGlyphPools()
     }
+
+    /**
+     * Builds font-supported glyph pools once per geometry/settings change (not per frame).
+     * minSdk 24 guarantees [Paint.hasGlyph] is available.
+     */
+    private fun rebuildBvfCpuGlyphPools() {
+        if (settings.glyphAtlasMode != DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
+            bvfCpuBodyPool = CharArray(0)
+            bvfCpuKeyPool = CharArray(0)
+            return
+        }
+        val bodyCandidates = DigitalRainGlyphCharsets.bitcoinVsFiatMatrixChars().distinct()
+        val bodyFiltered = DigitalRainGlyphFontSupport.filterRenderableChars(glyphPaint, bodyCandidates)
+        bvfCpuBodyPool = DigitalRainGlyphFontSupport.toBodyPoolWithFallback(glyphPaint, bodyFiltered)
+        val keyFiltered = DigitalRainGlyphFontSupport.filterRenderableChars(
+            glyphPaint,
+            DigitalRainGlyphCharsets.keyHighlightHeadCharsBitcoinVsFiat,
+        )
+        bvfCpuKeyPool = DigitalRainGlyphFontSupport.toKeyPoolWithFallback(
+            glyphPaint,
+            keyFiltered,
+            bvfCpuBodyPool,
+        )
+    }
+
+    private fun sampleBvfCpuBodyChar(): Char =
+        if (bvfCpuBodyPool.isNotEmpty()) bvfCpuBodyPool[rng.nextInt(bvfCpuBodyPool.size)] else '$'
+
+    private fun sampleBvfCpuKeyChar(): Char =
+        if (bvfCpuKeyPool.isNotEmpty()) bvfCpuKeyPool[rng.nextInt(bvfCpuKeyPool.size)] else sampleBvfCpuBodyChar()
 
     private fun prepareAnim() {
         clearKeySelection()
@@ -262,12 +297,13 @@ class DigitalRainView @JvmOverloads constructor(
                 }
                 glyphPaint.color = bodyColor
                 val baseline = linePos[i] + currentY - fm.ascent
-                val bodyGlyph =
-                    if (isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
-                        DigitalRainGlyphSampling.randomBitcoinVsFiatKeyStreakChar(rng, settings).toString()
-                    } else {
-                        DigitalRainGlyphSampling.randomGlyphString(rng, settings)
-                    }
+                val bodyGlyph = when {
+                    isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                        sampleBvfCpuKeyChar().toString()
+                    settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                        sampleBvfCpuBodyChar().toString()
+                    else -> DigitalRainGlyphSampling.randomGlyphString(rng, settings)
+                }
                 canvas.drawText(bodyGlyph, 0, 1, stripLeft, baseline, glyphPaint)
                 currentY += letterStep
             }
@@ -275,8 +311,10 @@ class DigitalRainView @JvmOverloads constructor(
             glyphPaint.color = headRgb
             val headChar = when {
                 isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
-                    DigitalRainGlyphSampling.randomBitcoinVsFiatKeyStreakChar(rng, settings).toString()
+                    sampleBvfCpuKeyChar().toString()
                 isKeyColumn -> keyHead.toString()
+                settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                    sampleBvfCpuBodyChar().toString()
                 else -> DigitalRainGlyphSampling.randomGlyphString(rng, settings)
             }
             val headBaseline = linePos[i] + currentY - fm.ascent
@@ -326,25 +364,22 @@ class DigitalRainView @JvmOverloads constructor(
                 }
                 glyphPaint.color = bodyColor
                 val baseline = linePos[i] + currentY - fm.ascent
-                val ch =
-                    if (isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
-                        DigitalRainGlyphSampling.randomBitcoinVsFiatKeyStreakChar(rng, settings)
-                    } else {
-                        DigitalRainMessageGlyphSource.messageCharLooped(message, phase + j)
-                    }
+                val ch = when {
+                    isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                        sampleBvfCpuKeyChar()
+                    else -> DigitalRainMessageGlyphSource.messageCharLooped(message, phase + j)
+                }
                 canvas.drawText(ch.toString(), 0, 1, stripLeft, baseline, glyphPaint)
                 currentY += letterStep
             }
 
             glyphPaint.color = headRgb
-            val headChar =
-                if (isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT) {
-                    DigitalRainGlyphSampling.randomBitcoinVsFiatKeyStreakChar(rng, settings).toString()
-                } else if (isKeyColumn) {
-                    keyHead.toString()
-                } else {
-                    DigitalRainMessageGlyphSource.messageCharLooped(message, phase + len).toString()
-                }
+            val headChar = when {
+                isKeyColumn && settings.glyphAtlasMode == DigitalRainGlyphAtlasMode.BITCOIN_VS_FIAT ->
+                    sampleBvfCpuKeyChar().toString()
+                isKeyColumn -> keyHead.toString()
+                else -> DigitalRainMessageGlyphSource.messageCharLooped(message, phase + len).toString()
+            }
             val headBaseline = linePos[i] + currentY - fm.ascent
             canvas.drawText(headChar, 0, 1, stripLeft, headBaseline, glyphPaint)
             canvas.restore()
