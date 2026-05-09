@@ -11,7 +11,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.PorterDuff
 import android.graphics.Rect
 import android.os.SystemClock
 import android.util.AttributeSet
@@ -259,7 +258,9 @@ class DigitalRainView @JvmOverloads constructor(
         super.onDraw(canvas)
 
         if (viewW <= 0 || viewH <= 0) return
-        canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        canvas.drawColor(
+            Color.rgb(settings.rainBackgroundR, settings.rainBackgroundG, settings.rainBackgroundB)
+        )
 
         if (satoshiPortraitVisible) {
             val bmp = satoshiBackdropBitmap

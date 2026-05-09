@@ -124,7 +124,7 @@ class DigitalRainGlRenderer(
             settings.rainBackgroundR / 255f,
             settings.rainBackgroundG / 255f,
             settings.rainBackgroundB / 255f,
-            0f,
+            1f,
         )
     }
 
@@ -142,7 +142,7 @@ class DigitalRainGlRenderer(
             settings.rainBackgroundR / 255f,
             settings.rainBackgroundG / 255f,
             settings.rainBackgroundB / 255f,
-            0f,
+            1f,
         )
         program = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         if (program == 0) {

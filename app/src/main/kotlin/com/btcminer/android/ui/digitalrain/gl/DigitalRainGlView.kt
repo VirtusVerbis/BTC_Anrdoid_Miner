@@ -6,7 +6,6 @@ package com.btcminer.android.ui.digitalrain.gl
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.PixelFormat
 import android.opengl.GLSurfaceView
 import android.os.SystemClock
 import android.util.AttributeSet
@@ -45,9 +44,6 @@ class DigitalRainGlView @JvmOverloads constructor(
 
     init {
         setEGLContextClientVersion(2)
-        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
-        holder.setFormat(PixelFormat.TRANSLUCENT)
-        setZOrderOnTop(false)
         preserveEGLContextOnPause = true
         setRenderer(renderer)
         renderMode = RENDERMODE_WHEN_DIRTY

@@ -268,6 +268,8 @@ class MainActivity : AppCompatActivity() {
     private var pipFullHeight = 0
     /** Listener that updates root scale when PIP window is resized; removed when leaving PIP. */
     private var pipScaleLayoutListener: View.OnLayoutChangeListener? = null
+    /** True while [DigitalRainGlView.onPause] has been called and a matching onResume is still owed. */
+    private var glViewPaused = false
 
     private val mempoolOkHttpClient: OkHttpClient by lazy {
         val builder = OkHttpClient.Builder()
@@ -666,13 +668,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
-        binding.digitalRainGlView.onPause()
+        if (!isInPictureInPictureMode) {
+            binding.digitalRainGlView.onPause()
+            glViewPaused = true
+        }
         super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
-        binding.digitalRainGlView.onResume()
+        if (glViewPaused) {
+            binding.digitalRainGlView.onResume()
+            glViewPaused = false
+        }
         applyDigitalRainSettings()
         // Check if Bitcoin address changed in Config and trigger immediate fetch
         val currentAddress = configRepository.getConfig().bitcoinAddress.trim()
@@ -709,6 +717,10 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         stopRainBackdrop()
+        if (!glViewPaused) {
+            binding.digitalRainGlView.onPause()
+            glViewPaused = true
+        }
         stopSatoshiScheduler()
         try {
             unbindService(connection)
