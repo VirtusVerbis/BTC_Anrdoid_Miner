@@ -126,6 +126,8 @@ class MainActivity : AppCompatActivity() {
         private const val SATOSHI_FLASH_STEP_DURATION_MS = 90L
         /** Number of white flashes in each burst (pre and post). */
         private const val SATOSHI_FLASH_COUNT = 2
+        /** Time Satoshi lightning portrait variant stays visible after each flash burst (ms). */
+        private const val SATOSHI_LIGHTNING_PORTRAIT_MS = 300L //1_000L
         /** Rolling window size for the short hash rate chart (matches prior ~2 min at 1 Hz). */
         private const val HASHRATE_CHART_TWO_MIN_SAMPLES = 120
         private const val STATE_HASH_CHART_MODE = "hashChartMode"
@@ -286,23 +288,34 @@ class MainActivity : AppCompatActivity() {
     private var miningService: MiningForegroundService? = null
     private var lastBitcoinAddress: String = ""
     private val handler = Handler(Looper.getMainLooper())
-    private var satoshiBackdropBitmap: Bitmap? = null
+    private var satoshiNormalBackdropBitmap: Bitmap? = null
+    private var satoshiLightningBackdropBitmap: Bitmap? = null
+    private var satoshiUseLightningPortrait = false
     private var satoshiLayerPortraitVisible = false
     private var satoshiLayerFlashWhite = false
     private var satoshiFlashStepsRemaining = 0
     private var satoshiFlashVisiblePhase = true
     private var satoshiFlashOnComplete: (() -> Unit)? = null
     private var flashPhase = false
+    private val satoshiAfterLightningThenNormalRunnable = Runnable {
+        showSatoshiNormalPortrait()
+        handler.postDelayed(satoshiHideSequenceRunnable, SATOSHI_VISIBLE_DURATION_MS)
+    }
+    private val satoshiPostHideLightningDoneRunnable = Runnable {
+        hideSatoshiLayerContent()
+        handler.postDelayed(satoshiSequenceRunnable, SATOSHI_APPEAR_INTERVAL_MS)
+    }
     private val satoshiSequenceRunnable: Runnable = Runnable {
         startSatoshiFlashBurst {
-            showSatoshiImage()
-            handler.postDelayed(satoshiHideSequenceRunnable, SATOSHI_VISIBLE_DURATION_MS)
+            showSatoshiLightningPortrait()
+            handler.postDelayed(satoshiAfterLightningThenNormalRunnable, SATOSHI_LIGHTNING_PORTRAIT_MS)
         }
     }
     private val satoshiHideSequenceRunnable: Runnable = Runnable {
+        hideSatoshiLayerContent()
         startSatoshiFlashBurst {
-            hideSatoshiLayerContent()
-            handler.postDelayed(satoshiSequenceRunnable, SATOSHI_APPEAR_INTERVAL_MS)
+            showSatoshiLightningPortrait()
+            handler.postDelayed(satoshiPostHideLightningDoneRunnable, SATOSHI_LIGHTNING_PORTRAIT_MS)
         }
     }
     private val satoshiFlashRunnable = object : Runnable {
@@ -476,14 +489,24 @@ class MainActivity : AppCompatActivity() {
         binding.digitalRainGlView.stopRain()
     }
 
+    private fun effectiveSatoshiBackdrop(): Bitmap? {
+        if (satoshiUseLightningPortrait) {
+            val lightning = satoshiLightningBackdropBitmap
+            if (lightning != null && !lightning.isRecycled) return lightning
+        }
+        val normal = satoshiNormalBackdropBitmap
+        return if (normal != null && !normal.isRecycled) normal else null
+    }
+
     private fun syncSatoshiBackdropToRain() {
+        val bmp = effectiveSatoshiBackdrop()
         binding.digitalRainView.setSatoshiBackdrop(
-            satoshiBackdropBitmap,
+            bmp,
             satoshiLayerPortraitVisible,
             satoshiLayerFlashWhite,
         )
         binding.digitalRainGlView.setSatoshiBackdrop(
-            satoshiBackdropBitmap,
+            bmp,
             satoshiLayerPortraitVisible,
             satoshiLayerFlashWhite,
         )
@@ -528,11 +551,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadSatoshiLayerImage() {
-        satoshiBackdropBitmap = runCatching {
+        satoshiNormalBackdropBitmap = runCatching {
             assets.open("Satoshi_Nakamoto.png").use { input ->
                 BitmapFactory.decodeStream(input)
             }
         }.getOrNull()
+        satoshiLightningBackdropBitmap = runCatching {
+            assets.open("Satoshi_Nakamoto_lightning.png").use { input ->
+                BitmapFactory.decodeStream(input)
+            }
+        }.getOrNull()
+        satoshiUseLightningPortrait = false
     }
 
     private fun startSatoshiScheduler() {
@@ -543,6 +572,8 @@ class MainActivity : AppCompatActivity() {
     private fun stopSatoshiScheduler() {
         handler.removeCallbacks(satoshiSequenceRunnable)
         handler.removeCallbacks(satoshiHideSequenceRunnable)
+        handler.removeCallbacks(satoshiAfterLightningThenNormalRunnable)
+        handler.removeCallbacks(satoshiPostHideLightningDoneRunnable)
         handler.removeCallbacks(satoshiFlashRunnable)
         satoshiFlashOnComplete = null
         satoshiFlashStepsRemaining = 0
@@ -558,14 +589,22 @@ class MainActivity : AppCompatActivity() {
         handler.post(satoshiFlashRunnable)
     }
 
-    private fun showSatoshiImage() {
+    private fun showSatoshiNormalPortrait() {
         satoshiLayerPortraitVisible = true
+        satoshiUseLightningPortrait = false
+        syncSatoshiBackdropToRain()
+    }
+
+    private fun showSatoshiLightningPortrait() {
+        satoshiLayerPortraitVisible = true
+        satoshiUseLightningPortrait = true
         syncSatoshiBackdropToRain()
     }
 
     private fun hideSatoshiLayerContent() {
         satoshiLayerPortraitVisible = false
         satoshiLayerFlashWhite = false
+        satoshiUseLightningPortrait = false
         syncSatoshiBackdropToRain()
     }
 
