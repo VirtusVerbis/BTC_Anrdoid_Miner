@@ -301,9 +301,12 @@ class MainActivity : AppCompatActivity() {
         showSatoshiNormalPortrait()
         handler.postDelayed(satoshiHideSequenceRunnable, SATOSHI_VISIBLE_DURATION_MS)
     }
-    private val satoshiPostHideLightningDoneRunnable = Runnable {
+    /** After post-hide lightning beat: hide portrait, white flash burst, then idle before next cycle. */
+    private val satoshiPostHideAfterLightningRunnable = Runnable {
         hideSatoshiLayerContent()
-        handler.postDelayed(satoshiSequenceRunnable, SATOSHI_APPEAR_INTERVAL_MS)
+        startSatoshiFlashBurst {
+            handler.postDelayed(satoshiSequenceRunnable, SATOSHI_APPEAR_INTERVAL_MS)
+        }
     }
     private val satoshiSequenceRunnable: Runnable = Runnable {
         startSatoshiFlashBurst {
@@ -312,11 +315,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private val satoshiHideSequenceRunnable: Runnable = Runnable {
-        hideSatoshiLayerContent()
-        startSatoshiFlashBurst {
-            showSatoshiLightningPortrait()
-            handler.postDelayed(satoshiPostHideLightningDoneRunnable, SATOSHI_LIGHTNING_PORTRAIT_MS)
-        }
+        showSatoshiLightningPortrait()
+        handler.postDelayed(satoshiPostHideAfterLightningRunnable, SATOSHI_LIGHTNING_PORTRAIT_MS)
     }
     private val satoshiFlashRunnable = object : Runnable {
         override fun run() {
@@ -573,7 +573,7 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(satoshiSequenceRunnable)
         handler.removeCallbacks(satoshiHideSequenceRunnable)
         handler.removeCallbacks(satoshiAfterLightningThenNormalRunnable)
-        handler.removeCallbacks(satoshiPostHideLightningDoneRunnable)
+        handler.removeCallbacks(satoshiPostHideAfterLightningRunnable)
         handler.removeCallbacks(satoshiFlashRunnable)
         satoshiFlashOnComplete = null
         satoshiFlashStepsRemaining = 0
