@@ -873,6 +873,7 @@ class MainActivity : AppCompatActivity() {
         chart.legend.setTextColor(chartTextColor)
         chart.xAxis.setDrawLabels(true)
         chart.xAxis.setTextColor(chartTextColor)
+        chart.xAxis.labelRotationAngle = -45f
         chart.axisLeft.setDrawLabels(true)
         chart.axisLeft.setTextColor(chartTextColor)
         chart.axisRight.isEnabled = true
@@ -892,7 +893,7 @@ class MainActivity : AppCompatActivity() {
         chart.setPinchZoom(false)
         chart.isHighlightPerTapEnabled = false
         chart.isHighlightPerDragEnabled = false
-        chart.setExtraOffsets(8f, 8f, 8f, 8f)
+        chart.setExtraOffsets(8f, 8f, 8f, 24f)
         chart.setOnChartGestureListener(object : OnChartGestureListener {
             override fun onChartGestureStart(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
             override fun onChartGestureEnd(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
@@ -1689,6 +1690,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun formatElapsedChartAxisHoursMinutes(value: Float): String {
+        val totalSec = value.toLong().coerceAtLeast(0)
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+        return String.format(Locale.US, "%d:%02d", h, m)
+    }
+
+    /** MM:SS from elapsed seconds (no hour component); for short windows like the 2-min hashrate axis. */
+    private fun formatAxisMmSs(totalSec: Long): String {
+        val s = totalSec.coerceAtLeast(0)
+        val m = s / 60
+        val sec = s % 60
+        return String.format(Locale.US, "%d:%02d", m, sec)
+    }
+
     private fun formatRelativeDurationAxis(sec: Double): String {
         val s = sec.toLong().coerceAtLeast(0L)
         val d = s / 86400L
@@ -1901,21 +1917,24 @@ class MainActivity : AppCompatActivity() {
         val gpuSlice = historyGpu.subList(from, nAll)
         val battSliceC = batteryTempHistoryCelsius.subList(from, nAll)
 
-        when (hashChartMode) {
-            HashChartMode.TwoMinute -> {
-                chart.xAxis.valueFormatter = object : ValueFormatter() {
-                    override fun getFormattedValue(value: Float): String = value.toInt().toString()
-                }
-                chart.xAxis.granularity = 1f
-                chart.xAxis.isGranularityEnabled = true
+        val sessionDurationSec = historyElapsedSec[nAll - 1]
+        val twoMinAxisOriginSec = historyElapsedSec[from]
+
+        chart.xAxis.valueFormatter = when (hashChartMode) {
+            HashChartMode.TwoMinute -> object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String =
+                    formatAxisMmSs(value.toLong().coerceAtLeast(0))
             }
-            HashChartMode.Session -> {
-                chart.xAxis.valueFormatter = object : ValueFormatter() {
-                    override fun getFormattedValue(value: Float): String = formatElapsedChartAxisSeconds(value)
-                }
-                chart.xAxis.isGranularityEnabled = false
+            HashChartMode.Session -> object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String =
+                    if (sessionDurationSec >= 3600f) {
+                        formatElapsedChartAxisHoursMinutes(value)
+                    } else {
+                        formatElapsedChartAxisSeconds(value)
+                    }
             }
         }
+        chart.xAxis.isGranularityEnabled = false
 
         val maxSize = cpuSlice.size
         val orange = ContextCompat.getColor(this, R.color.bitcoin_orange)
@@ -1924,7 +1943,8 @@ class MainActivity : AppCompatActivity() {
         val magenta = Color.MAGENTA
 
         fun xForIndex(i: Int): Float = when (hashChartMode) {
-            HashChartMode.TwoMinute -> i.toFloat()
+            HashChartMode.TwoMinute ->
+                (historyElapsedSec[from + i] - twoMinAxisOriginSec).coerceAtLeast(0f)
             HashChartMode.Session -> historyElapsedSec[from + i]
         }
 
