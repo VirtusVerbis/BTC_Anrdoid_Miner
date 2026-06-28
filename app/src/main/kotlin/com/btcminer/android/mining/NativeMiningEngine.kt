@@ -541,6 +541,7 @@ class NativeMiningEngine(
                     AppLog.d(LOG_TAG) {
                         "GPU scan anomaly jobId=${job.jobId} range=${String.format(Locale.US, "%08x", start.toInt())}-${String.format(Locale.US, "%08x", nonceEnd)} mode=${gpuMode.name} status=${scan.status} nonce=${String.format(Locale.US, "%08x", (scan.nonceU32 and 0xFFFFFFFFL).toInt())} preJniMs=$preJniMs workMs=$workMs"
                     }
+                    AppLog.d(LOG_TAG) { DeviceTelemetryReader.formatScanLine(workMs) }
                 }
                 if (scan.status == GpuNonceScanResult.UNAVAILABLE) {
                     if (!gpuUnavailable.getAndSet(true)) {
@@ -624,6 +625,9 @@ class NativeMiningEngine(
         gpuNoncesScanned.set(0)
         gpuUnavailable.set(false)
         synchronized(hashrateSamples) { hashrateSamples.clear() }
+        DeviceTelemetryReader.resetForSession()
+        DeviceTelemetryReader.discoverZones()
+        AppLog.d(LOG_TAG) { DeviceTelemetryReader.formatProbeLine() }
         var lastLogTime = statsStartTime
         val statusUpdateIntervalMs = config.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
         val threadCount = config.maxWorkerThreads.coerceIn(0, Runtime.getRuntime().availableProcessors())
@@ -832,6 +836,7 @@ class NativeMiningEngine(
                 AppLog.d(LOG_TAG) {
                     "Stats: ${statsLogExtra?.invoke() ?: ""}CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, noncesCpu=${NumberFormatUtils.formatWithSpaces(cpuNonceN)}, noncesGpu=${NumberFormatUtils.formatWithSpaces(gpuNonceN)}, noncesTotal=${NumberFormatUtils.formatWithSpaces(cpuNonceN + gpuNonceN)}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}"
                 }
+                AppLog.d(LOG_TAG) { DeviceTelemetryReader.formatPeriodicLine() }
                 lastLogTime = now
             }
 

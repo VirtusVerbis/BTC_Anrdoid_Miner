@@ -360,6 +360,7 @@ static int ensure_compute_resources(void) {
 
     VkCommandPoolCreateInfo cmdPoolInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
         .queueFamilyIndex = g_computeQueueFamily,
     };
     if (vkCreateCommandPool(g_device, &cmdPoolInfo, NULL, &g_commandPool) != VK_SUCCESS)
@@ -655,10 +656,28 @@ static int submit_once_and_wait(VkPipeline pipeline, uint32_t groupX, uint32_t g
         }
         return 0;
     }
-    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    res = vkResetCommandPool(g_device, g_commandPool, 0);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetCommandPool");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkResetCommandPool failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
     res = vkBeginCommandBuffer(g_commandBuffer, &beginInfo);
     if (res != VK_SUCCESS) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkBeginCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkBeginCommandBuffer");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vkBeginCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        }
         return 0;
     }
     vkCmdBindPipeline(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
