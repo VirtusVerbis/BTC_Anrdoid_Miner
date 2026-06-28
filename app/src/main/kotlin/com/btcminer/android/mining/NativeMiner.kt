@@ -116,12 +116,12 @@ object NativeMiner {
     external fun getMaxComputeWorkGroupSize(): Int
 
     /**
-     * True only when the Vulkan compute pipeline for the given [gpuCores] can be created
+     * True only when the Vulkan compute pipeline for the given [gpuWorkgroups] can be created
      * (SPIR-V present and pipeline creation succeeds). When false, [gpuScanNoncesInto] would report unavailable;
      * use this to fail fast at mining start instead of on first chunk.
      * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
-    external fun gpuPipelineReady(gpuCores: Int, gpuSha256Mode: Int): Boolean
+    external fun gpuPipelineReady(gpuWorkgroups: Int, gpuSha256Mode: Int): Boolean
 
     /**
      * GPU nonce scan: writes [GpuNonceScanResult] wire format into [out] — `out[0]` = status, `out[1]` = winning
@@ -133,7 +133,7 @@ object NativeMiner {
         nonceStart: Int,
         nonceEnd: Int,
         target: ByteArray,
-        gpuCores: Int,
+        gpuWorkgroups: Int,
         gpuSha256Mode: Int,
         out: LongArray,
     )

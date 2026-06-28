@@ -1386,10 +1386,10 @@ class MainActivity : AppCompatActivity() {
             val maxCoresUi = Runtime.getRuntime().availableProcessors()
             val cpuCoresForLabel = config.maxWorkerThreads.coerceIn(0, maxCoresUi)
             p1.hashRateLabel.text = getString(R.string.hash_rate_label) + " - " + cpuCoresForLabel
-            val gpuCores = config.gpuCores.coerceAtLeast(0)
+            val gpuWorkgroups = config.gpuWorkgroups.coerceAtLeast(0)
             val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize().coerceAtLeast(32)
-            val effectiveWorkgroupSize = if (gpuCores > 0) (32 * gpuCores).coerceAtMost(maxWorkGroupSize) else 0
-            p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuCores > 0) " - $effectiveWorkgroupSize" else ""
+            val effectiveWorkgroupSize = if (gpuWorkgroups > 0) (32 * gpuWorkgroups).coerceAtMost(maxWorkGroupSize) else 0
+            p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuWorkgroups > 0) " - $effectiveWorkgroupSize" else ""
             p1.cpuUtilizationValue.text = formatStratumDifficultyDisplay(status)
             p1.noncesValue.text = NumberFormatUtils.formatWithSpaces(status.noncesScanned)
             val (sessionAcc, sessionRej, sessionId) = if (service != null && service.getMiningStartTimeMillis() != null) {

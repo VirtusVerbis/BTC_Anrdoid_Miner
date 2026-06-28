@@ -22,7 +22,8 @@ data class MiningConfig(
     val autoTuningByBatteryTemp: Boolean = false,
     val hashrateTargetHps: Double? = null,
     val cpuUsageTargetPercent: Int? = null,
-    val gpuCores: Int = 0,
+    /** 0 = GPU off; N sets local workgroup size to min(32×N, device maxComputeWorkGroupSize). */
+    val gpuWorkgroups: Int = 0,
     val gpuUtilizationPercent: Int = 75,
     val usePartialWakeLock: Boolean = false,
     val useLegacyAlarm: Boolean = false,
@@ -35,7 +36,7 @@ data class MiningConfig(
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()
 
     /** True when at least one of CPU worker threads or GPU workgroups is configured for hashing. */
-    fun hasActiveHashingConfig(): Boolean = maxWorkerThreads > 0 || gpuCores > 0
+    fun hasActiveHashingConfig(): Boolean = maxWorkerThreads > 0 || gpuWorkgroups > 0
 
     companion object {
         /** Max lengths for config strings to avoid abuse and storage bloat. */
@@ -65,9 +66,9 @@ data class MiningConfig(
         const val MAX_BATTERY_TEMP_C = 45
         const val BATTERY_TEMP_DEFAULT_C = 30
         const val BATTERY_TEMP_HARD_STOP_C = 43  //anything equal to or over 43C is dangerous
-        const val GPU_CORES_MIN = 0
+        const val GPU_WORKGROUPS_MIN = 0
         /** Max workgroup steps (32 * this = local size). Capped by device maxComputeWorkGroupSize/32. */
-        const val GPU_CORES_MAX = 64
+        const val GPU_WORKGROUPS_MAX = 64
         const val CPU_USAGE_TARGET_MIN = 1
         const val CPU_USAGE_TARGET_MAX = 100
         const val GPU_UTILIZATION_MIN = 0

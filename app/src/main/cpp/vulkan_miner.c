@@ -188,16 +188,16 @@ static int create_pipeline_with_spec(uint32_t localSize, VkPipeline *outPipeline
     return 1;
 }
 
-static int ensure_mining_pipeline(uint32_t gpuCores) {
+static int ensure_mining_pipeline(uint32_t gpuWorkgroups) {
     uint32_t maxSteps = g_maxWorkGroupSize / 32;
     if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
         maxSteps = MAX_GPU_WORKGROUP_STEPS;
-    if (gpuCores < 1 || gpuCores > maxSteps || (unsigned)gpuCores > MAX_GPU_WORKGROUP_STEPS)
+    if (gpuWorkgroups < 1 || gpuWorkgroups > maxSteps || (unsigned)gpuWorkgroups > MAX_GPU_WORKGROUP_STEPS)
         return 0;
-    VkPipeline *slot = &g_pipelines[gpuCores];
+    VkPipeline *slot = &g_pipelines[gpuWorkgroups];
     if (*slot != VK_NULL_HANDLE)
         return 1;
-    uint32_t localSize = 32u * gpuCores;
+    uint32_t localSize = 32u * gpuWorkgroups;
     if (localSize > g_maxWorkGroupSize)
         localSize = g_maxWorkGroupSize;
     if (localSize < 1u)
@@ -848,13 +848,13 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
 
 /* Returns GPU_UNAVAILABLE on failure; else 0. Sets *hit_out 0/1; if 1, *nonce_out is the winning nonce (may be 0xFFFFFFFFu). */
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
-                        const uint8_t *target, int gpuCores, int useMidstate, int *hit_out, uint32_t *nonce_out) {
-    if (gpuCores < 1) gpuCores = 1;
+                        const uint8_t *target, int gpuWorkgroups, int useMidstate, int *hit_out, uint32_t *nonce_out) {
+    if (gpuWorkgroups < 1) gpuWorkgroups = 1;
     uint32_t maxSteps = g_maxWorkGroupSize / 32;
     if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
         maxSteps = MAX_GPU_WORKGROUP_STEPS;
-    if ((unsigned)gpuCores > maxSteps)
-        gpuCores = (int)maxSteps;
+    if ((unsigned)gpuWorkgroups > maxSteps)
+        gpuWorkgroups = (int)maxSteps;
     /* Defensive: ensure core Vulkan handles are valid before proceeding. */
     if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
@@ -866,10 +866,10 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (g_commandBuffer == VK_NULL_HANDLE || g_fence == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
-    if (!ensure_mining_pipeline((uint32_t)gpuCores))
+    if (!ensure_mining_pipeline((uint32_t)gpuWorkgroups))
         return GPU_UNAVAILABLE;
-    VkPipeline miningPipe = g_pipelines[gpuCores];
-    if (gpuCores < 1 || gpuCores > (int)MAX_GPU_WORKGROUP_STEPS || miningPipe == VK_NULL_HANDLE) {
+    VkPipeline miningPipe = g_pipelines[gpuWorkgroups];
+    if (gpuWorkgroups < 1 || gpuWorkgroups > (int)MAX_GPU_WORKGROUP_STEPS || miningPipe == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
     if (g_uboMemory == VK_NULL_HANDLE || g_resultMemory == VK_NULL_HANDLE ||
@@ -880,7 +880,7 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     *nonce_out = 0u;
     atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
 
-    uint32_t localSize = 32 * (uint32_t)gpuCores;
+    uint32_t localSize = 32 * (uint32_t)gpuWorkgroups;
     if (localSize > g_maxWorkGroupSize)
         localSize = g_maxWorkGroupSize;
     if (localSize < 1)
@@ -1021,27 +1021,27 @@ Java_com_btcminer_android_mining_NativeMiner_getMaxComputeWorkGroupSize(JNIEnv *
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclass clazz, jint gpuCores,
+Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclass clazz, jint gpuWorkgroups,
                                                               jint gpuSha256Mode) {
     (void)env;
     (void)clazz;
 #ifdef __ANDROID__
     if (!try_init_vulkan())
         return JNI_FALSE;
-    if (gpuCores < 1) gpuCores = 1;
+    if (gpuWorkgroups < 1) gpuWorkgroups = 1;
     uint32_t maxSteps = g_maxWorkGroupSize / 32;
     if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
         maxSteps = MAX_GPU_WORKGROUP_STEPS;
-    if ((unsigned)gpuCores > maxSteps)
-        gpuCores = (int)maxSteps;
+    if ((unsigned)gpuWorkgroups > maxSteps)
+        gpuWorkgroups = (int)maxSteps;
     if (!ensure_compute_resources())
         return JNI_FALSE;
     (void)gpuSha256Mode;
-    if (!ensure_mining_pipeline((uint32_t)gpuCores))
+    if (!ensure_mining_pipeline((uint32_t)gpuWorkgroups))
         return JNI_FALSE;
     return JNI_TRUE;
 #else
-    (void)gpuCores;
+    (void)gpuWorkgroups;
     (void)gpuSha256Mode;
     return JNI_FALSE;
 #endif
@@ -1067,7 +1067,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, j
 JNIEXPORT void JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jclass clazz, jbyteArray header76Java,
                                                                jint nonceStart, jint nonceEnd, jbyteArray targetJava,
-                                                               jint gpuCores, jint gpuSha256Mode, jlongArray outJava) {
+                                                               jint gpuWorkgroups, jint gpuSha256Mode, jlongArray outJava) {
     (void)clazz;
     if (!outJava || (*env)->GetArrayLength(env, outJava) < 2) {
         return;
@@ -1099,7 +1099,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
     int useMid = (gpuSha256Mode != 0);
     int hit = 0;
     uint32_t winNonce = 0u;
-    int rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuCores, useMid, &hit,
+    int rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuWorkgroups, useMid, &hit,
         &winNonce);
     if (rr == GPU_UNAVAILABLE) {
         out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
@@ -1114,7 +1114,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
 #else
     (void)nonceStart;
     (void)nonceEnd;
-    (void)gpuCores;
+    (void)gpuWorkgroups;
     (void)gpuSha256Mode;
     out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
     out[1] = 0;

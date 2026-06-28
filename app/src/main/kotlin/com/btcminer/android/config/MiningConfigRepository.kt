@@ -45,8 +45,7 @@ class MiningConfigRepository(context: Context) {
             .takeIf { it.isNotEmpty() }?.toDoubleOrNull(),
         cpuUsageTargetPercent = storage.getStr(SecureConfigStorage.KEY_CPU_USAGE_TARGET_PERCENT).trim()
             .takeIf { it.isNotEmpty() }?.toIntOrNull()?.coerceIn(MiningConfig.CPU_USAGE_TARGET_MIN, MiningConfig.CPU_USAGE_TARGET_MAX),
-        gpuCores = storage.getInt(SecureConfigStorage.KEY_GPU_CORES, 0)
-            .coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX),
+        gpuWorkgroups = loadGpuWorkgroups(),
         gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
             .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
         usePartialWakeLock = storage.getBoolean(SecureConfigStorage.KEY_USE_PARTIAL_WAKE_LOCK, false),
@@ -67,6 +66,16 @@ class MiningConfigRepository(context: Context) {
             storage.getInt(SecureConfigStorage.KEY_GPU_SHA256_MODE, GpuSha256Mode.GPU_FULL.ordinal)
         ),
     )
+
+    private fun loadGpuWorkgroups(): Int {
+        val fromNewKey = storage.getInt(SecureConfigStorage.KEY_GPU_WORKGROUPS, -1)
+        val raw = if (fromNewKey >= 0) {
+            fromNewKey
+        } else {
+            storage.getInt(SecureConfigStorage.KEY_GPU_CORES_LEGACY, 0)
+        }
+        return raw.coerceIn(MiningConfig.GPU_WORKGROUPS_MIN, MiningConfig.GPU_WORKGROUPS_MAX)
+    }
 
     /** Returns the stored stratum cert pin for the given host, or null if none. Host should be normalized (no scheme, first segment). */
     fun getStratumPin(host: String): String? =
@@ -114,10 +123,12 @@ class MiningConfigRepository(context: Context) {
                 SecureConfigStorage.KEY_CPU_USAGE_TARGET_PERCENT,
                 config.cpuUsageTargetPercent?.toString() ?: ""
             )
-            edit.putInt(
-                SecureConfigStorage.KEY_GPU_CORES,
-                config.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, MiningConfig.GPU_CORES_MAX)
+            val gpuWorkgroups = config.gpuWorkgroups.coerceIn(
+                MiningConfig.GPU_WORKGROUPS_MIN,
+                MiningConfig.GPU_WORKGROUPS_MAX
             )
+            edit.putInt(SecureConfigStorage.KEY_GPU_WORKGROUPS, gpuWorkgroups)
+            edit.remove(SecureConfigStorage.KEY_GPU_CORES_LEGACY)
             edit.putInt(
                 SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT,
                 config.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)

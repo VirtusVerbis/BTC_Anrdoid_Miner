@@ -74,7 +74,9 @@ class SecureConfigStorage(context: Context) {
         const val KEY_AUTO_TUNING_BY_BATTERY_TEMP = "auto_tuning_by_battery_temp"
         const val KEY_HASHRATE_TARGET_HPS = "hashrate_target_hps"
         const val KEY_CPU_USAGE_TARGET_PERCENT = "cpu_usage_target_percent"
-        const val KEY_GPU_CORES = "gpu_cores"
+        const val KEY_GPU_WORKGROUPS = "gpu_workgroups"
+        /** Legacy pref key; read-only fallback for migration from pre-rename installs. */
+        internal const val KEY_GPU_CORES_LEGACY = "gpu_cores"
         const val KEY_GPU_UTILIZATION_PERCENT = "gpu_utilization_percent"
         const val KEY_USE_PARTIAL_WAKE_LOCK = "use_partial_wake_lock"
         const val KEY_USE_LEGACY_ALARM = "use_legacy_alarm"

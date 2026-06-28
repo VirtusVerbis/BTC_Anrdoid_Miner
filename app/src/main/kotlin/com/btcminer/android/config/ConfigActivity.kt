@@ -57,8 +57,8 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderBatteryTemp.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configBatteryTempValue.text = "${value.toInt()} °C"
         })
-        binding.configSliderGpuCores.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
-            binding.configGpuCoresValue.text = "${value.toInt()}"
+        binding.configSliderGpuWorkgroups.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
+            binding.configGpuWorkgroupsValue.text = "${value.toInt()}"
         })
         binding.configSliderGpuUtilization.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configGpuUtilizationValue.text = formatIntensityLabel(value.toInt())
@@ -216,11 +216,11 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderIntensity.value = c.maxIntensityPercent.toFloat()
         binding.configMaxIntensityValue.text = formatIntensityLabel(c.maxIntensityPercent)
         val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize()
-        val gpuMaxSteps = if (maxWorkGroupSize == 0) 8 else (maxWorkGroupSize / 32).coerceAtLeast(1).coerceAtMost(MiningConfig.GPU_CORES_MAX)
-        binding.configSliderGpuCores.valueTo = gpuMaxSteps.toFloat()
-        val gpuCores = c.gpuCores.coerceIn(MiningConfig.GPU_CORES_MIN, gpuMaxSteps)
-        binding.configSliderGpuCores.value = gpuCores.toFloat()
-        binding.configGpuCoresValue.text = "$gpuCores"
+        val gpuMaxSteps = if (maxWorkGroupSize == 0) 8 else (maxWorkGroupSize / 32).coerceAtLeast(1).coerceAtMost(MiningConfig.GPU_WORKGROUPS_MAX)
+        binding.configSliderGpuWorkgroups.valueTo = gpuMaxSteps.toFloat()
+        val gpuWorkgroups = c.gpuWorkgroups.coerceIn(MiningConfig.GPU_WORKGROUPS_MIN, gpuMaxSteps)
+        binding.configSliderGpuWorkgroups.value = gpuWorkgroups.toFloat()
+        binding.configGpuWorkgroupsValue.text = "$gpuWorkgroups"
         binding.configSliderGpuUtilization.value = c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX).toFloat()
         binding.configGpuUtilizationValue.text = formatIntensityLabel(c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX))
         val statusMs = c.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
@@ -326,7 +326,10 @@ class ConfigActivity : AppCompatActivity() {
                 MiningConfig.STATUS_UPDATE_INTERVAL_MIN,
                 MiningConfig.STATUS_UPDATE_INTERVAL_MAX
             ),
-            gpuCores = binding.configSliderGpuCores.value.toInt().coerceIn(MiningConfig.GPU_CORES_MIN, binding.configSliderGpuCores.valueTo.toInt()),
+            gpuWorkgroups = binding.configSliderGpuWorkgroups.value.toInt().coerceIn(
+                MiningConfig.GPU_WORKGROUPS_MIN,
+                binding.configSliderGpuWorkgroups.valueTo.toInt()
+            ),
             gpuUtilizationPercent = binding.configSliderGpuUtilization.value.toInt().coerceIn(
                 MiningConfig.GPU_UTILIZATION_MIN,
                 MiningConfig.GPU_UTILIZATION_MAX

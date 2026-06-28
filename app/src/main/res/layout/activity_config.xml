@@ -410,11 +410,11 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="@string/config_gpu_cores"
+            android:text="@string/config_gpu_workgroups"
             android:textColor="?attr/colorOnSurface" />
 
         <com.google.android.material.slider.Slider
-            android:id="@+id/config_slider_gpu_cores"
+            android:id="@+id/config_slider_gpu_workgroups"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:valueFrom="0"
@@ -424,7 +424,7 @@
             app:labelBehavior="gone" />
 
         <TextView
-            android:id="@+id/config_gpu_cores_value"
+            android:id="@+id/config_gpu_workgroups_value"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="0"
