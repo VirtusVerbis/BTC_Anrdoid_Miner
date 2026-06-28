@@ -4,25 +4,33 @@ import java.io.File
 import java.util.Locale
 
 /**
- * Reads Qualcomm thermal/GPU sysfs for debug logcat (gpuss-*, skin, battery, kgsl clocks).
- * Best-effort: many devices deny app access; probe line records sysfs=ok|partial|denied.
+ * Reads Qualcomm thermal/clock sysfs for debug logcat (cpuss-*, cpu-*, gpuss-*, skin, battery,
+ * cpuClk, gpuClk). Best-effort: many devices deny app access; probe line records sysfs=ok|partial|denied.
  */
 object DeviceTelemetryReader {
 
     private const val THERMAL_BASE = "/sys/class/thermal"
+    private const val CPUFREQ_BASE = "/sys/devices/system/cpu/cpufreq"
     private const val KGSL_CUR_FREQ = "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq"
     private const val KGSL_MAX_FREQ = "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq"
 
+    private var cpussZoneIds: List<Int> = emptyList()
+    private var cpuZoneIds: List<Int> = emptyList()
     private var gpussZoneIds: List<Int> = emptyList()
     private var skinZoneId: Int? = null
     private var batteryZoneId: Int? = null
+    private var cpuPolicyIds: List<Int> = emptyList()
     private var firstError: String? = null
 
     data class Snapshot(
         val access: SysfsAccess,
+        val cpussTempsC: List<Double>,
+        val cpuTempsC: List<Double>,
         val gpussTempsC: List<Double>,
         val skinC: Double?,
         val batterySysfsC: Double?,
+        val cpuCurKhz: Long?,
+        val cpuMaxKhz: Long?,
         val gpuCurHz: Long?,
         val gpuMaxHz: Long?,
     )
@@ -34,24 +42,37 @@ object DeviceTelemetryReader {
     }
 
     fun resetForSession() {
+        cpussZoneIds = emptyList()
+        cpuZoneIds = emptyList()
         gpussZoneIds = emptyList()
         skinZoneId = null
         batteryZoneId = null
+        cpuPolicyIds = emptyList()
         firstError = null
     }
 
     fun discoverZones() {
+        cpussZoneIds = emptyList()
+        cpuZoneIds = emptyList()
         gpussZoneIds = emptyList()
         skinZoneId = null
         batteryZoneId = null
+        cpuPolicyIds = emptyList()
         firstError = null
 
+        discoverThermalZones()
+        discoverCpuPolicies()
+    }
+
+    private fun discoverThermalZones() {
         val thermalDir = File(THERMAL_BASE)
         if (!thermalDir.isDirectory) {
             recordError("$THERMAL_BASE not accessible")
             return
         }
 
+        val cpuss = mutableListOf<Int>()
+        val cpu = mutableListOf<Int>()
         val gpuss = mutableListOf<Int>()
         val zoneDirs = thermalDir.listFiles()
             ?.filter { it.isDirectory && it.name.startsWith("thermal_zone") }
@@ -74,39 +95,77 @@ object DeviceTelemetryReader {
                 continue
             }
             when {
+                type.startsWith("cpuss") -> cpuss.add(id)
+                type.startsWith("cpu-") -> cpu.add(id)
                 type.startsWith("gpuss") -> gpuss.add(id)
                 type == "skin-msm-therm" -> skinZoneId = id
                 type == "battery" -> batteryZoneId = id
             }
         }
+        cpussZoneIds = cpuss.sorted()
+        cpuZoneIds = cpu.sorted()
         gpussZoneIds = gpuss.sorted()
     }
 
-    fun readSnapshot(): Snapshot {
-        val gpussTemps = gpussZoneIds.mapNotNull { id ->
-            readZoneTempC(id)
+    private fun discoverCpuPolicies() {
+        val cpufreqDir = File(CPUFREQ_BASE)
+        if (!cpufreqDir.isDirectory) {
+            recordError("$CPUFREQ_BASE not accessible")
+            return
         }
+        val policies = cpufreqDir.listFiles()
+            ?.filter { it.isDirectory && it.name.startsWith("policy") }
+            ?.mapNotNull { it.name.removePrefix("policy").toIntOrNull() }
+            ?.sorted()
+            ?: emptyList()
+        if (policies.isEmpty()) {
+            recordError("no policy entries under $CPUFREQ_BASE")
+            return
+        }
+        cpuPolicyIds = policies
+    }
+
+    fun readSnapshot(): Snapshot {
+        val cpussTemps = cpussZoneIds.mapNotNull { id -> readZoneTempC(id) }
+        val cpuTemps = cpuZoneIds.mapNotNull { id -> readZoneTempC(id) }
+        val gpussTemps = gpussZoneIds.mapNotNull { id -> readZoneTempC(id) }
         val skinC = skinZoneId?.let { readZoneTempC(it) }
         val batteryC = batteryZoneId?.let { readZoneTempC(it) }
+        val (cpuCurKhz, cpuMaxKhz) = readCpuClockKhz()
         val gpuCurHz = readSysfsLong(KGSL_CUR_FREQ)
         val gpuMaxHz = readSysfsLong(KGSL_MAX_FREQ)
 
-        val anyThermalRead = gpussTemps.isNotEmpty() || skinC != null || batteryC != null
+        val anyThermalRead = cpussTemps.isNotEmpty() || cpuTemps.isNotEmpty() ||
+            gpussTemps.isNotEmpty() || skinC != null || batteryC != null
+        val anyClockRead = cpuCurKhz != null || cpuMaxKhz != null || gpuCurHz != null || gpuMaxHz != null
+        val noZonesDiscovered = gpussZoneIds.isEmpty() && cpussZoneIds.isEmpty() &&
+            cpuZoneIds.isEmpty() && skinZoneId == null && batteryZoneId == null && cpuPolicyIds.isEmpty()
         val access = when {
             gpussZoneIds.isNotEmpty() && gpussTemps.isNotEmpty() -> SysfsAccess.OK
-            anyThermalRead || gpuCurHz != null || gpuMaxHz != null -> SysfsAccess.PARTIAL
+            anyThermalRead || anyClockRead -> SysfsAccess.PARTIAL
             firstError != null -> SysfsAccess.DENIED
-            gpussZoneIds.isEmpty() && skinZoneId == null && batteryZoneId == null -> SysfsAccess.DENIED
+            noZonesDiscovered -> SysfsAccess.DENIED
             else -> SysfsAccess.DENIED
         }
-        return Snapshot(access, gpussTemps, skinC, batteryC, gpuCurHz, gpuMaxHz)
+        return Snapshot(
+            access,
+            cpussTemps,
+            cpuTemps,
+            gpussTemps,
+            skinC,
+            batteryC,
+            cpuCurKhz,
+            cpuMaxKhz,
+            gpuCurHz,
+            gpuMaxHz,
+        )
     }
 
     fun formatProbeLine(): String {
         val snap = readSnapshot()
-        val gpussCount = gpussZoneIds.size
-        val idsLabel = formatZoneIdRange(gpussZoneIds)
-        val sampleGpuss = snap.gpussTempsC.firstOrNull()?.let { formatTempC(it) } ?: DeviceTelemetryFormat.UNAVAILABLE
+        val sampleCpuss = formatTempRange(snap.cpussTempsC)
+        val sampleCpu = formatTempRange(snap.cpuTempsC)
+        val sampleGpuss = formatTempRange(snap.gpussTempsC)
         val errSuffix = if (snap.access == SysfsAccess.DENIED && firstError != null) {
             " err=${firstError}"
         } else {
@@ -114,10 +173,15 @@ object DeviceTelemetryReader {
         }
         return buildString {
             append("Telemetry probe: sysfs=${accessLabel(snap.access)} ")
-            append("gpussZones=$gpussCount ids=$idsLabel ")
+            append("cpussZones=${cpussZoneIds.size} ids=${formatZoneIdRange(cpussZoneIds)} ")
+            append("sampleCpuss=$sampleCpuss ")
+            append("cpuZones=${cpuZoneIds.size} ids=${formatZoneIdRange(cpuZoneIds)} ")
+            append("sampleCpu=$sampleCpu ")
+            append("gpussZones=${gpussZoneIds.size} ids=${formatZoneIdRange(gpussZoneIds)} ")
             append("sampleGpuss=$sampleGpuss ")
             append("skin=${snap.skinC?.let { formatTempC(it) } ?: DeviceTelemetryFormat.UNAVAILABLE} ")
             append("battSysfs=${snap.batterySysfsC?.let { formatTempC(it) } ?: DeviceTelemetryFormat.UNAVAILABLE} ")
+            append("cpuClk=${formatCpuClk(snap.cpuCurKhz, snap.cpuMaxKhz)} ")
             append("gpuClk=${formatGpuClk(snap.gpuCurHz, snap.gpuMaxHz)}")
             append(errSuffix)
         }
@@ -131,23 +195,42 @@ object DeviceTelemetryReader {
             "sysfs=${accessLabel(snap.access)} "
         }
         return prefix +
-            "Telemetry: gpuss=${formatGpussRange(snap.gpussTempsC)} " +
+            "Telemetry: cpuss=${formatTempRange(snap.cpussTempsC)} " +
+            "cpu=${formatTempRange(snap.cpuTempsC)} " +
+            "gpuss=${formatTempRange(snap.gpussTempsC)} " +
             "skin=${snap.skinC?.let { formatTempC(it) } ?: DeviceTelemetryFormat.UNAVAILABLE} " +
             "battSysfs=${snap.batterySysfsC?.let { formatTempC(it) } ?: DeviceTelemetryFormat.UNAVAILABLE} " +
+            "cpuClk=${formatCpuClk(snap.cpuCurKhz, snap.cpuMaxKhz)} " +
             "gpuClk=${formatGpuClk(snap.gpuCurHz, snap.gpuMaxHz)}"
     }
 
     fun formatScanLine(workMs: Long): String {
         val snap = readSnapshot()
-        val gpussLabel = if (snap.gpussTempsC.isEmpty()) {
-            DeviceTelemetryFormat.UNAVAILABLE
-        } else {
-            formatTempC(snap.gpussTempsC.average())
-        }
-        return "Telemetry@scan: gpuss=$gpussLabel " +
+        return "Telemetry@scan: cpuss=${formatTempAverage(snap.cpussTempsC)} " +
+            "cpu=${formatTempAverage(snap.cpuTempsC)} " +
+            "gpuss=${formatTempAverage(snap.gpussTempsC)} " +
             "skin=${snap.skinC?.let { formatTempC(it) } ?: DeviceTelemetryFormat.UNAVAILABLE} " +
+            "cpuClk=${formatCpuClk(snap.cpuCurKhz, snap.cpuMaxKhz)} " +
             "gpuClk=${formatGpuClk(snap.gpuCurHz, snap.gpuMaxHz)} " +
             "workMs=$workMs"
+    }
+
+    private fun readCpuClockKhz(): Pair<Long?, Long?> {
+        if (cpuPolicyIds.isEmpty()) {
+            return null to null
+        }
+        var maxCur: Long? = null
+        var maxMax: Long? = null
+        for (policyId in cpuPolicyIds) {
+            val base = "$CPUFREQ_BASE/policy$policyId"
+            readSysfsLong("$base/scaling_cur_freq")?.let { cur ->
+                maxCur = if (maxCur == null) cur else maxOf(maxCur!!, cur)
+            }
+            readSysfsLong("$base/scaling_max_freq")?.let { max ->
+                maxMax = if (maxMax == null) max else maxOf(maxMax!!, max)
+            }
+        }
+        return maxCur to maxMax
     }
 
     private fun readZoneTempC(zoneId: Int): Double? {
@@ -188,6 +271,11 @@ object DeviceTelemetryReader {
 /** Pure formatting/parsing helpers (unit-tested without sysfs I/O). */
 internal object DeviceTelemetryFormat {
 
+    enum class ClkInputUnit {
+        HZ,
+        KHZ,
+    }
+
     fun parseMillidegreeC(raw: String): Double? {
         val md = raw.trim().toIntOrNull() ?: return null
         if (md <= 0 || md >= 150_000 || md == -273_000 || md < -100_000) {
@@ -196,7 +284,7 @@ internal object DeviceTelemetryFormat {
         return md / 1000.0
     }
 
-    fun formatGpussRange(tempsC: List<Double>): String {
+    fun formatTempRange(tempsC: List<Double>): String {
         if (tempsC.isEmpty()) return UNAVAILABLE
         val min = tempsC.min()
         val max = tempsC.max()
@@ -207,17 +295,30 @@ internal object DeviceTelemetryFormat {
         }
     }
 
+    fun formatGpussRange(tempsC: List<Double>): String = formatTempRange(tempsC)
+
+    fun formatTempAverage(tempsC: List<Double>): String {
+        if (tempsC.isEmpty()) return UNAVAILABLE
+        return formatTempC(tempsC.average())
+    }
+
     fun formatTempC(celsius: Double): String =
         "${formatTempValue(celsius)}\u00B0C"
 
     private fun formatTempValue(celsius: Double): String =
         String.format(Locale.US, "%.1f", celsius)
 
-    fun formatGpuClk(curHz: Long?, maxHz: Long?): String {
-        val cur = curHz?.let { hzToMhzValue(it) } ?: UNAVAILABLE
-        val max = maxHz?.let { hzToMhzValue(it) } ?: UNAVAILABLE
-        return "$cur/${max}MHz"
+    fun formatClkPair(cur: Long?, max: Long?, inputUnit: ClkInputUnit): String {
+        val curMhz = cur?.let { toMhzValue(it, inputUnit) } ?: UNAVAILABLE
+        val maxMhz = max?.let { toMhzValue(it, inputUnit) } ?: UNAVAILABLE
+        return "$curMhz/${maxMhz}MHz"
     }
+
+    fun formatGpuClk(curHz: Long?, maxHz: Long?): String =
+        formatClkPair(curHz, maxHz, ClkInputUnit.HZ)
+
+    fun formatCpuClk(curKhz: Long?, maxKhz: Long?): String =
+        formatClkPair(curKhz, maxKhz, ClkInputUnit.KHZ)
 
     const val UNAVAILABLE = "\u2014"
 
@@ -231,8 +332,11 @@ internal object DeviceTelemetryFormat {
         return sorted.joinToString(",")
     }
 
-    private fun hzToMhzValue(hz: Long): String {
-        val mhz = hz / 1_000_000.0
+    private fun toMhzValue(value: Long, inputUnit: ClkInputUnit): String {
+        val mhz = when (inputUnit) {
+            ClkInputUnit.HZ -> value / 1_000_000.0
+            ClkInputUnit.KHZ -> value / 1_000.0
+        }
         return if (mhz >= 100) {
             String.format(Locale.US, "%.0f", mhz)
         } else {
@@ -243,7 +347,11 @@ internal object DeviceTelemetryFormat {
 
 private fun formatTempC(celsius: Double): String = DeviceTelemetryFormat.formatTempC(celsius)
 
-private fun formatGpussRange(tempsC: List<Double>): String = DeviceTelemetryFormat.formatGpussRange(tempsC)
+private fun formatTempRange(tempsC: List<Double>): String = DeviceTelemetryFormat.formatTempRange(tempsC)
+
+private fun formatTempAverage(tempsC: List<Double>): String = DeviceTelemetryFormat.formatTempAverage(tempsC)
+
+private fun formatCpuClk(curKhz: Long?, maxKhz: Long?): String = DeviceTelemetryFormat.formatCpuClk(curKhz, maxKhz)
 
 private fun formatGpuClk(curHz: Long?, maxHz: Long?): String = DeviceTelemetryFormat.formatGpuClk(curHz, maxHz)
 

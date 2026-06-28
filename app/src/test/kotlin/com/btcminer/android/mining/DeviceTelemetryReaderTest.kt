@@ -24,25 +24,67 @@ class DeviceTelemetryReaderTest {
     }
 
     @Test
-    fun formatGpussRange_singleValueWhenClose() {
-        assertEquals("33.0°C", DeviceTelemetryFormat.formatGpussRange(listOf(33.0, 33.02, 32.98)))
+    fun formatTempRange_singleValueWhenClose() {
+        assertEquals("33.0°C", DeviceTelemetryFormat.formatTempRange(listOf(33.0, 33.02, 32.98)))
     }
 
     @Test
-    fun formatGpussRange_minMaxWhenSpread() {
+    fun formatTempRange_minMaxWhenSpread() {
+        assertEquals("32.3-33.0°C", DeviceTelemetryFormat.formatTempRange(listOf(33.0, 32.3, 32.6)))
+    }
+
+    @Test
+    fun formatTempRange_empty() {
+        assertEquals(DeviceTelemetryFormat.UNAVAILABLE, DeviceTelemetryFormat.formatTempRange(emptyList()))
+    }
+
+    @Test
+    fun formatGpussRange_delegatesToFormatTempRange() {
         assertEquals("32.3-33.0°C", DeviceTelemetryFormat.formatGpussRange(listOf(33.0, 32.3, 32.6)))
     }
 
     @Test
-    fun formatGpussRange_empty() {
-        assertEquals(DeviceTelemetryFormat.UNAVAILABLE, DeviceTelemetryFormat.formatGpussRange(emptyList()))
+    fun formatTempAverage_emptyAndValue() {
+        assertEquals(DeviceTelemetryFormat.UNAVAILABLE, DeviceTelemetryFormat.formatTempAverage(emptyList()))
+        assertEquals("33.0°C", DeviceTelemetryFormat.formatTempAverage(listOf(32.0, 34.0)))
+    }
+
+    @Test
+    fun formatClkPair_gpuHzToMhz() {
+        assertEquals(
+            "650/1100MHz",
+            DeviceTelemetryFormat.formatClkPair(
+                650_000_000L,
+                1_100_000_000L,
+                DeviceTelemetryFormat.ClkInputUnit.HZ,
+            ),
+        )
+        assertEquals(
+            "${DeviceTelemetryFormat.UNAVAILABLE}/1100MHz",
+            DeviceTelemetryFormat.formatClkPair(
+                null,
+                1_100_000_000L,
+                DeviceTelemetryFormat.ClkInputUnit.HZ,
+            ),
+        )
+        assertEquals(
+            "650/${DeviceTelemetryFormat.UNAVAILABLE}MHz",
+            DeviceTelemetryFormat.formatClkPair(
+                650_000_000L,
+                null,
+                DeviceTelemetryFormat.ClkInputUnit.HZ,
+            ),
+        )
+    }
+
+    @Test
+    fun formatClkPair_cpuKhzToMhz() {
+        assertEquals("3530/4320MHz", DeviceTelemetryFormat.formatCpuClk(3_530_000L, 4_320_000L))
     }
 
     @Test
     fun formatGpuClk_hzToMhz() {
         assertEquals("650/1100MHz", DeviceTelemetryFormat.formatGpuClk(650_000_000L, 1_100_000_000L))
-        assertEquals("${DeviceTelemetryFormat.UNAVAILABLE}/1100MHz", DeviceTelemetryFormat.formatGpuClk(null, 1_100_000_000L))
-        assertEquals("650/${DeviceTelemetryFormat.UNAVAILABLE}MHz", DeviceTelemetryFormat.formatGpuClk(650_000_000L, null))
     }
 
     @Test
@@ -57,14 +99,22 @@ class DeviceTelemetryReaderTest {
     fun formatPeriodicLine_includesSysfsPrefixWhenNotOk() {
         val line = buildPeriodicLineForTest(
             DeviceTelemetryReader.SysfsAccess.PARTIAL,
+            cpussTempsC = emptyList(),
+            cpuTempsC = emptyList(),
             gpussTempsC = emptyList(),
             skinC = 32.7,
             batterySysfsC = null,
+            cpuCurKhz = 3_530_000L,
+            cpuMaxKhz = 4_320_000L,
             gpuCurHz = 650_000_000L,
             gpuMaxHz = 1_100_000_000L,
         )
         assertEquals(
-            "sysfs=partial Telemetry: gpuss=${DeviceTelemetryFormat.UNAVAILABLE} skin=32.7°C battSysfs=${DeviceTelemetryFormat.UNAVAILABLE} gpuClk=650/1100MHz",
+            "sysfs=partial Telemetry: cpuss=${DeviceTelemetryFormat.UNAVAILABLE} " +
+                "cpu=${DeviceTelemetryFormat.UNAVAILABLE} " +
+                "gpuss=${DeviceTelemetryFormat.UNAVAILABLE} " +
+                "skin=32.7°C battSysfs=${DeviceTelemetryFormat.UNAVAILABLE} " +
+                "cpuClk=3530/4320MHz gpuClk=650/1100MHz",
             line,
         )
     }
@@ -73,24 +123,55 @@ class DeviceTelemetryReaderTest {
     fun formatPeriodicLine_noSysfsPrefixWhenOk() {
         val line = buildPeriodicLineForTest(
             DeviceTelemetryReader.SysfsAccess.OK,
+            cpussTempsC = listOf(42.1, 43.0),
+            cpuTempsC = listOf(41.0, 44.5),
             gpussTempsC = listOf(32.3, 33.0),
             skinC = 32.7,
             batterySysfsC = 32.2,
-            gpuCurHz = 650_000_000L,
+            cpuCurKhz = 3_530_000L,
+            cpuMaxKhz = 4_320_000L,
+            gpuCurHz = 525_000_000L,
             gpuMaxHz = 1_100_000_000L,
         )
         assertEquals(
-            "Telemetry: gpuss=32.3-33.0°C skin=32.7°C battSysfs=32.2°C gpuClk=650/1100MHz",
+            "Telemetry: cpuss=42.1-43.0°C cpu=41.0-44.5°C gpuss=32.3-33.0°C " +
+                "skin=32.7°C battSysfs=32.2°C cpuClk=3530/4320MHz gpuClk=525/1100MHz",
             line,
         )
+    }
+
+    @Test
+    fun formatPeriodicLine_fieldOrder_cpuBeforeGpu() {
+        val line = buildPeriodicLineForTest(
+            DeviceTelemetryReader.SysfsAccess.OK,
+            cpussTempsC = listOf(40.0),
+            cpuTempsC = listOf(39.0),
+            gpussTempsC = listOf(50.0),
+            skinC = null,
+            batterySysfsC = null,
+            cpuCurKhz = null,
+            cpuMaxKhz = null,
+            gpuCurHz = null,
+            gpuMaxHz = null,
+        )
+        val cpussIdx = line.indexOf("cpuss=")
+        val cpuIdx = line.indexOf("cpu=")
+        val gpussIdx = line.indexOf("gpuss=")
+        val cpuClkIdx = line.indexOf("cpuClk=")
+        val gpuClkIdx = line.indexOf("gpuClk=")
+        assert(cpussIdx >= 0 && cpuIdx > cpussIdx && gpussIdx > cpuIdx && cpuClkIdx > gpussIdx && gpuClkIdx > cpuClkIdx)
     }
 
     /** Mirrors [DeviceTelemetryReader.formatPeriodicLine] body for snapshot injection in tests. */
     private fun buildPeriodicLineForTest(
         access: DeviceTelemetryReader.SysfsAccess,
+        cpussTempsC: List<Double>,
+        cpuTempsC: List<Double>,
         gpussTempsC: List<Double>,
         skinC: Double?,
         batterySysfsC: Double?,
+        cpuCurKhz: Long?,
+        cpuMaxKhz: Long?,
         gpuCurHz: Long?,
         gpuMaxHz: Long?,
     ): String {
@@ -104,9 +185,12 @@ class DeviceTelemetryReaderTest {
             }} "
         }
         return prefix +
-            "Telemetry: gpuss=${DeviceTelemetryFormat.formatGpussRange(gpussTempsC)} " +
+            "Telemetry: cpuss=${DeviceTelemetryFormat.formatTempRange(cpussTempsC)} " +
+            "cpu=${DeviceTelemetryFormat.formatTempRange(cpuTempsC)} " +
+            "gpuss=${DeviceTelemetryFormat.formatTempRange(gpussTempsC)} " +
             "skin=${skinC?.let { DeviceTelemetryFormat.formatTempC(it) } ?: DeviceTelemetryFormat.UNAVAILABLE} " +
             "battSysfs=${batterySysfsC?.let { DeviceTelemetryFormat.formatTempC(it) } ?: DeviceTelemetryFormat.UNAVAILABLE} " +
+            "cpuClk=${DeviceTelemetryFormat.formatCpuClk(cpuCurKhz, cpuMaxKhz)} " +
             "gpuClk=${DeviceTelemetryFormat.formatGpuClk(gpuCurHz, gpuMaxHz)}"
     }
 }
