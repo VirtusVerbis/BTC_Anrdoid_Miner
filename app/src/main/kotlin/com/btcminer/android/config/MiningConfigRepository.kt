@@ -1,6 +1,7 @@
 package com.btcminer.android.config
 
 import android.content.Context
+import com.btcminer.android.mining.NativeMiner
 import java.lang.Runtime
 
 /**
@@ -11,70 +12,102 @@ class MiningConfigRepository(context: Context) {
 
     private val storage = SecureConfigStorage(context)
 
-    fun getConfig(): MiningConfig = MiningConfig(
-        stratumUrl = storage.getStr(SecureConfigStorage.KEY_STRATUM_URL),
-        stratumPort = storage.getInt(SecureConfigStorage.KEY_STRATUM_PORT, MiningConfig.DEFAULT_STRATUM_PORT)
-            .let { p -> if (p in 1..65535) p else MiningConfig.DEFAULT_STRATUM_PORT },
-        stratumUser = storage.getStr(SecureConfigStorage.KEY_STRATUM_USER),
-        stratumPass = storage.getStr(SecureConfigStorage.KEY_STRATUM_PASS),
-        bitcoinAddress = storage.getStr(SecureConfigStorage.KEY_BITCOIN_ADDRESS),
-        lightningAddress = storage.getStr(SecureConfigStorage.KEY_LIGHTNING_ADDRESS),
-        workerName = storage.getStr(SecureConfigStorage.KEY_WORKER_NAME),
-        wifiOnly = storage.getBoolean(SecureConfigStorage.KEY_WIFI_ONLY, true),
-        mineOnlyWhenCharging = storage.getBoolean(SecureConfigStorage.KEY_MINE_ONLY_WHEN_CHARGING, false),
-        maxIntensityPercent = storage.getInt(
-            SecureConfigStorage.KEY_MAX_INTENSITY_PERCENT,
-            75
-        ).coerceIn(MiningConfig.MAX_INTENSITY_MIN, MiningConfig.MAX_INTENSITY_MAX),
-        maxWorkerThreads = run {
-            val maxCaps = Runtime.getRuntime().availableProcessors()
-            storage.getInt(SecureConfigStorage.KEY_MAX_WORKER_THREADS, minOf(4, maxCaps))
-                .coerceIn(MiningConfig.MAX_WORKER_THREADS_MIN, maxCaps)
-        },
-        statusUpdateIntervalMs = storage.getInt(
-            SecureConfigStorage.KEY_STATUS_UPDATE_INTERVAL_MS,
-            1000
-        ).coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX),
-        batteryTempFahrenheit = storage.getBoolean(SecureConfigStorage.KEY_BATTERY_TEMP_FAHRENHEIT, false),
-        maxBatteryTempC = storage.getInt(
-            SecureConfigStorage.KEY_MAX_BATTERY_TEMP_C,
-            MiningConfig.BATTERY_TEMP_DEFAULT_C
-        ).coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C),
-        autoTuningByBatteryTemp = storage.getBoolean(SecureConfigStorage.KEY_AUTO_TUNING_BY_BATTERY_TEMP, false),
-        hashrateTargetHps = storage.getStr(SecureConfigStorage.KEY_HASHRATE_TARGET_HPS).trim()
-            .takeIf { it.isNotEmpty() }?.toDoubleOrNull(),
-        cpuUsageTargetPercent = storage.getStr(SecureConfigStorage.KEY_CPU_USAGE_TARGET_PERCENT).trim()
-            .takeIf { it.isNotEmpty() }?.toIntOrNull()?.coerceIn(MiningConfig.CPU_USAGE_TARGET_MIN, MiningConfig.CPU_USAGE_TARGET_MAX),
-        gpuWorkgroups = loadGpuWorkgroups(),
-        gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
-            .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
-        usePartialWakeLock = storage.getBoolean(SecureConfigStorage.KEY_USE_PARTIAL_WAKE_LOCK, false),
-        useLegacyAlarm = storage.getBoolean(SecureConfigStorage.KEY_USE_LEGACY_ALARM, false),
-        miningThreadPriority = storage.getInt(SecureConfigStorage.KEY_MINING_THREAD_PRIORITY, 0)
-            .coerceIn(MiningConfig.MINING_THREAD_PRIORITY_MIN, MiningConfig.MINING_THREAD_PRIORITY_MAX),
-        alarmWakeIntervalSec = storage.getInt(SecureConfigStorage.KEY_ALARM_WAKE_INTERVAL_SEC, 60)
-            .coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX),
-        cpuSha256Flavor = run {
-            val rawOrd = storage.getInt(
-                SecureConfigStorage.KEY_CPU_SHA256_FLAVOR,
-                CpuSha256Flavor.SCALAR.ordinal
-            )
-            val raw = CpuSha256Flavor.fromOrdinal(rawOrd) ?: CpuSha256Flavor.SCALAR
-            CpuShaCapabilities.coerceToSupported(raw)
-        },
-        gpuSha256Mode = GpuSha256Mode.fromOrdinal(
-            storage.getInt(SecureConfigStorage.KEY_GPU_SHA256_MODE, GpuSha256Mode.GPU_FULL.ordinal)
-        ),
-    )
+    fun getConfig(): MiningConfig {
+        val (gpuEnabled, gpuLocalSizeX) = loadGpuSettings()
+        return MiningConfig(
+            stratumUrl = storage.getStr(SecureConfigStorage.KEY_STRATUM_URL),
+            stratumPort = storage.getInt(SecureConfigStorage.KEY_STRATUM_PORT, MiningConfig.DEFAULT_STRATUM_PORT)
+                .let { p -> if (p in 1..65535) p else MiningConfig.DEFAULT_STRATUM_PORT },
+            stratumUser = storage.getStr(SecureConfigStorage.KEY_STRATUM_USER),
+            stratumPass = storage.getStr(SecureConfigStorage.KEY_STRATUM_PASS),
+            bitcoinAddress = storage.getStr(SecureConfigStorage.KEY_BITCOIN_ADDRESS),
+            lightningAddress = storage.getStr(SecureConfigStorage.KEY_LIGHTNING_ADDRESS),
+            workerName = storage.getStr(SecureConfigStorage.KEY_WORKER_NAME),
+            wifiOnly = storage.getBoolean(SecureConfigStorage.KEY_WIFI_ONLY, true),
+            mineOnlyWhenCharging = storage.getBoolean(SecureConfigStorage.KEY_MINE_ONLY_WHEN_CHARGING, false),
+            maxIntensityPercent = storage.getInt(
+                SecureConfigStorage.KEY_MAX_INTENSITY_PERCENT,
+                75
+            ).coerceIn(MiningConfig.MAX_INTENSITY_MIN, MiningConfig.MAX_INTENSITY_MAX),
+            maxWorkerThreads = run {
+                val maxCaps = Runtime.getRuntime().availableProcessors()
+                storage.getInt(SecureConfigStorage.KEY_MAX_WORKER_THREADS, minOf(4, maxCaps))
+                    .coerceIn(MiningConfig.MAX_WORKER_THREADS_MIN, maxCaps)
+            },
+            statusUpdateIntervalMs = storage.getInt(
+                SecureConfigStorage.KEY_STATUS_UPDATE_INTERVAL_MS,
+                1000
+            ).coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX),
+            batteryTempFahrenheit = storage.getBoolean(SecureConfigStorage.KEY_BATTERY_TEMP_FAHRENHEIT, false),
+            maxBatteryTempC = storage.getInt(
+                SecureConfigStorage.KEY_MAX_BATTERY_TEMP_C,
+                MiningConfig.BATTERY_TEMP_DEFAULT_C
+            ).coerceIn(1, MiningConfig.MAX_BATTERY_TEMP_C),
+            autoTuningByBatteryTemp = storage.getBoolean(SecureConfigStorage.KEY_AUTO_TUNING_BY_BATTERY_TEMP, false),
+            hashrateTargetHps = storage.getStr(SecureConfigStorage.KEY_HASHRATE_TARGET_HPS).trim()
+                .takeIf { it.isNotEmpty() }?.toDoubleOrNull(),
+            cpuUsageTargetPercent = storage.getStr(SecureConfigStorage.KEY_CPU_USAGE_TARGET_PERCENT).trim()
+                .takeIf { it.isNotEmpty() }?.toIntOrNull()?.coerceIn(MiningConfig.CPU_USAGE_TARGET_MIN, MiningConfig.CPU_USAGE_TARGET_MAX),
+            gpuEnabled = gpuEnabled,
+            gpuLocalSizeX = gpuLocalSizeX,
+            gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
+                .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
+            usePartialWakeLock = storage.getBoolean(SecureConfigStorage.KEY_USE_PARTIAL_WAKE_LOCK, false),
+            useLegacyAlarm = storage.getBoolean(SecureConfigStorage.KEY_USE_LEGACY_ALARM, false),
+            miningThreadPriority = storage.getInt(SecureConfigStorage.KEY_MINING_THREAD_PRIORITY, 0)
+                .coerceIn(MiningConfig.MINING_THREAD_PRIORITY_MIN, MiningConfig.MINING_THREAD_PRIORITY_MAX),
+            alarmWakeIntervalSec = storage.getInt(SecureConfigStorage.KEY_ALARM_WAKE_INTERVAL_SEC, 60)
+                .coerceIn(MiningConfig.ALARM_WAKE_INTERVAL_SEC_MIN, MiningConfig.ALARM_WAKE_INTERVAL_SEC_MAX),
+            cpuSha256Flavor = run {
+                val rawOrd = storage.getInt(
+                    SecureConfigStorage.KEY_CPU_SHA256_FLAVOR,
+                    CpuSha256Flavor.SCALAR.ordinal
+                )
+                val raw = CpuSha256Flavor.fromOrdinal(rawOrd) ?: CpuSha256Flavor.SCALAR
+                CpuShaCapabilities.coerceToSupported(raw)
+            },
+            gpuSha256Mode = GpuSha256Mode.fromOrdinal(
+                storage.getInt(SecureConfigStorage.KEY_GPU_SHA256_MODE, GpuSha256Mode.GPU_FULL.ordinal)
+            ),
+        )
+    }
 
-    private fun loadGpuWorkgroups(): Int {
+    private fun deviceMaxLocalSizeX(): Int {
+        val fromNative = NativeMiner.getMaxGpuLocalSizeX()
+        return if (fromNative > 0) fromNative else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX
+    }
+
+    private fun loadLegacyWorkgroups(): Int {
         val fromNewKey = storage.getInt(SecureConfigStorage.KEY_GPU_WORKGROUPS, -1)
         val raw = if (fromNewKey >= 0) {
             fromNewKey
         } else {
             storage.getInt(SecureConfigStorage.KEY_GPU_CORES_LEGACY, 0)
         }
-        return raw.coerceIn(MiningConfig.GPU_WORKGROUPS_MIN, MiningConfig.GPU_WORKGROUPS_MAX)
+        return raw.coerceAtLeast(0)
+    }
+
+    private fun loadGpuSettings(): Pair<Boolean, Int> {
+        val legacyWorkgroups = loadLegacyWorkgroups()
+        val legacyCores = storage.getInt(SecureConfigStorage.KEY_GPU_CORES_LEGACY, 0).coerceAtLeast(0)
+        val hasEnabledKey = storage.containsKey(SecureConfigStorage.KEY_GPU_ENABLED)
+        val hasLocalSizeKey = storage.containsKey(SecureConfigStorage.KEY_GPU_LOCAL_SIZE_X)
+        val gpuEnabled = GpuConfigMigration.resolveGpuEnabled(
+            hasGpuEnabledKey = hasEnabledKey,
+            gpuEnabledStored = storage.getBoolean(SecureConfigStorage.KEY_GPU_ENABLED, false),
+            legacyWorkgroups = legacyWorkgroups,
+            legacyGpuCores = legacyCores,
+        )
+        val gpuLocalSizeX = GpuConfigMigration.resolveGpuLocalSizeX(
+            hasLocalSizeKey = hasLocalSizeKey,
+            storedLocalSizeX = storage.getInt(
+                SecureConfigStorage.KEY_GPU_LOCAL_SIZE_X,
+                MiningConfig.GPU_LOCAL_SIZE_X_DEFAULT,
+            ),
+            legacyWorkgroups = legacyWorkgroups,
+            deviceMax = deviceMaxLocalSizeX(),
+        )
+        return gpuEnabled to gpuLocalSizeX
     }
 
     /** Returns the stored stratum cert pin for the given host, or null if none. Host should be normalized (no scheme, first segment). */
@@ -87,6 +120,8 @@ class MiningConfigRepository(context: Context) {
     }
 
     fun saveConfig(config: MiningConfig) {
+        val deviceMax = deviceMaxLocalSizeX()
+        val gpuLocalSizeX = config.clampedGpuLocalSizeX(deviceMax)
         storage.commitBatch { edit ->
             edit.putString(SecureConfigStorage.KEY_STRATUM_URL, config.stratumUrl)
             edit.putInt(SecureConfigStorage.KEY_STRATUM_PORT, config.stratumPort.coerceIn(1, 65535))
@@ -123,11 +158,9 @@ class MiningConfigRepository(context: Context) {
                 SecureConfigStorage.KEY_CPU_USAGE_TARGET_PERCENT,
                 config.cpuUsageTargetPercent?.toString() ?: ""
             )
-            val gpuWorkgroups = config.gpuWorkgroups.coerceIn(
-                MiningConfig.GPU_WORKGROUPS_MIN,
-                MiningConfig.GPU_WORKGROUPS_MAX
-            )
-            edit.putInt(SecureConfigStorage.KEY_GPU_WORKGROUPS, gpuWorkgroups)
+            edit.putBoolean(SecureConfigStorage.KEY_GPU_ENABLED, config.gpuEnabled)
+            edit.putInt(SecureConfigStorage.KEY_GPU_LOCAL_SIZE_X, gpuLocalSizeX)
+            edit.remove(SecureConfigStorage.KEY_GPU_WORKGROUPS)
             edit.remove(SecureConfigStorage.KEY_GPU_CORES_LEGACY)
             edit.putInt(
                 SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT,

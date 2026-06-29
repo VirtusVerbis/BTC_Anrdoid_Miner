@@ -22,8 +22,10 @@ data class MiningConfig(
     val autoTuningByBatteryTemp: Boolean = false,
     val hashrateTargetHps: Double? = null,
     val cpuUsageTargetPercent: Int? = null,
-    /** 0 = GPU off; N sets local workgroup size to min(32×N, device maxComputeWorkGroupSize). */
-    val gpuWorkgroups: Int = 0,
+    /** When true, GPU mining is enabled via Vulkan compute. */
+    val gpuEnabled: Boolean = false,
+    /** Threads per workgroup (local_size_x); used only when [gpuEnabled]. */
+    val gpuLocalSizeX: Int = GPU_LOCAL_SIZE_X_DEFAULT,
     val gpuUtilizationPercent: Int = 75,
     val usePartialWakeLock: Boolean = false,
     val useLegacyAlarm: Boolean = false,
@@ -35,8 +37,12 @@ data class MiningConfig(
     fun isValidForMining(): Boolean =
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()
 
-    /** True when at least one of CPU worker threads or GPU workgroups is configured for hashing. */
-    fun hasActiveHashingConfig(): Boolean = maxWorkerThreads > 0 || gpuWorkgroups > 0
+    /** True when at least one of CPU worker threads or GPU mining is configured. */
+    fun hasActiveHashingConfig(): Boolean = maxWorkerThreads > 0 || gpuEnabled
+
+    /** Clamp [gpuLocalSizeX] to device limits (step 32). */
+    fun clampedGpuLocalSizeX(deviceMax: Int): Int =
+        clampGpuLocalSizeX(gpuLocalSizeX, deviceMax)
 
     companion object {
         /** Max lengths for config strings to avoid abuse and storage bloat. */
@@ -66,9 +72,18 @@ data class MiningConfig(
         const val MAX_BATTERY_TEMP_C = 45
         const val BATTERY_TEMP_DEFAULT_C = 30
         const val BATTERY_TEMP_HARD_STOP_C = 43  //anything equal to or over 43C is dangerous
-        const val GPU_WORKGROUPS_MIN = 0
-        /** Max workgroup steps (32 * this = local size). Capped by device maxComputeWorkGroupSize/32. */
-        const val GPU_WORKGROUPS_MAX = 64
+        const val GPU_LOCAL_SIZE_X_MIN = 32
+        const val GPU_LOCAL_SIZE_X_DEFAULT = 32
+        const val GPU_LOCAL_SIZE_X_STEP = 32
+        /** Upper bound when Vulkan max is unknown (64 steps × 32). */
+        const val GPU_LOCAL_SIZE_X_FALLBACK_MAX = GPU_LOCAL_SIZE_X_STEP * 64
+
+        /** Round down to step 32 and clamp to [GPU_LOCAL_SIZE_X_MIN, deviceMax aligned]. */
+        fun clampGpuLocalSizeX(value: Int, deviceMax: Int): Int {
+            val maxAligned = (deviceMax.coerceAtLeast(GPU_LOCAL_SIZE_X_MIN) / GPU_LOCAL_SIZE_X_STEP) * GPU_LOCAL_SIZE_X_STEP
+            val clamped = value.coerceIn(GPU_LOCAL_SIZE_X_MIN, maxAligned.coerceAtLeast(GPU_LOCAL_SIZE_X_MIN))
+            return (clamped / GPU_LOCAL_SIZE_X_STEP) * GPU_LOCAL_SIZE_X_STEP
+        }
         const val CPU_USAGE_TARGET_MIN = 1
         const val CPU_USAGE_TARGET_MAX = 100
         const val GPU_UTILIZATION_MIN = 0

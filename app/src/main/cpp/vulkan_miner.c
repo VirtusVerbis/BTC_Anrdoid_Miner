@@ -70,8 +70,13 @@ static VkPhysicalDevice g_physicalDevice = VK_NULL_HANDLE;
 static VkQueue g_queue = VK_NULL_HANDLE;
 static uint32_t g_computeQueueFamily = 0;
 static uint32_t g_maxWorkGroupSize = 256;
+static uint32_t g_maxWorkGroupInvocations = 256;
+static uint32_t g_effectiveMaxLocalSizeX = 256;
 static uint32_t g_maxWorkGroupCount = 65535;
 static int g_vulkan_available = -1;
+static int g_limits_logged = 0;
+static char g_deviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+static char g_driverName[256];
 
 static VkDescriptorSetLayout g_descriptorSetLayout = VK_NULL_HANDLE;
 static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
@@ -149,6 +154,73 @@ static int create_miner_shader_module(VkShaderModule *outModule) {
     return 1;
 }
 
+static uint32_t effective_max_local_size_x(void) {
+    uint32_t maxLs = g_effectiveMaxLocalSizeX;
+    if (maxLs < 32u)
+        maxLs = 32u;
+    return (maxLs / 32u) * 32u;
+}
+
+static uint32_t normalize_local_size_x(int localSizeX) {
+    uint32_t maxLs = effective_max_local_size_x();
+    if (localSizeX < 32)
+        localSizeX = 32;
+    uint32_t ls = (uint32_t)localSizeX;
+    if (ls > maxLs)
+        ls = maxLs;
+    ls = (ls / 32u) * 32u;
+    if (ls < 32u)
+        ls = 32u;
+    return ls;
+}
+
+typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceProperties2)(
+    VkPhysicalDevice device, VkPhysicalDeviceProperties2 *pProperties);
+
+static void try_fill_driver_name(void) {
+    g_driverName[0] = '\0';
+    if (g_instance == VK_NULL_HANDLE || g_physicalDevice == VK_NULL_HANDLE)
+        return;
+    PFN_vkGetPhysicalDeviceProperties2 pfn = (PFN_vkGetPhysicalDeviceProperties2)
+        vkGetInstanceProcAddr(g_instance, "vkGetPhysicalDeviceProperties2");
+    if (!pfn)
+        return;
+    VkPhysicalDeviceDriverProperties driverProps = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+    };
+    VkPhysicalDeviceProperties2 props2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &driverProps,
+    };
+    pfn(g_physicalDevice, &props2);
+    strncpy(g_driverName, driverProps.driverName, sizeof(g_driverName) - 1);
+    g_driverName[sizeof(g_driverName) - 1] = '\0';
+}
+
+static void update_and_log_vulkan_limits(void) {
+    if (g_physicalDevice == VK_NULL_HANDLE)
+        return;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(g_physicalDevice, &props);
+    g_maxWorkGroupSize = props.limits.maxComputeWorkGroupSize[0];
+    g_maxWorkGroupInvocations = props.limits.maxComputeWorkGroupInvocations;
+    g_maxWorkGroupCount = props.limits.maxComputeWorkGroupCount[0];
+    g_effectiveMaxLocalSizeX = g_maxWorkGroupSize;
+    if (g_effectiveMaxLocalSizeX > g_maxWorkGroupInvocations)
+        g_effectiveMaxLocalSizeX = g_maxWorkGroupInvocations;
+
+    strncpy(g_deviceName, props.deviceName, sizeof(g_deviceName) - 1);
+    g_deviceName[sizeof(g_deviceName) - 1] = '\0';
+    try_fill_driver_name();
+
+    if (!g_limits_logged) {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+            "Vulkan limits: maxLocalSizeX=%u maxComputeWorkGroupCount[0]=%u device=%s driver=%s",
+            (unsigned)effective_max_local_size_x(), (unsigned)g_maxWorkGroupCount, g_deviceName, g_driverName);
+        g_limits_logged = 1;
+    }
+}
+
 static int create_pipeline_with_spec(uint32_t localSize, VkPipeline *outPipeline) {
     VkShaderModule shaderModule;
     if (!create_miner_shader_module(&shaderModule))
@@ -188,21 +260,15 @@ static int create_pipeline_with_spec(uint32_t localSize, VkPipeline *outPipeline
     return 1;
 }
 
-static int ensure_mining_pipeline(uint32_t gpuWorkgroups) {
-    uint32_t maxSteps = g_maxWorkGroupSize / 32;
-    if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
-        maxSteps = MAX_GPU_WORKGROUP_STEPS;
-    if (gpuWorkgroups < 1 || gpuWorkgroups > maxSteps || (unsigned)gpuWorkgroups > MAX_GPU_WORKGROUP_STEPS)
+static int ensure_mining_pipeline(uint32_t localSizeX) {
+    localSizeX = normalize_local_size_x((int)localSizeX);
+    uint32_t slot = localSizeX / 32u;
+    if (slot < 1u || slot > MAX_GPU_WORKGROUP_STEPS)
         return 0;
-    VkPipeline *slot = &g_pipelines[gpuWorkgroups];
-    if (*slot != VK_NULL_HANDLE)
+    VkPipeline *pipeSlot = &g_pipelines[slot];
+    if (*pipeSlot != VK_NULL_HANDLE)
         return 1;
-    uint32_t localSize = 32u * gpuWorkgroups;
-    if (localSize > g_maxWorkGroupSize)
-        localSize = g_maxWorkGroupSize;
-    if (localSize < 1u)
-        localSize = 1u;
-    return create_pipeline_with_spec(localSize, slot);
+    return create_pipeline_with_spec(localSizeX, pipeSlot);
 }
 
 static int ensure_selftest_pipeline(void) {
@@ -514,11 +580,7 @@ static int try_init_vulkan(void) {
     g_physicalDevice = devices[0];
     free(devices);
 
-    VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(g_physicalDevice, &props);
-    g_maxWorkGroupSize = props.limits.maxComputeWorkGroupSize[0];
-    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan maxComputeWorkGroupSize[0]=%u", (unsigned)g_maxWorkGroupSize);
-    g_maxWorkGroupCount = props.limits.maxComputeWorkGroupCount[0];
+    update_and_log_vulkan_limits();
 
     uint32_t queueCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_physicalDevice, &queueCount, NULL);
@@ -848,13 +910,9 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
 
 /* Returns GPU_UNAVAILABLE on failure; else 0. Sets *hit_out 0/1; if 1, *nonce_out is the winning nonce (may be 0xFFFFFFFFu). */
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
-                        const uint8_t *target, int gpuWorkgroups, int useMidstate, int *hit_out, uint32_t *nonce_out) {
-    if (gpuWorkgroups < 1) gpuWorkgroups = 1;
-    uint32_t maxSteps = g_maxWorkGroupSize / 32;
-    if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
-        maxSteps = MAX_GPU_WORKGROUP_STEPS;
-    if ((unsigned)gpuWorkgroups > maxSteps)
-        gpuWorkgroups = (int)maxSteps;
+                        const uint8_t *target, int localSizeX, int useMidstate, int *hit_out, uint32_t *nonce_out) {
+    uint32_t localSize = normalize_local_size_x(localSizeX);
+    uint32_t slot = localSize / 32u;
     /* Defensive: ensure core Vulkan handles are valid before proceeding. */
     if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
@@ -866,10 +924,10 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (g_commandBuffer == VK_NULL_HANDLE || g_fence == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
-    if (!ensure_mining_pipeline((uint32_t)gpuWorkgroups))
+    if (!ensure_mining_pipeline(localSize))
         return GPU_UNAVAILABLE;
-    VkPipeline miningPipe = g_pipelines[gpuWorkgroups];
-    if (gpuWorkgroups < 1 || gpuWorkgroups > (int)MAX_GPU_WORKGROUP_STEPS || miningPipe == VK_NULL_HANDLE) {
+    VkPipeline miningPipe = g_pipelines[slot];
+    if (slot < 1u || slot > MAX_GPU_WORKGROUP_STEPS || miningPipe == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
     if (g_uboMemory == VK_NULL_HANDLE || g_resultMemory == VK_NULL_HANDLE ||
@@ -880,14 +938,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     *nonce_out = 0u;
     atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
 
-    uint32_t localSize = 32 * (uint32_t)gpuWorkgroups;
-    if (localSize > g_maxWorkGroupSize)
-        localSize = g_maxWorkGroupSize;
-    if (localSize < 1)
-        localSize = 1;
-
     if (!g_workgroup_size_logged) {
-        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU workgroup size in use: %u", (unsigned)localSize);
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU local_size_x in use: %u", (unsigned)localSize);
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan maxComputeWorkGroupCount[0]=%u", (unsigned)g_maxWorkGroupCount);
         g_workgroup_size_logged = 1;
     }
@@ -1020,28 +1072,65 @@ Java_com_btcminer_android_mining_NativeMiner_getMaxComputeWorkGroupSize(JNIEnv *
 #endif
 }
 
+JNIEXPORT jint JNICALL
+Java_com_btcminer_android_mining_NativeMiner_getMaxGpuLocalSizeX(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+#ifdef __ANDROID__
+    if (!try_init_vulkan())
+        return 0;
+    return (jint)effective_max_local_size_x();
+#else
+    return 0;
+#endif
+}
+
+JNIEXPORT jint JNICALL
+Java_com_btcminer_android_mining_NativeMiner_getMaxComputeWorkGroupCount(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+#ifdef __ANDROID__
+    if (!try_init_vulkan())
+        return 0;
+    return (jint)g_maxWorkGroupCount;
+#else
+    return 0;
+#endif
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_btcminer_android_mining_NativeMiner_getVulkanGpuInfo(JNIEnv *env, jclass clazz) {
+    (void)clazz;
+#ifdef __ANDROID__
+    if (!try_init_vulkan())
+        return (*env)->NewStringUTF(env, "|");
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s|%s", g_deviceName, g_driverName);
+    return (*env)->NewStringUTF(env, buf);
+#else
+    (void)env;
+    return NULL;
+#endif
+}
+
 JNIEXPORT jboolean JNICALL
-Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclass clazz, jint gpuWorkgroups,
+Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclass clazz, jint localSizeX,
                                                               jint gpuSha256Mode) {
     (void)env;
     (void)clazz;
 #ifdef __ANDROID__
     if (!try_init_vulkan())
         return JNI_FALSE;
-    if (gpuWorkgroups < 1) gpuWorkgroups = 1;
-    uint32_t maxSteps = g_maxWorkGroupSize / 32;
-    if (maxSteps > MAX_GPU_WORKGROUP_STEPS)
-        maxSteps = MAX_GPU_WORKGROUP_STEPS;
-    if ((unsigned)gpuWorkgroups > maxSteps)
-        gpuWorkgroups = (int)maxSteps;
+    if (normalize_local_size_x((int)localSizeX) < 32u)
+        return JNI_FALSE;
     if (!ensure_compute_resources())
         return JNI_FALSE;
     (void)gpuSha256Mode;
-    if (!ensure_mining_pipeline((uint32_t)gpuWorkgroups))
+    if (!ensure_mining_pipeline((uint32_t)localSizeX))
         return JNI_FALSE;
     return JNI_TRUE;
 #else
-    (void)gpuWorkgroups;
+    (void)localSizeX;
     (void)gpuSha256Mode;
     return JNI_FALSE;
 #endif
@@ -1067,7 +1156,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, j
 JNIEXPORT void JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jclass clazz, jbyteArray header76Java,
                                                                jint nonceStart, jint nonceEnd, jbyteArray targetJava,
-                                                               jint gpuWorkgroups, jint gpuSha256Mode, jlongArray outJava) {
+                                                               jint localSizeX, jint gpuSha256Mode, jlongArray outJava) {
     (void)clazz;
     if (!outJava || (*env)->GetArrayLength(env, outJava) < 2) {
         return;
@@ -1099,7 +1188,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
     int useMid = (gpuSha256Mode != 0);
     int hit = 0;
     uint32_t winNonce = 0u;
-    int rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)gpuWorkgroups, useMid, &hit,
+    int rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)localSizeX, useMid, &hit,
         &winNonce);
     if (rr == GPU_UNAVAILABLE) {
         out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
@@ -1114,7 +1203,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
 #else
     (void)nonceStart;
     (void)nonceEnd;
-    (void)gpuWorkgroups;
+    (void)localSizeX;
     (void)gpuSha256Mode;
     out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
     out[1] = 0;

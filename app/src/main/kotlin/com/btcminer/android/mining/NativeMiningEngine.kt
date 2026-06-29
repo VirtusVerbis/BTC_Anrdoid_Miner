@@ -44,7 +44,7 @@ class NativeMiningEngine(
         const val SHA256_SELFTEST_LAST_ERROR = "CPU_SHA256_SELFTEST"
         /** GPU host or Vulkan digest readback self-test failure. */
         const val GPU_SHA256_SELFTEST_LAST_ERROR = "GPU_SHA256_SELFTEST"
-        /** Config has CPU cores = 0 and GPU workgroups = 0 (should be blocked in UI; engine guard). */
+        /** Config has CPU cores = 0 and GPU disabled (should be blocked in UI; engine guard). */
         const val BOTH_HASHERS_DISABLED_LAST_ERROR = "BOTH_HASHERS_DISABLED"
         /** CPU cores = 0 and GPU not usable (pipeline/init failed). */
         const val NO_HASHING_BACKEND_LAST_ERROR = "NO_HASHING_BACKEND"
@@ -157,7 +157,7 @@ class NativeMiningEngine(
         }
 
         if (!config.hasActiveHashingConfig()) {
-            AppLog.e(LOG_TAG) { "No hashing backend configured (CPU cores and GPU workgroups both zero)" }
+            AppLog.e(LOG_TAG) { "No hashing backend configured (CPU cores and GPU both disabled)" }
             statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = BOTH_HASHERS_DISABLED_LAST_ERROR, queuedShares = queuedSharesCount(null)))
             running.set(false)
             return
@@ -176,7 +176,7 @@ class NativeMiningEngine(
             AppLog.d(LOG_TAG) { "CPU mining disabled (0 cores); skipping CPU SHA-256 self-test" }
         }
 
-        if (config.gpuWorkgroups > 0) {
+        if (config.gpuEnabled) {
             if (!NativeMiner.gpuShaHostSelftest()) {
                 AppLog.e(LOG_TAG) { "GPU SHA-256 host self-test failed" }
                 statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
@@ -525,12 +525,15 @@ class NativeMiningEngine(
                 val jniOut = LongArray(2)
                 val gpuMode = GpuSha256Mode.fromOrdinal(config.gpuSha256Mode.ordinal)
                 val preJniStartMs = System.currentTimeMillis()
+                val localSizeX = config.clampedGpuLocalSizeX(
+                    NativeMiner.getMaxGpuLocalSizeX().let { if (it > 0) it else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX }
+                )
                 NativeMiner.gpuScanNoncesInto(
                     ctx.header76,
                     start.toInt(),
                     nonceEnd,
                     ctx.target,
-                    config.gpuWorkgroups.coerceIn(MiningConfig.GPU_WORKGROUPS_MIN, MiningConfig.GPU_WORKGROUPS_MAX),
+                    localSizeX,
                     config.gpuSha256Mode.ordinal,
                     jniOut,
                 )
@@ -631,9 +634,11 @@ class NativeMiningEngine(
         var lastLogTime = statsStartTime
         val statusUpdateIntervalMs = config.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
         val threadCount = config.maxWorkerThreads.coerceIn(0, Runtime.getRuntime().availableProcessors())
-        var gpuEnabled = config.gpuWorkgroups > 0 && NativeMiner.gpuIsAvailable() && !gpuUnavailable.get()
-        val gpuWorkgroupsClamped = config.gpuWorkgroups.coerceIn(MiningConfig.GPU_WORKGROUPS_MIN, MiningConfig.GPU_WORKGROUPS_MAX)
-        if (gpuEnabled && !NativeMiner.gpuPipelineReady(gpuWorkgroupsClamped, config.gpuSha256Mode.ordinal)) {
+        val gpuLocalSizeX = config.clampedGpuLocalSizeX(
+            NativeMiner.getMaxGpuLocalSizeX().let { if (it > 0) it else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX }
+        )
+        var gpuEnabled = config.gpuEnabled && NativeMiner.gpuIsAvailable() && !gpuUnavailable.get()
+        if (gpuEnabled && !NativeMiner.gpuPipelineReady(gpuLocalSizeX, config.gpuSha256Mode.ordinal)) {
             if (!gpuUnavailable.getAndSet(true)) {
                 AppLog.d(LOG_TAG) { "GPU init failed at startup" }
                 onGpuUnavailable?.invoke()
@@ -851,7 +856,9 @@ class NativeMiningEngine(
      */
     private fun startGpuRetryThreadIfNeeded(config: MiningConfig) {
         if (!gpuRetryThreadRunning.compareAndSet(false, true)) return
-        val gpuWorkgroups = config.gpuWorkgroups.coerceIn(MiningConfig.GPU_WORKGROUPS_MIN, MiningConfig.GPU_WORKGROUPS_MAX)
+        val gpuLocalSizeX = config.clampedGpuLocalSizeX(
+            NativeMiner.getMaxGpuLocalSizeX().let { if (it > 0) it else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX }
+        )
         val thread = Thread({
             try {
                 var retryCount = 0
@@ -865,7 +872,7 @@ class NativeMiningEngine(
                     retryCount++
                     AppLog.d(LOG_TAG) { "GPU retry attempt #$retryCount starting" }
                     val available = NativeMiner.gpuIsAvailable() &&
-                        NativeMiner.gpuPipelineReady(gpuWorkgroups, config.gpuSha256Mode.ordinal)
+                        NativeMiner.gpuPipelineReady(gpuLocalSizeX, config.gpuSha256Mode.ordinal)
                     if (available) {
                         gpuUnavailable.set(false)
                         AppLog.d(LOG_TAG) { "GPU init succeeded; resuming GPU mining" }

@@ -116,16 +116,29 @@ object NativeMiner {
     external fun getMaxComputeWorkGroupSize(): Int
 
     /**
-     * True only when the Vulkan compute pipeline for the given [gpuWorkgroups] can be created
+     * Effective max local_size_x: min(maxComputeWorkGroupSize[0], maxComputeWorkGroupInvocations), aligned to 32.
+     * Returns 0 when Vulkan is not available.
+     */
+    external fun getMaxGpuLocalSizeX(): Int
+
+    /** maxComputeWorkGroupCount[0]; 0 when Vulkan is unavailable. */
+    external fun getMaxComputeWorkGroupCount(): Int
+
+    /** "deviceName|driverName" from the Vulkan physical device; "|" when unavailable. */
+    external fun getVulkanGpuInfo(): String
+
+    /**
+     * True only when the Vulkan compute pipeline for the given [localSizeX] can be created
      * (SPIR-V present and pipeline creation succeeds). When false, [gpuScanNoncesInto] would report unavailable;
      * use this to fail fast at mining start instead of on first chunk.
      * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
-    external fun gpuPipelineReady(gpuWorkgroups: Int, gpuSha256Mode: Int): Boolean
+    external fun gpuPipelineReady(localSizeX: Int, gpuSha256Mode: Int): Boolean
 
     /**
      * GPU nonce scan: writes [GpuNonceScanResult] wire format into [out] — `out[0]` = status, `out[1]` = winning
      * nonce as [Long] in `0..0xFFFFFFFFL` when status is [GpuNonceScanResult.HIT] (including `0xFFFFFFFFL` as a valid hit).
+     * @param localSizeX threads per workgroup (local_size_x), multiple of 32.
      * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
     external fun gpuScanNoncesInto(
@@ -133,7 +146,7 @@ object NativeMiner {
         nonceStart: Int,
         nonceEnd: Int,
         target: ByteArray,
-        gpuWorkgroups: Int,
+        localSizeX: Int,
         gpuSha256Mode: Int,
         out: LongArray,
     )

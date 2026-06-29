@@ -53,6 +53,8 @@ class SecureConfigStorage(context: Context) {
     fun commitBatch(block: (SharedPreferences.Editor) -> Unit): Boolean =
         prefs.edit().also(block).commit()
 
+    fun containsKey(key: String): Boolean = prefs.contains(key)
+
     companion object {
         private const val PREFS_NAME = "btc_miner_encrypted_config"
 
@@ -74,6 +76,9 @@ class SecureConfigStorage(context: Context) {
         const val KEY_AUTO_TUNING_BY_BATTERY_TEMP = "auto_tuning_by_battery_temp"
         const val KEY_HASHRATE_TARGET_HPS = "hashrate_target_hps"
         const val KEY_CPU_USAGE_TARGET_PERCENT = "cpu_usage_target_percent"
+        const val KEY_GPU_ENABLED = "gpu_enabled"
+        const val KEY_GPU_LOCAL_SIZE_X = "gpu_local_size_x"
+        /** Legacy pref keys; read-only for migration, removed on save. */
         const val KEY_GPU_WORKGROUPS = "gpu_workgroups"
         /** Legacy pref key; read-only fallback for migration from pre-rename installs. */
         internal const val KEY_GPU_CORES_LEGACY = "gpu_cores"

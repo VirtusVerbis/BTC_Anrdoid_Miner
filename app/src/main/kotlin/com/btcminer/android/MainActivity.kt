@@ -34,6 +34,7 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.lifecycleScope
 import com.btcminer.android.config.ConfigHubActivity
+import com.btcminer.android.config.MiningConfig
 import com.btcminer.android.ui.digitalrain.DigitalRainPreferences
 import com.btcminer.android.ui.digitalrain.DigitalRainRenderBackend
 import com.btcminer.android.ui.digitalrain.DigitalRainSettingsRepository
@@ -1386,10 +1387,14 @@ class MainActivity : AppCompatActivity() {
             val maxCoresUi = Runtime.getRuntime().availableProcessors()
             val cpuCoresForLabel = config.maxWorkerThreads.coerceIn(0, maxCoresUi)
             p1.hashRateLabel.text = getString(R.string.hash_rate_label) + " - " + cpuCoresForLabel
-            val gpuWorkgroups = config.gpuWorkgroups.coerceAtLeast(0)
-            val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize().coerceAtLeast(32)
-            val effectiveWorkgroupSize = if (gpuWorkgroups > 0) (32 * gpuWorkgroups).coerceAtMost(maxWorkGroupSize) else 0
-            p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (gpuWorkgroups > 0) " - $effectiveWorkgroupSize" else ""
+            val gpuLocalSizeX = if (config.gpuEnabled) {
+                config.clampedGpuLocalSizeX(
+                    NativeMiner.getMaxGpuLocalSizeX().let { if (it > 0) it else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX }
+                )
+            } else {
+                0
+            }
+            p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (config.gpuEnabled) " - $gpuLocalSizeX" else ""
             p1.cpuUtilizationValue.text = formatStratumDifficultyDisplay(status)
             p1.noncesValue.text = NumberFormatUtils.formatWithSpaces(status.noncesScanned)
             val (sessionAcc, sessionRej, sessionId) = if (service != null && service.getMiningStartTimeMillis() != null) {

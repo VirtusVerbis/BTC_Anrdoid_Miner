@@ -116,12 +116,17 @@
     <string name="overheat_banner_message">Mining was stopped due to overheat</string>
     <string name="overheat_banner_dismiss">Dismiss</string>
     <string name="config_cores_used">CPU Cores</string>
-    <string name="config_cores_used_summary">Number of CPU cores used for mining (0 = CPU off, GPU-only if workgroups &gt; 0; 1 = single thread; can throttle with intensity below)</string>
+    <string name="config_cores_used_summary">Number of CPU cores used for mining (0 = CPU off, GPU-only if GPU enabled; 1 = single thread; can throttle with intensity below)</string>
     <string name="config_max_intensity">Max CPU intensity (%)</string>
     <string name="config_max_intensity_summary">0–100 (0=10 min delay, 100=no delay)</string>
     <string name="config_gpu_section">GPU</string>
-    <string name="config_gpu_workgroups">GPU Workgroups</string>
-    <string name="config_gpu_workgroups_summary">Higher = larger workgroups; 0 = GPU off</string>
+    <string name="config_gpu_enabled">GPU Enabled</string>
+    <string name="config_gpu_enabled_summary">Turn GPU mining on or off</string>
+    <string name="config_gpu_local_size_x">GPU local_size_x (Threads)</string>
+    <string name="config_gpu_local_size_x_summary">Threads per workgroup (not dispatch count). Dispatch group count is computed automatically.</string>
+    <string name="config_gpu_local_size_x_value">%1$d threads/workgroup</string>
+    <string name="config_gpu_local_size_max">Device max: %1$d</string>
+    <string name="config_gpu_vulkan_unavailable">Vulkan unavailable on this device</string>
     <string name="config_gpu_utilization">Max GPU Intensity (%)</string>
     <string name="config_gpu_utilization_summary">0–100 (0=10 min delay, 100=no delay)</string>
     <string name="config_status_update_interval">Status update interval (ms)</string>

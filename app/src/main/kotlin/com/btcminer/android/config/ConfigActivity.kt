@@ -57,9 +57,12 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderBatteryTemp.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configBatteryTempValue.text = "${value.toInt()} °C"
         })
-        binding.configSliderGpuWorkgroups.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
-            binding.configGpuWorkgroupsValue.text = "${value.toInt()}"
+        binding.configSliderGpuLocalSizeX.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
+            binding.configGpuLocalSizeXValue.text = formatGpuLocalSizeLabel(value.toInt())
         })
+        binding.configGpuEnabled.setOnCheckedChangeListener { _, _ ->
+            updateGpuLocalSizeControls()
+        }
         binding.configSliderGpuUtilization.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configGpuUtilizationValue.text = formatIntensityLabel(value.toInt())
         })
@@ -101,6 +104,41 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderAlarmWakeInterval.isEnabled = enabled
         binding.configAlarmWakeIntervalValue.isEnabled = enabled
         binding.configAlarmWakeIntervalLabel.isEnabled = enabled
+    }
+
+    private fun formatGpuLocalSizeLabel(localSizeX: Int): String =
+        getString(R.string.config_gpu_local_size_x_value, localSizeX)
+
+    private fun deviceMaxGpuLocalSizeX(): Int {
+        val fromNative = NativeMiner.getMaxGpuLocalSizeX()
+        return if (fromNative > 0) fromNative else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX
+    }
+
+    private fun updateGpuLocalSizeControls() {
+        val vulkanAvailable = NativeMiner.gpuIsAvailable()
+        val gpuOn = binding.configGpuEnabled.isChecked
+        binding.configSliderGpuLocalSizeX.isEnabled = vulkanAvailable && gpuOn
+        binding.configGpuLocalSizeXValue.isEnabled = vulkanAvailable && gpuOn
+        binding.configGpuVulkanUnavailable.visibility = if (vulkanAvailable) View.GONE else View.VISIBLE
+
+        val maxLs = deviceMaxGpuLocalSizeX()
+        binding.configSliderGpuLocalSizeX.valueFrom = MiningConfig.GPU_LOCAL_SIZE_X_MIN.toFloat()
+        binding.configSliderGpuLocalSizeX.valueTo = maxLs.toFloat()
+        binding.configSliderGpuLocalSizeX.stepSize = MiningConfig.GPU_LOCAL_SIZE_X_STEP.toFloat()
+        val current = binding.configSliderGpuLocalSizeX.value.toInt()
+        val clamped = MiningConfig.clampGpuLocalSizeX(current, maxLs)
+        if (current != clamped) {
+            binding.configSliderGpuLocalSizeX.value = clamped.toFloat()
+        }
+        binding.configGpuLocalSizeXValue.text = formatGpuLocalSizeLabel(clamped)
+
+        val (deviceName, driverName) = GpuLocalSizeHints.parseVulkanGpuInfo(NativeMiner.getVulkanGpuInfo())
+        val hint = GpuLocalSizeHints.vendorHint(deviceName, driverName)
+        val maxLine = getString(R.string.config_gpu_local_size_max, maxLs)
+        val hintText = listOf(maxLine, hint).filter { it.isNotBlank() }.joinToString("\n")
+        binding.configGpuLocalSizeHint.text = hintText
+        binding.configGpuLocalSizeHint.visibility =
+            if (hintText.isNotBlank() && vulkanAvailable) View.VISIBLE else View.GONE
     }
 
     private fun formatIntensityLabel(percent: Int): String =
@@ -215,12 +253,15 @@ class ConfigActivity : AppCompatActivity() {
         binding.configCoresValue.text = "$cores"
         binding.configSliderIntensity.value = c.maxIntensityPercent.toFloat()
         binding.configMaxIntensityValue.text = formatIntensityLabel(c.maxIntensityPercent)
-        val maxWorkGroupSize = NativeMiner.getMaxComputeWorkGroupSize()
-        val gpuMaxSteps = if (maxWorkGroupSize == 0) 8 else (maxWorkGroupSize / 32).coerceAtLeast(1).coerceAtMost(MiningConfig.GPU_WORKGROUPS_MAX)
-        binding.configSliderGpuWorkgroups.valueTo = gpuMaxSteps.toFloat()
-        val gpuWorkgroups = c.gpuWorkgroups.coerceIn(MiningConfig.GPU_WORKGROUPS_MIN, gpuMaxSteps)
-        binding.configSliderGpuWorkgroups.value = gpuWorkgroups.toFloat()
-        binding.configGpuWorkgroupsValue.text = "$gpuWorkgroups"
+        binding.configGpuEnabled.isChecked = c.gpuEnabled
+        val maxLs = deviceMaxGpuLocalSizeX()
+        binding.configSliderGpuLocalSizeX.valueFrom = MiningConfig.GPU_LOCAL_SIZE_X_MIN.toFloat()
+        binding.configSliderGpuLocalSizeX.valueTo = maxLs.toFloat()
+        binding.configSliderGpuLocalSizeX.stepSize = MiningConfig.GPU_LOCAL_SIZE_X_STEP.toFloat()
+        val localSizeX = c.clampedGpuLocalSizeX(maxLs)
+        binding.configSliderGpuLocalSizeX.value = localSizeX.toFloat()
+        binding.configGpuLocalSizeXValue.text = formatGpuLocalSizeLabel(localSizeX)
+        updateGpuLocalSizeControls()
         binding.configSliderGpuUtilization.value = c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX).toFloat()
         binding.configGpuUtilizationValue.text = formatIntensityLabel(c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX))
         val statusMs = c.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
@@ -326,9 +367,10 @@ class ConfigActivity : AppCompatActivity() {
                 MiningConfig.STATUS_UPDATE_INTERVAL_MIN,
                 MiningConfig.STATUS_UPDATE_INTERVAL_MAX
             ),
-            gpuWorkgroups = binding.configSliderGpuWorkgroups.value.toInt().coerceIn(
-                MiningConfig.GPU_WORKGROUPS_MIN,
-                binding.configSliderGpuWorkgroups.valueTo.toInt()
+            gpuEnabled = binding.configGpuEnabled.isChecked,
+            gpuLocalSizeX = MiningConfig.clampGpuLocalSizeX(
+                binding.configSliderGpuLocalSizeX.value.toInt(),
+                deviceMaxGpuLocalSizeX(),
             ),
             gpuUtilizationPercent = binding.configSliderGpuUtilization.value.toInt().coerceIn(
                 MiningConfig.GPU_UTILIZATION_MIN,
