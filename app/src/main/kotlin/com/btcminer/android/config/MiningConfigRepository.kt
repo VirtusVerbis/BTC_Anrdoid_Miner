@@ -1,7 +1,6 @@
 package com.btcminer.android.config
 
 import android.content.Context
-import com.btcminer.android.mining.NativeMiner
 import java.lang.Runtime
 
 /**
@@ -72,11 +71,6 @@ class MiningConfigRepository(context: Context) {
         )
     }
 
-    private fun deviceMaxLocalSizeX(): Int {
-        val fromNative = NativeMiner.getMaxGpuLocalSizeX()
-        return if (fromNative > 0) fromNative else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX
-    }
-
     private fun loadLegacyWorkgroups(): Int {
         val fromNewKey = storage.getInt(SecureConfigStorage.KEY_GPU_WORKGROUPS, -1)
         val raw = if (fromNewKey >= 0) {
@@ -105,7 +99,7 @@ class MiningConfigRepository(context: Context) {
                 MiningConfig.GPU_LOCAL_SIZE_X_DEFAULT,
             ),
             legacyWorkgroups = legacyWorkgroups,
-            deviceMax = deviceMaxLocalSizeX(),
+            deviceMax = MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX,
         )
         return gpuEnabled to gpuLocalSizeX
     }
@@ -120,7 +114,7 @@ class MiningConfigRepository(context: Context) {
     }
 
     fun saveConfig(config: MiningConfig) {
-        val deviceMax = deviceMaxLocalSizeX()
+        val deviceMax = GpuCapabilities.maxLocalSizeX()
         val gpuLocalSizeX = config.clampedGpuLocalSizeX(deviceMax)
         storage.commitBatch { edit ->
             edit.putString(SecureConfigStorage.KEY_STRATUM_URL, config.stratumUrl)

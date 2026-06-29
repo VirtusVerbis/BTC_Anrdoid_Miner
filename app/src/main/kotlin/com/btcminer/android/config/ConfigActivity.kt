@@ -19,7 +19,6 @@ import com.btcminer.android.AppLog
 import com.btcminer.android.R
 import com.btcminer.android.databinding.ActivityConfigBinding
 import com.btcminer.android.mining.MiningForegroundService
-import com.btcminer.android.mining.NativeMiner
 import com.btcminer.android.util.BitcoinAddressValidator
 import com.btcminer.android.util.NumberFormatUtils
 import com.btcminer.android.network.StratumPinCapture
@@ -109,13 +108,10 @@ class ConfigActivity : AppCompatActivity() {
     private fun formatGpuLocalSizeLabel(localSizeX: Int): String =
         getString(R.string.config_gpu_local_size_x_value, localSizeX)
 
-    private fun deviceMaxGpuLocalSizeX(): Int {
-        val fromNative = NativeMiner.getMaxGpuLocalSizeX()
-        return if (fromNative > 0) fromNative else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX
-    }
+    private fun deviceMaxGpuLocalSizeX(): Int = GpuCapabilities.maxLocalSizeX()
 
     private fun updateGpuLocalSizeControls() {
-        val vulkanAvailable = NativeMiner.gpuIsAvailable()
+        val vulkanAvailable = GpuCapabilities.isVulkanAvailable()
         val gpuOn = binding.configGpuEnabled.isChecked
         binding.configSliderGpuLocalSizeX.isEnabled = vulkanAvailable && gpuOn
         binding.configGpuLocalSizeXValue.isEnabled = vulkanAvailable && gpuOn
@@ -132,7 +128,7 @@ class ConfigActivity : AppCompatActivity() {
         }
         binding.configGpuLocalSizeXValue.text = formatGpuLocalSizeLabel(clamped)
 
-        val (deviceName, driverName) = GpuLocalSizeHints.parseVulkanGpuInfo(NativeMiner.getVulkanGpuInfo())
+        val (deviceName, driverName) = GpuLocalSizeHints.parseVulkanGpuInfo(GpuCapabilities.vulkanGpuInfo())
         val hint = GpuLocalSizeHints.vendorHint(deviceName, driverName)
         val maxLine = getString(R.string.config_gpu_local_size_max, maxLs)
         val hintText = listOf(maxLine, hint).filter { it.isNotBlank() }.joinToString("\n")

@@ -113,6 +113,40 @@ class GpuLocalSizeClampTest {
         assertEquals(992, MiningConfig.clampGpuLocalSizeX(1000, 1000))
         assertEquals(32, MiningConfig.clampGpuLocalSizeX(16, 1024))
     }
+
+    @Test
+    fun coldConfigLoad_usesFallbackMaxWhenDeviceUnknown() {
+        val fallback = MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX
+        assertEquals(2048, fallback)
+        assertEquals(
+            1024,
+            GpuConfigMigration.resolveGpuLocalSizeX(
+                hasLocalSizeKey = true,
+                storedLocalSizeX = 1500,
+                legacyWorkgroups = 0,
+                deviceMax = fallback,
+            ),
+        )
+        assertEquals(
+            2048,
+            GpuConfigMigration.resolveGpuLocalSizeX(
+                hasLocalSizeKey = true,
+                storedLocalSizeX = 4096,
+                legacyWorkgroups = 0,
+                deviceMax = fallback,
+            ),
+        )
+    }
+}
+
+class GpuCapabilitiesConstantsTest {
+
+    @Test
+    fun vulkanRuntimeEnvConstants_matchNativeContract() {
+        assertEquals(-1, GpuCapabilities.VULKAN_ENV_UNKNOWN)
+        assertEquals(0, GpuCapabilities.VULKAN_ENV_REAL_DEVICE)
+        assertEquals(1, GpuCapabilities.VULKAN_ENV_EMULATOR)
+    }
 }
 
 class GpuLocalSizeHintsTest {

@@ -34,6 +34,7 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.lifecycleScope
 import com.btcminer.android.config.ConfigHubActivity
+import com.btcminer.android.config.GpuCapabilities
 import com.btcminer.android.config.MiningConfig
 import com.btcminer.android.ui.digitalrain.DigitalRainPreferences
 import com.btcminer.android.ui.digitalrain.DigitalRainRenderBackend
@@ -1388,9 +1389,7 @@ class MainActivity : AppCompatActivity() {
             val cpuCoresForLabel = config.maxWorkerThreads.coerceIn(0, maxCoresUi)
             p1.hashRateLabel.text = getString(R.string.hash_rate_label) + " - " + cpuCoresForLabel
             val gpuLocalSizeX = if (config.gpuEnabled) {
-                config.clampedGpuLocalSizeX(
-                    NativeMiner.getMaxGpuLocalSizeX().let { if (it > 0) it else MiningConfig.GPU_LOCAL_SIZE_X_FALLBACK_MAX }
-                )
+                config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
             } else {
                 0
             }

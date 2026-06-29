@@ -11,9 +11,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <android/log.h>
 
 #ifdef __ANDROID__
+#include <sys/system_properties.h>
 #include <vulkan/vulkan.h>
 #include "miner_spv.h"
 #endif
@@ -75,8 +77,17 @@ static uint32_t g_effectiveMaxLocalSizeX = 256;
 static uint32_t g_maxWorkGroupCount = 65535;
 static int g_vulkan_available = -1;
 static int g_limits_logged = 0;
+static int g_env_logged = 0;
 static char g_deviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 static char g_driverName[256];
+
+typedef enum {
+    VULKAN_ENV_UNKNOWN = -1,
+    VULKAN_ENV_REAL_DEVICE = 0,
+    VULKAN_ENV_EMULATOR = 1,
+} VulkanRuntimeEnv;
+
+static VulkanRuntimeEnv g_vulkan_env = VULKAN_ENV_UNKNOWN;
 
 static VkDescriptorSetLayout g_descriptorSetLayout = VK_NULL_HANDLE;
 static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
@@ -177,9 +188,84 @@ static uint32_t normalize_local_size_x(int localSizeX) {
 typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceProperties2)(
     VkPhysicalDevice device, VkPhysicalDeviceProperties2 *pProperties);
 
-static void try_fill_driver_name(void) {
+static int str_contains_ci(const char *haystack, const char *needle) {
+    if (!haystack || !needle || !needle[0])
+        return 0;
+    return strcasestr(haystack, needle) != NULL;
+}
+
+static int android_prop_equals(const char *key, const char *value) {
+    char buf[PROP_VALUE_MAX] = {0};
+    if (__system_property_get(key, buf) <= 0)
+        return 0;
+    return strcmp(buf, value) == 0;
+}
+
+static int android_prop_contains_ci(const char *key, const char *needle) {
+    char buf[PROP_VALUE_MAX] = {0};
+    if (__system_property_get(key, buf) <= 0)
+        return 0;
+    return str_contains_ci(buf, needle);
+}
+
+static VulkanRuntimeEnv detect_vulkan_runtime_env(void) {
+    if (g_vulkan_env != VULKAN_ENV_UNKNOWN)
+        return g_vulkan_env;
+
+    int emulator = 0;
+    if (android_prop_equals("ro.kernel.qemu", "1"))
+        emulator = 1;
+    else if (android_prop_contains_ci("ro.hardware", "goldfish") ||
+             android_prop_contains_ci("ro.hardware", "ranchu") ||
+             android_prop_contains_ci("ro.hardware", "vexpress"))
+        emulator = 1;
+    else if (android_prop_contains_ci("ro.product.model", "sdk_gphone") ||
+             android_prop_contains_ci("ro.product.model", "Android SDK built for x86"))
+        emulator = 1;
+    else if (android_prop_contains_ci("ro.build.fingerprint", "generic") ||
+             android_prop_contains_ci("ro.build.fingerprint", "emulator") ||
+             android_prop_contains_ci("ro.build.fingerprint", "sdk_gphone"))
+        emulator = 1;
+
+    g_vulkan_env = emulator ? VULKAN_ENV_EMULATOR : VULKAN_ENV_REAL_DEVICE;
+    if (!g_env_logged) {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "runtime env=%s",
+            g_vulkan_env == VULKAN_ENV_EMULATOR ? "emulator" : "real_device");
+        g_env_logged = 1;
+    }
+    return g_vulkan_env;
+}
+
+static int device_supports_driver_properties(uint32_t apiVersion) {
+    if (apiVersion >= VK_API_VERSION_1_2)
+        return 1;
+    uint32_t extCount = 0;
+    if (vkEnumerateDeviceExtensionProperties(g_physicalDevice, NULL, &extCount, NULL) != VK_SUCCESS ||
+        extCount == 0)
+        return 0;
+    VkExtensionProperties *exts = (VkExtensionProperties *)malloc(extCount * sizeof(VkExtensionProperties));
+    if (!exts)
+        return 0;
+    if (vkEnumerateDeviceExtensionProperties(g_physicalDevice, NULL, &extCount, exts) != VK_SUCCESS) {
+        free(exts);
+        return 0;
+    }
+    int found = 0;
+    for (uint32_t i = 0; i < extCount; i++) {
+        if (strcmp(exts[i].extensionName, "VK_KHR_driver_properties") == 0) {
+            found = 1;
+            break;
+        }
+    }
+    free(exts);
+    return found;
+}
+
+static void try_fill_driver_name(const VkPhysicalDeviceProperties *props) {
     g_driverName[0] = '\0';
-    if (g_instance == VK_NULL_HANDLE || g_physicalDevice == VK_NULL_HANDLE)
+    if (!props || g_instance == VK_NULL_HANDLE || g_physicalDevice == VK_NULL_HANDLE)
+        return;
+    if (!device_supports_driver_properties(props->apiVersion))
         return;
     PFN_vkGetPhysicalDeviceProperties2 pfn = (PFN_vkGetPhysicalDeviceProperties2)
         vkGetInstanceProcAddr(g_instance, "vkGetPhysicalDeviceProperties2");
@@ -211,7 +297,11 @@ static void update_and_log_vulkan_limits(void) {
 
     strncpy(g_deviceName, props.deviceName, sizeof(g_deviceName) - 1);
     g_deviceName[sizeof(g_deviceName) - 1] = '\0';
-    try_fill_driver_name();
+
+    if (detect_vulkan_runtime_env() == VULKAN_ENV_REAL_DEVICE)
+        try_fill_driver_name(&props);
+    else
+        g_driverName[0] = '\0';
 
     if (!g_limits_logged) {
         __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
@@ -538,6 +628,7 @@ static int try_init_vulkan(void) {
     if (g_vulkan_available >= 0)
         return g_vulkan_available;
 
+    detect_vulkan_runtime_env();
     g_vulkan_available = 0;
 
     VkApplicationInfo appInfo = {
@@ -1056,6 +1147,17 @@ Java_com_btcminer_android_mining_NativeMiner_gpuIsAvailable(JNIEnv *env, jclass 
     return try_init_vulkan() ? JNI_TRUE : JNI_FALSE;
 #else
     return JNI_FALSE;
+#endif
+}
+
+JNIEXPORT jint JNICALL
+Java_com_btcminer_android_mining_NativeMiner_getVulkanRuntimeEnv(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+#ifdef __ANDROID__
+    return (jint)detect_vulkan_runtime_env();
+#else
+    return -1;
 #endif
 }
 

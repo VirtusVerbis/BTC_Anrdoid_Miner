@@ -104,6 +104,9 @@ object NativeMiner {
      */
     external fun cpuRequestInterrupt(): Unit
 
+    /** 0 = real device, 1 = emulator, -1 = unknown */
+    external fun getVulkanRuntimeEnv(): Int
+
     /**
      * Whether Vulkan is available for GPU compute. When true, [gpuScanNoncesInto] can be used.
      */
