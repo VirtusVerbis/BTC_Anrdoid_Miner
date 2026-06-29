@@ -1,8 +1,10 @@
 // Bitcoin block header nonce scan: double-SHA256(header80) <= target.
-// Spec constant 0: local_size_x only. Midstate/self-test use UBO (avoids broken multi-spec paths on some drivers).
+// Spec constant 0: local_size_x. Spec constant 1: hashesPerThread (1, 2, 4, or 8).
+// Midstate/self-test flags use UBO.
 #version 450
 
 layout(local_size_x_id = 0) in;
+layout(constant_id = 1) const uint hashesPerThread = 1u;
 
 layout(set = 0, binding = 0) uniform Uniforms {
     uint header_0_3;
@@ -202,29 +204,35 @@ void main() {
     }
 
     uint global_id = gl_GlobalInvocationID.x;
-    uint nonce = nonceStart + global_id;
-    if (nonce > nonceEnd)
+    uint base = nonceStart + global_id * hashesPerThread;
+    if (base > nonceEnd)
         return;
 
-    uint nword = nonce_sha_word(nonce);
+    for (uint i = 0u; i < hashesPerThread; i++) {
+        uint nonce = base + i;
+        if (nonce > nonceEnd)
+            continue;
 
-    uint o0, o1, o2, o3, o4, o5, o6, o7;
-    if (gpu_use_midstate != 0u) {
-        sha256_first_mid(mid_0_3, mid_4_7, mid_8_11, mid_12_15, mid_16_19, mid_20_23, mid_24_27, mid_28_31,
-            header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
-    } else {
-        sha256_80bytes(header_0_3, header_4_7, header_8_11, header_12_15,
-            header_16_19, header_20_23, header_24_27, header_28_31,
-            header_32_35, header_36_39, header_40_43, header_44_47,
-            header_48_51, header_52_55, header_56_59, header_60_63,
-            header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
-    }
+        uint nword = nonce_sha_word(nonce);
 
-    uint f0, f1, f2, f3, f4, f5, f6, f7;
-    sha256_32bytes(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
+        uint o0, o1, o2, o3, o4, o5, o6, o7;
+        if (gpu_use_midstate != 0u) {
+            sha256_first_mid(mid_0_3, mid_4_7, mid_8_11, mid_12_15, mid_16_19, mid_20_23, mid_24_27, mid_28_31,
+                header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
+        } else {
+            sha256_80bytes(header_0_3, header_4_7, header_8_11, header_12_15,
+                header_16_19, header_20_23, header_24_27, header_28_31,
+                header_32_35, header_36_39, header_40_43, header_44_47,
+                header_48_51, header_52_55, header_56_59, header_60_63,
+                header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
+        }
 
-    if (hash_meets_target(f0, f1, f2, f3, f4, f5, f6, f7)) {
-        atomicMax(resultFound, 1u);
-        atomicMin(winningNonce, nonce);
+        uint f0, f1, f2, f3, f4, f5, f6, f7;
+        sha256_32bytes(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
+
+        if (hash_meets_target(f0, f1, f2, f3, f4, f5, f6, f7)) {
+            atomicMax(resultFound, 1u);
+            atomicMin(winningNonce, nonce);
+        }
     }
 }

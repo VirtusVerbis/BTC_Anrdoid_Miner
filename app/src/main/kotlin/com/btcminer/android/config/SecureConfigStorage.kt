@@ -78,6 +78,7 @@ class SecureConfigStorage(context: Context) {
         const val KEY_CPU_USAGE_TARGET_PERCENT = "cpu_usage_target_percent"
         const val KEY_GPU_ENABLED = "gpu_enabled"
         const val KEY_GPU_LOCAL_SIZE_X = "gpu_local_size_x"
+        const val KEY_GPU_HASHES_PER_THREAD = "gpu_hashes_per_thread"
         /** Legacy pref keys; read-only for migration, removed on save. */
         const val KEY_GPU_WORKGROUPS = "gpu_workgroups"
         /** Legacy pref key; read-only fallback for migration from pre-rename installs. */

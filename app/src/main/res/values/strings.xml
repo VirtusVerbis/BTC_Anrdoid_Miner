@@ -126,6 +126,9 @@
     <string name="config_gpu_local_size_x_summary">Threads per workgroup (not dispatch count). Dispatch group count is computed automatically.</string>
     <string name="config_gpu_local_size_x_value">%1$d threads/workgroup</string>
     <string name="config_gpu_local_size_max">Device max: %1$d</string>
+    <string name="config_gpu_hashes_per_thread">GPU hash per thread</string>
+    <string name="config_gpu_hashes_per_thread_summary">Scalar hashes each GPU thread runs per invocation (1–8). Save and restart mining to apply. Higher values may help Mali/Adreno or reduce occupancy.</string>
+    <string name="config_gpu_hashes_per_thread_value">%1$d hash(es)/thread</string>
     <string name="config_gpu_vulkan_unavailable">Vulkan unavailable on this device</string>
     <string name="config_gpu_utilization">Max GPU Intensity (%)</string>
     <string name="config_gpu_utilization_summary">0–100 (0=10 min delay, 100=no delay)</string>

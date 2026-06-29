@@ -26,6 +26,8 @@ data class MiningConfig(
     val gpuEnabled: Boolean = false,
     /** Threads per workgroup (local_size_x); used only when [gpuEnabled]. */
     val gpuLocalSizeX: Int = GPU_LOCAL_SIZE_X_DEFAULT,
+    /** Scalar hashes each GPU thread runs per invocation (1, 2, 4, or 8). */
+    val gpuHashesPerThread: Int = GPU_HASHES_PER_THREAD_DEFAULT,
     val gpuUtilizationPercent: Int = 75,
     val usePartialWakeLock: Boolean = false,
     val useLegacyAlarm: Boolean = false,
@@ -84,6 +86,24 @@ data class MiningConfig(
             val clamped = value.coerceIn(GPU_LOCAL_SIZE_X_MIN, maxAligned.coerceAtLeast(GPU_LOCAL_SIZE_X_MIN))
             return (clamped / GPU_LOCAL_SIZE_X_STEP) * GPU_LOCAL_SIZE_X_STEP
         }
+
+        val GPU_HASHES_PER_THREAD_OPTIONS = intArrayOf(1, 2, 4, 8)
+        const val GPU_HASHES_PER_THREAD_DEFAULT = 1
+
+        fun clampGpuHashesPerThread(value: Int): Int =
+            GPU_HASHES_PER_THREAD_OPTIONS.minByOrNull { kotlin.math.abs(it - value) }
+                ?: GPU_HASHES_PER_THREAD_DEFAULT
+
+        fun gpuHashesPerThreadFromSliderIndex(index: Int): Int =
+            GPU_HASHES_PER_THREAD_OPTIONS.getOrElse(index.coerceIn(0, GPU_HASHES_PER_THREAD_OPTIONS.lastIndex)) {
+                GPU_HASHES_PER_THREAD_DEFAULT
+            }
+
+        fun gpuHashesPerThreadSliderIndex(value: Int): Int {
+            val clamped = clampGpuHashesPerThread(value)
+            return GPU_HASHES_PER_THREAD_OPTIONS.indexOf(clamped).coerceAtLeast(0)
+        }
+
         const val CPU_USAGE_TARGET_MIN = 1
         const val CPU_USAGE_TARGET_MAX = 100
         const val GPU_UTILIZATION_MIN = 0

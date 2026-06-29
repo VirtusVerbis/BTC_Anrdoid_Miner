@@ -131,17 +131,19 @@ object NativeMiner {
     external fun getVulkanGpuInfo(): String
 
     /**
-     * True only when the Vulkan compute pipeline for the given [localSizeX] can be created
+     * True only when the Vulkan compute pipeline for the given [localSizeX] and [hashesPerThread] can be created
      * (SPIR-V present and pipeline creation succeeds). When false, [gpuScanNoncesInto] would report unavailable;
      * use this to fail fast at mining start instead of on first chunk.
+     * @param hashesPerThread Scalar hashes per GPU thread (1, 2, 4, or 8).
      * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
-    external fun gpuPipelineReady(localSizeX: Int, gpuSha256Mode: Int): Boolean
+    external fun gpuPipelineReady(localSizeX: Int, hashesPerThread: Int, gpuSha256Mode: Int): Boolean
 
     /**
      * GPU nonce scan: writes [GpuNonceScanResult] wire format into [out] — `out[0]` = status, `out[1]` = winning
      * nonce as [Long] in `0..0xFFFFFFFFL` when status is [GpuNonceScanResult.HIT] (including `0xFFFFFFFFL` as a valid hit).
      * @param localSizeX threads per workgroup (local_size_x), multiple of 32.
+     * @param hashesPerThread scalar hashes each thread runs per invocation (1, 2, 4, or 8).
      * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
      */
     external fun gpuScanNoncesInto(
@@ -150,6 +152,7 @@ object NativeMiner {
         nonceEnd: Int,
         target: ByteArray,
         localSizeX: Int,
+        hashesPerThread: Int,
         gpuSha256Mode: Int,
         out: LongArray,
     )

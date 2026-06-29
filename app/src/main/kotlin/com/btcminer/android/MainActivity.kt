@@ -1393,7 +1393,13 @@ class MainActivity : AppCompatActivity() {
             } else {
                 0
             }
-            p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) + if (config.gpuEnabled) " - $gpuLocalSizeX" else ""
+            val gpuHashesPerThread = if (config.gpuEnabled) {
+                MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread)
+            } else {
+                0
+            }
+            p1.gpuHashRateLabel.text = getString(R.string.hash_rate_gpu_label) +
+                if (config.gpuEnabled) " - ${gpuLocalSizeX}×$gpuHashesPerThread" else ""
             p1.cpuUtilizationValue.text = formatStratumDifficultyDisplay(status)
             p1.noncesValue.text = NumberFormatUtils.formatWithSpaces(status.noncesScanned)
             val (sessionAcc, sessionRej, sessionId) = if (service != null && service.getMiningStartTimeMillis() != null) {

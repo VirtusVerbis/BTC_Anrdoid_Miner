@@ -49,6 +49,12 @@ class MiningConfigRepository(context: Context) {
                 .takeIf { it.isNotEmpty() }?.toIntOrNull()?.coerceIn(MiningConfig.CPU_USAGE_TARGET_MIN, MiningConfig.CPU_USAGE_TARGET_MAX),
             gpuEnabled = gpuEnabled,
             gpuLocalSizeX = gpuLocalSizeX,
+            gpuHashesPerThread = MiningConfig.clampGpuHashesPerThread(
+                storage.getInt(
+                    SecureConfigStorage.KEY_GPU_HASHES_PER_THREAD,
+                    MiningConfig.GPU_HASHES_PER_THREAD_DEFAULT,
+                ),
+            ),
             gpuUtilizationPercent = storage.getInt(SecureConfigStorage.KEY_GPU_UTILIZATION_PERCENT, 75)
                 .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX),
             usePartialWakeLock = storage.getBoolean(SecureConfigStorage.KEY_USE_PARTIAL_WAKE_LOCK, false),
@@ -154,6 +160,10 @@ class MiningConfigRepository(context: Context) {
             )
             edit.putBoolean(SecureConfigStorage.KEY_GPU_ENABLED, config.gpuEnabled)
             edit.putInt(SecureConfigStorage.KEY_GPU_LOCAL_SIZE_X, gpuLocalSizeX)
+            edit.putInt(
+                SecureConfigStorage.KEY_GPU_HASHES_PER_THREAD,
+                MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread),
+            )
             edit.remove(SecureConfigStorage.KEY_GPU_WORKGROUPS)
             edit.remove(SecureConfigStorage.KEY_GPU_CORES_LEGACY)
             edit.putInt(

@@ -59,8 +59,14 @@ class ConfigActivity : AppCompatActivity() {
         binding.configSliderGpuLocalSizeX.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configGpuLocalSizeXValue.text = formatGpuLocalSizeLabel(value.toInt())
         })
+        binding.configSliderGpuHashesPerThread.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
+            binding.configGpuHashesPerThreadValue.text = formatGpuHashesPerThreadLabel(value.toInt())
+        })
+        binding.configSliderGpuHashesPerThread.setLabelFormatter { value ->
+            formatGpuHashesPerThreadLabel(value.toInt())
+        }
         binding.configGpuEnabled.setOnCheckedChangeListener { _, _ ->
-            updateGpuLocalSizeControls()
+            updateGpuControls()
         }
         binding.configSliderGpuUtilization.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configGpuUtilizationValue.text = formatIntensityLabel(value.toInt())
@@ -108,13 +114,21 @@ class ConfigActivity : AppCompatActivity() {
     private fun formatGpuLocalSizeLabel(localSizeX: Int): String =
         getString(R.string.config_gpu_local_size_x_value, localSizeX)
 
+    private fun formatGpuHashesPerThreadLabel(sliderIndex: Int): String =
+        getString(
+            R.string.config_gpu_hashes_per_thread_value,
+            MiningConfig.gpuHashesPerThreadFromSliderIndex(sliderIndex),
+        )
+
     private fun deviceMaxGpuLocalSizeX(): Int = GpuCapabilities.maxLocalSizeX()
 
-    private fun updateGpuLocalSizeControls() {
+    private fun updateGpuControls() {
         val vulkanAvailable = GpuCapabilities.isVulkanAvailable()
         val gpuOn = binding.configGpuEnabled.isChecked
         binding.configSliderGpuLocalSizeX.isEnabled = vulkanAvailable && gpuOn
         binding.configGpuLocalSizeXValue.isEnabled = vulkanAvailable && gpuOn
+        binding.configSliderGpuHashesPerThread.isEnabled = vulkanAvailable && gpuOn
+        binding.configGpuHashesPerThreadValue.isEnabled = vulkanAvailable && gpuOn
         binding.configGpuVulkanUnavailable.visibility = if (vulkanAvailable) View.GONE else View.VISIBLE
 
         val maxLs = deviceMaxGpuLocalSizeX()
@@ -127,6 +141,14 @@ class ConfigActivity : AppCompatActivity() {
             binding.configSliderGpuLocalSizeX.value = clamped.toFloat()
         }
         binding.configGpuLocalSizeXValue.text = formatGpuLocalSizeLabel(clamped)
+
+        binding.configSliderGpuHashesPerThread.valueFrom = 0f
+        binding.configSliderGpuHashesPerThread.valueTo = (MiningConfig.GPU_HASHES_PER_THREAD_OPTIONS.size - 1).toFloat()
+        binding.configSliderGpuHashesPerThread.stepSize = 1f
+        val hashesIndex = binding.configSliderGpuHashesPerThread.value.toInt()
+            .coerceIn(0, MiningConfig.GPU_HASHES_PER_THREAD_OPTIONS.lastIndex)
+        binding.configSliderGpuHashesPerThread.value = hashesIndex.toFloat()
+        binding.configGpuHashesPerThreadValue.text = formatGpuHashesPerThreadLabel(hashesIndex)
 
         val (deviceName, driverName) = GpuLocalSizeHints.parseVulkanGpuInfo(GpuCapabilities.vulkanGpuInfo())
         val hint = GpuLocalSizeHints.vendorHint(deviceName, driverName)
@@ -257,7 +279,13 @@ class ConfigActivity : AppCompatActivity() {
         val localSizeX = c.clampedGpuLocalSizeX(maxLs)
         binding.configSliderGpuLocalSizeX.value = localSizeX.toFloat()
         binding.configGpuLocalSizeXValue.text = formatGpuLocalSizeLabel(localSizeX)
-        updateGpuLocalSizeControls()
+        val hashesPerThreadIndex = MiningConfig.gpuHashesPerThreadSliderIndex(c.gpuHashesPerThread)
+        binding.configSliderGpuHashesPerThread.valueFrom = 0f
+        binding.configSliderGpuHashesPerThread.valueTo = (MiningConfig.GPU_HASHES_PER_THREAD_OPTIONS.size - 1).toFloat()
+        binding.configSliderGpuHashesPerThread.stepSize = 1f
+        binding.configSliderGpuHashesPerThread.value = hashesPerThreadIndex.toFloat()
+        binding.configGpuHashesPerThreadValue.text = formatGpuHashesPerThreadLabel(hashesPerThreadIndex)
+        updateGpuControls()
         binding.configSliderGpuUtilization.value = c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX).toFloat()
         binding.configGpuUtilizationValue.text = formatIntensityLabel(c.gpuUtilizationPercent.coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX))
         val statusMs = c.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
@@ -367,6 +395,9 @@ class ConfigActivity : AppCompatActivity() {
             gpuLocalSizeX = MiningConfig.clampGpuLocalSizeX(
                 binding.configSliderGpuLocalSizeX.value.toInt(),
                 deviceMaxGpuLocalSizeX(),
+            ),
+            gpuHashesPerThread = MiningConfig.gpuHashesPerThreadFromSliderIndex(
+                binding.configSliderGpuHashesPerThread.value.toInt(),
             ),
             gpuUtilizationPercent = binding.configSliderGpuUtilization.value.toInt().coerceIn(
                 MiningConfig.GPU_UTILIZATION_MIN,

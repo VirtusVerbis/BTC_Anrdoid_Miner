@@ -527,12 +527,14 @@ class NativeMiningEngine(
                 val gpuMode = GpuSha256Mode.fromOrdinal(config.gpuSha256Mode.ordinal)
                 val preJniStartMs = System.currentTimeMillis()
                 val localSizeX = config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
+                val hashesPerThread = MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread)
                 NativeMiner.gpuScanNoncesInto(
                     ctx.header76,
                     start.toInt(),
                     nonceEnd,
                     ctx.target,
                     localSizeX,
+                    hashesPerThread,
                     config.gpuSha256Mode.ordinal,
                     jniOut,
                 )
@@ -541,7 +543,7 @@ class NativeMiningEngine(
                 val preJniMs = preJniStartMs - t0
                 if (preJniMs >= 100L || workMs >= 500L || scan.status != GpuNonceScanResult.MISS) {
                     AppLog.d(LOG_TAG) {
-                        "GPU scan anomaly jobId=${job.jobId} range=${String.format(Locale.US, "%08x", start.toInt())}-${String.format(Locale.US, "%08x", nonceEnd)} mode=${gpuMode.name} status=${scan.status} nonce=${String.format(Locale.US, "%08x", (scan.nonceU32 and 0xFFFFFFFFL).toInt())} preJniMs=$preJniMs workMs=$workMs"
+                        "GPU scan anomaly jobId=${job.jobId} range=${String.format(Locale.US, "%08x", start.toInt())}-${String.format(Locale.US, "%08x", nonceEnd)} mode=${gpuMode.name} localSize=$localSizeX hashesPerThread=$hashesPerThread status=${scan.status} nonce=${String.format(Locale.US, "%08x", (scan.nonceU32 and 0xFFFFFFFFL).toInt())} preJniMs=$preJniMs workMs=$workMs"
                     }
                     AppLog.d(LOG_TAG) { DeviceTelemetryReader.formatScanLine(workMs) }
                 }
@@ -634,8 +636,9 @@ class NativeMiningEngine(
         val statusUpdateIntervalMs = config.statusUpdateIntervalMs.coerceIn(MiningConfig.STATUS_UPDATE_INTERVAL_MIN, MiningConfig.STATUS_UPDATE_INTERVAL_MAX)
         val threadCount = config.maxWorkerThreads.coerceIn(0, Runtime.getRuntime().availableProcessors())
         val gpuLocalSizeX = config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
+        val gpuHashesPerThread = MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread)
         var gpuEnabled = config.gpuEnabled && GpuCapabilities.isVulkanAvailable() && !gpuUnavailable.get()
-        if (gpuEnabled && !GpuCapabilities.pipelineReady(gpuLocalSizeX, config.gpuSha256Mode.ordinal)) {
+        if (gpuEnabled && !GpuCapabilities.pipelineReady(gpuLocalSizeX, gpuHashesPerThread, config.gpuSha256Mode.ordinal)) {
             if (!gpuUnavailable.getAndSet(true)) {
                 AppLog.d(LOG_TAG) { "GPU init failed at startup" }
                 onGpuUnavailable?.invoke()
@@ -854,6 +857,7 @@ class NativeMiningEngine(
     private fun startGpuRetryThreadIfNeeded(config: MiningConfig) {
         if (!gpuRetryThreadRunning.compareAndSet(false, true)) return
         val gpuLocalSizeX = config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
+        val gpuHashesPerThread = MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread)
         val thread = Thread({
             try {
                 var retryCount = 0
@@ -867,7 +871,7 @@ class NativeMiningEngine(
                     retryCount++
                     AppLog.d(LOG_TAG) { "GPU retry attempt #$retryCount starting" }
                     val available = GpuCapabilities.isVulkanAvailable() &&
-                        GpuCapabilities.pipelineReady(gpuLocalSizeX, config.gpuSha256Mode.ordinal)
+                        GpuCapabilities.pipelineReady(gpuLocalSizeX, gpuHashesPerThread, config.gpuSha256Mode.ordinal)
                     if (available) {
                         gpuUnavailable.set(false)
                         AppLog.d(LOG_TAG) { "GPU init succeeded; resuming GPU mining" }
