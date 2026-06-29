@@ -85,7 +85,7 @@ const uint K[64] = uint[64](
 
 void sha256_transform(inout uint s[8], inout uint w[16]) {
     uint a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];
-    #pragma unroll 4
+    #pragma unroll 8
     for (int i = 0; i < 64; i++) {
         uint wi;
         if (i >= 16) {
