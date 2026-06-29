@@ -110,6 +110,9 @@ class NativeMiningEngine(
 
     private val lastCpuIntensityDelayMs = AtomicLong(0L)
     private val lastGpuIntensityDelayMs = AtomicLong(0L)
+    /** GPU chunk workMs samples since last Stats log tick (gpu-worker writes, miner thread drains). */
+    private val gpuWorkMsSum = AtomicLong(0L)
+    private val gpuWorkMsCount = AtomicLong(0L)
 
     /** Samples (timestampMs, cpuNonces, gpuNonces) for rolling-window hashrate. Cleared when mining loop starts. */
     private val hashrateSamples = Collections.synchronizedList(mutableListOf<Triple<Long, Long, Long>>())
@@ -540,6 +543,8 @@ class NativeMiningEngine(
                 )
                 val scan = GpuNonceScanResult.fromJniOut(jniOut)
                 val workMs = System.currentTimeMillis() - t0
+                gpuWorkMsSum.addAndGet(workMs)
+                gpuWorkMsCount.incrementAndGet()
                 val preJniMs = preJniStartMs - t0
                 if (preJniMs >= 100L || workMs >= 500L || scan.status != GpuNonceScanResult.MISS) {
                     AppLog.d(LOG_TAG) {
@@ -627,6 +632,8 @@ class NativeMiningEngine(
     private fun runMiningLoop(client: StratumClient, config: MiningConfig) {
         val statsStartTime = System.currentTimeMillis()
         gpuNoncesScanned.set(0)
+        gpuWorkMsSum.set(0L)
+        gpuWorkMsCount.set(0L)
         gpuUnavailable.set(false)
         synchronized(hashrateSamples) { hashrateSamples.clear() }
         DeviceTelemetryReader.resetForSession()
@@ -838,8 +845,11 @@ class NativeMiningEngine(
             if (now - lastLogTime >= AppLog.STATS_LOG_INTERVAL_MS) {
                 val cpuNonceN = totalNoncesScanned.get()
                 val gpuNonceN = gpuNoncesScanned.get()
+                val workMsCount = gpuWorkMsCount.getAndSet(0)
+                val workMsSum = gpuWorkMsSum.getAndSet(0)
+                val avgWorkMsSuffix = formatAvgWorkMsSuffix(workMsSum, workMsCount)
                 AppLog.d(LOG_TAG) {
-                    "Stats: ${statsLogExtra?.invoke() ?: ""}CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s, noncesCpu=${NumberFormatUtils.formatWithSpaces(cpuNonceN)}, noncesGpu=${NumberFormatUtils.formatWithSpaces(gpuNonceN)}, noncesTotal=${NumberFormatUtils.formatWithSpaces(cpuNonceN + gpuNonceN)}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}"
+                    "Stats: ${statsLogExtra?.invoke() ?: ""}CPU ${NumberFormatUtils.formatHashrateWithSpaces(hashrateHs)} GPU ${NumberFormatUtils.formatHashrateWithSpaces(gpuHashrateHs)} H/s$avgWorkMsSuffix, noncesCpu=${NumberFormatUtils.formatWithSpaces(cpuNonceN)}, noncesGpu=${NumberFormatUtils.formatWithSpaces(gpuNonceN)}, noncesTotal=${NumberFormatUtils.formatWithSpaces(cpuNonceN + gpuNonceN)}, blockTemplate=${NumberFormatUtils.formatIntWithSpaces(blockTemplatesCount.get().toInt())}, CPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastCpuIntensityDelayMs.get())}, GPU_Int Delay=${NumberFormatUtils.formatDurationMmSs(lastGpuIntensityDelayMs.get())}"
                 }
                 AppLog.d(LOG_TAG) { DeviceTelemetryReader.formatPeriodicLine() }
                 lastLogTime = now
