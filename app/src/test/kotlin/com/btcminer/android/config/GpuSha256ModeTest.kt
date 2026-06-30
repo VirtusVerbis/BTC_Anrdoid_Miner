@@ -10,6 +10,7 @@ class GpuSha256ModeTest {
         assertEquals(GpuSha256Mode.GPU_FULL, GpuSha256Mode.fromOrdinal(0))
         assertEquals(GpuSha256Mode.GPU_MIDSTATE, GpuSha256Mode.fromOrdinal(1))
         assertEquals(GpuSha256Mode.GPU_UVEC4_MIDSTATE, GpuSha256Mode.fromOrdinal(2))
+        assertEquals(GpuSha256Mode.GPU_UVEC2_MIDSTATE, GpuSha256Mode.fromOrdinal(3))
     }
 
     @Test

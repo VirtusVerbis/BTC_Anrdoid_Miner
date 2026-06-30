@@ -318,12 +318,14 @@ class ConfigActivity : AppCompatActivity() {
 
     private fun radioIdForGpuSha256Mode(mode: GpuSha256Mode): Int = when (mode) {
         GpuSha256Mode.GPU_MIDSTATE -> R.id.config_radio_gpu_sha_mid
+        GpuSha256Mode.GPU_UVEC2_MIDSTATE -> R.id.config_radio_gpu_sha_uvec2_mid
         GpuSha256Mode.GPU_UVEC4_MIDSTATE -> R.id.config_radio_gpu_sha_uvec4_mid
         GpuSha256Mode.GPU_FULL -> R.id.config_radio_gpu_sha_full
     }
 
     private fun gpuSha256ModeForCheckedRadio(): GpuSha256Mode = when (binding.configRadioGroupGpuSha.checkedRadioButtonId) {
         R.id.config_radio_gpu_sha_mid -> GpuSha256Mode.GPU_MIDSTATE
+        R.id.config_radio_gpu_sha_uvec2_mid -> GpuSha256Mode.GPU_UVEC2_MIDSTATE
         R.id.config_radio_gpu_sha_uvec4_mid -> GpuSha256Mode.GPU_UVEC4_MIDSTATE
         R.id.config_radio_gpu_sha_full -> GpuSha256Mode.GPU_FULL
         else -> GpuSha256Mode.GPU_FULL

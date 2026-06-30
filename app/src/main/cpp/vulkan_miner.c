@@ -18,6 +18,7 @@
 #include <sys/system_properties.h>
 #include <vulkan/vulkan.h>
 #include "miner_spv.h"
+#include "miner_uvec2_spv.h"
 #include "miner_uvec4_spv.h"
 #endif
 
@@ -25,6 +26,7 @@
 #define GPU_MODE_FULL 0
 #define GPU_MODE_MIDSTATE 1
 #define GPU_MODE_UVEC4_MIDSTATE 2
+#define GPU_MODE_UVEC2_MIDSTATE 3
 
 #define HEADER_PREFIX_SIZE 76
 #define BLOCK_HEADER_SIZE 80
@@ -100,8 +102,10 @@ static VulkanRuntimeEnv g_vulkan_env = VULKAN_ENV_UNKNOWN;
 static VkDescriptorSetLayout g_descriptorSetLayout = VK_NULL_HANDLE;
 static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
 static VkPipeline g_pipelines[GPU_PIPELINE_SLOT_COUNT];
+static VkPipeline g_pipelines_uvec2[GPU_PIPELINE_SLOT_COUNT];
 static VkPipeline g_pipelines_uvec4[GPU_PIPELINE_SLOT_COUNT];
 static VkPipeline g_pipeline_selftest = VK_NULL_HANDLE;
+static VkPipeline g_pipeline_selftest_uvec2 = VK_NULL_HANDLE;
 static VkPipeline g_pipeline_selftest_uvec4 = VK_NULL_HANDLE;
 static VkDescriptorPool g_descriptorPool = VK_NULL_HANDLE;
 static VkDescriptorSet g_descriptorSet = VK_NULL_HANDLE;
@@ -162,21 +166,62 @@ static int gpu_mode_uses_midstate(int gpuSha256Mode) {
     return gpuSha256Mode != GPU_MODE_FULL;
 }
 
-static int gpu_mode_uses_uvec4(int gpuSha256Mode) {
-    return gpuSha256Mode == GPU_MODE_UVEC4_MIDSTATE;
+typedef enum {
+    GPU_SHADER_SCALAR = 0,
+    GPU_SHADER_UVEC2 = 1,
+    GPU_SHADER_UVEC4 = 2,
+} GpuShaderVariant;
+
+static GpuShaderVariant gpu_mode_shader_variant(int gpuSha256Mode) {
+    switch (gpuSha256Mode) {
+        case GPU_MODE_UVEC4_MIDSTATE:
+            return GPU_SHADER_UVEC4;
+        case GPU_MODE_UVEC2_MIDSTATE:
+            return GPU_SHADER_UVEC2;
+        default:
+            return GPU_SHADER_SCALAR;
+    }
 }
 
-static int create_miner_shader_module(int use_uvec4, VkShaderModule *outModule) {
-    size_t codeSize = use_uvec4 ? (size_t)g_miner_uvec4_spv_len : (size_t)g_miner_spv_len;
-    const uint32_t *pCode = use_uvec4 ? (const uint32_t *)g_miner_uvec4_spv : (const uint32_t *)g_miner_spv;
+static uint32_t gpu_vector_width(int gpuSha256Mode) {
+    switch (gpu_mode_shader_variant(gpuSha256Mode)) {
+        case GPU_SHADER_UVEC4:
+            return 4u;
+        case GPU_SHADER_UVEC2:
+            return 2u;
+        default:
+            return 1u;
+    }
+}
+
+static int create_miner_shader_module(GpuShaderVariant variant, VkShaderModule *outModule) {
+    size_t codeSize;
+    const uint32_t *pCode;
+    const char *label;
+    switch (variant) {
+        case GPU_SHADER_UVEC4:
+            codeSize = (size_t)g_miner_uvec4_spv_len;
+            pCode = (const uint32_t *)g_miner_uvec4_spv;
+            label = "uvec4";
+            break;
+        case GPU_SHADER_UVEC2:
+            codeSize = (size_t)g_miner_uvec2_spv_len;
+            pCode = (const uint32_t *)g_miner_uvec2_spv;
+            label = "uvec2";
+            break;
+        default:
+            codeSize = (size_t)g_miner_spv_len;
+            pCode = (const uint32_t *)g_miner_spv;
+            label = "scalar";
+            break;
+    }
     VkShaderModuleCreateInfo modInfo = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = codeSize,
         .pCode = pCode,
     };
     if (codeSize == 0 || (codeSize % 4) != 0) {
-        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "No SPIR-V (%s); using CPU fallback",
-            use_uvec4 ? "uvec4" : "scalar");
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "No SPIR-V (%s); using CPU fallback", label);
         return 0;
     }
     if (vkCreateShaderModule(g_device, &modInfo, NULL, outModule) != VK_SUCCESS) {
@@ -357,9 +402,10 @@ static void update_and_log_vulkan_limits(void) {
     }
 }
 
-static int create_pipeline_with_spec(uint32_t localSize, uint32_t hashesPerThread, int use_uvec4, VkPipeline *outPipeline) {
+static int create_pipeline_with_spec(uint32_t localSize, uint32_t hashesPerThread, GpuShaderVariant variant,
+                                     VkPipeline *outPipeline) {
     VkShaderModule shaderModule;
-    if (!create_miner_shader_module(use_uvec4, &shaderModule))
+    if (!create_miner_shader_module(variant, &shaderModule))
         return 0;
     uint32_t specData[2] = { localSize, hashesPerThread };
     VkSpecializationMapEntry specMap[2] = {
@@ -397,23 +443,45 @@ static int create_pipeline_with_spec(uint32_t localSize, uint32_t hashesPerThrea
     return 1;
 }
 
-static int ensure_mining_pipeline(uint32_t localSizeX, uint32_t hashesPerThread, int use_uvec4) {
+static VkPipeline *mining_pipeline_slot(GpuShaderVariant variant, uint32_t slot) {
+    switch (variant) {
+        case GPU_SHADER_UVEC4:
+            return &g_pipelines_uvec4[slot];
+        case GPU_SHADER_UVEC2:
+            return &g_pipelines_uvec2[slot];
+        default:
+            return &g_pipelines[slot];
+    }
+}
+
+static VkPipeline *selftest_pipeline_slot(GpuShaderVariant variant) {
+    switch (variant) {
+        case GPU_SHADER_UVEC4:
+            return &g_pipeline_selftest_uvec4;
+        case GPU_SHADER_UVEC2:
+            return &g_pipeline_selftest_uvec2;
+        default:
+            return &g_pipeline_selftest;
+    }
+}
+
+static int ensure_mining_pipeline(uint32_t localSizeX, uint32_t hashesPerThread, GpuShaderVariant variant) {
     localSizeX = normalize_local_size_x((int)localSizeX);
     hashesPerThread = normalize_hashes_per_thread((int)hashesPerThread);
     uint32_t slot = pipeline_slot(localSizeX, hashesPerThread);
     if (slot >= GPU_PIPELINE_SLOT_COUNT)
         return 0;
-    VkPipeline *pipeSlot = use_uvec4 ? &g_pipelines_uvec4[slot] : &g_pipelines[slot];
+    VkPipeline *pipeSlot = mining_pipeline_slot(variant, slot);
     if (*pipeSlot != VK_NULL_HANDLE)
         return 1;
-    return create_pipeline_with_spec(localSizeX, hashesPerThread, use_uvec4, pipeSlot);
+    return create_pipeline_with_spec(localSizeX, hashesPerThread, variant, pipeSlot);
 }
 
-static int ensure_selftest_pipeline(int use_uvec4) {
-    VkPipeline *pipeSlot = use_uvec4 ? &g_pipeline_selftest_uvec4 : &g_pipeline_selftest;
+static int ensure_selftest_pipeline(GpuShaderVariant variant) {
+    VkPipeline *pipeSlot = selftest_pipeline_slot(variant);
     if (*pipeSlot != VK_NULL_HANDLE)
         return 1;
-    return create_pipeline_with_spec(1u, 1u, use_uvec4, pipeSlot);
+    return create_pipeline_with_spec(1u, 1u, variant, pipeSlot);
 }
 
 static int ensure_compute_resources(void) {
@@ -657,10 +725,18 @@ static void destroy_compute_resources(void) {
             vkDestroyPipeline(g_device, g_pipelines_uvec4[i], NULL);
             g_pipelines_uvec4[i] = VK_NULL_HANDLE;
         }
+        if (g_pipelines_uvec2[i] != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_device, g_pipelines_uvec2[i], NULL);
+            g_pipelines_uvec2[i] = VK_NULL_HANDLE;
+        }
     }
     if (g_pipeline_selftest != VK_NULL_HANDLE) {
         vkDestroyPipeline(g_device, g_pipeline_selftest, NULL);
         g_pipeline_selftest = VK_NULL_HANDLE;
+    }
+    if (g_pipeline_selftest_uvec2 != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pipeline_selftest_uvec2, NULL);
+        g_pipeline_selftest_uvec2 = VK_NULL_HANDLE;
     }
     if (g_pipeline_selftest_uvec4 != VK_NULL_HANDLE) {
         vkDestroyPipeline(g_device, g_pipeline_selftest_uvec4, NULL);
@@ -961,14 +1037,14 @@ static int submit_once_and_wait(VkPipeline pipeline, uint32_t groupX, uint32_t g
 /** Vulkan SSBO readback self-test: nonce=1, digest write path; logs GPU_SELFTEST_TAG. Returns 1 if ok. */
 static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
     int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
-    int useUvec4 = gpu_mode_uses_uvec4(gpuSha256Mode);
+    GpuShaderVariant variant = gpu_mode_shader_variant(gpuSha256Mode);
     if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE)
         return 0;
     if (!ensure_compute_resources()) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: ensure_compute_resources failed");
         return 0;
     }
-    if (!ensure_selftest_pipeline(useUvec4)) {
+    if (!ensure_selftest_pipeline(variant)) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: self-test pipeline failed");
         return 0;
     }
@@ -1002,7 +1078,7 @@ static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
     host_flush_before_gpu_read(g_resultMemory);
     vkUnmapMemory(g_device, g_resultMemory);
 
-    if (!submit_once_and_wait(useUvec4 ? g_pipeline_selftest_uvec4 : g_pipeline_selftest, 1u, 1u, 1u))
+    if (!submit_once_and_wait(*selftest_pipeline_slot(variant), 1u, 1u, 1u))
         return 0;
 
     mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
@@ -1048,7 +1124,21 @@ static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
         snprintf(mid_line, sizeof(mid_line), "n/a");
     }
 
-    const char *modeLabel = useUvec4 ? "GPU_Uvec4_Midstate" : (useMidstate ? "GPU_Midstate" : "GPU_Full");
+    const char *modeLabel;
+    switch (gpuSha256Mode) {
+        case GPU_MODE_UVEC4_MIDSTATE:
+            modeLabel = "GPU_Uvec4_Midstate";
+            break;
+        case GPU_MODE_UVEC2_MIDSTATE:
+            modeLabel = "GPU_Uvec2_Midstate";
+            break;
+        case GPU_MODE_MIDSTATE:
+            modeLabel = "GPU_Midstate";
+            break;
+        default:
+            modeLabel = "GPU_Full";
+            break;
+    }
     __android_log_print(ANDROID_LOG_INFO, GPU_SELFTEST_TAG,
         "vulkan_readback mode=%s midstate=%s cpu_first=%s cpu_final=%s gpu_first=%s gpu_final=%s same_first=%d same_final=%d resultFound=%08x winningNonce=%08x",
         modeLabel, mid_line, ref_f_hex, ref_l_hex, g_f_hex, g_l_hex, same_first, same_final,
@@ -1069,10 +1159,11 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
                         const uint8_t *target, int localSizeX, int hashesPerThread, int gpuSha256Mode,
                         int *hit_out, uint32_t *nonce_out) {
     int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
-    int useUvec4 = gpu_mode_uses_uvec4(gpuSha256Mode);
+    GpuShaderVariant variant = gpu_mode_shader_variant(gpuSha256Mode);
+    uint32_t vectorWidth = gpu_vector_width(gpuSha256Mode);
     uint32_t localSize = normalize_local_size_x(localSizeX);
     uint32_t hpt = normalize_hashes_per_thread(hashesPerThread);
-    uint32_t noncesPerThread = useUvec4 ? (4u * hpt) : hpt;
+    uint32_t noncesPerThread = vectorWidth * hpt;
     uint32_t slot = pipeline_slot(localSize, hpt);
     /* Defensive: ensure core Vulkan handles are valid before proceeding. */
     if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE) {
@@ -1085,9 +1176,9 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (g_commandBuffer == VK_NULL_HANDLE || g_fence == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
-    if (!ensure_mining_pipeline(localSize, hpt, useUvec4))
+    if (!ensure_mining_pipeline(localSize, hpt, variant))
         return GPU_UNAVAILABLE;
-    VkPipeline miningPipe = useUvec4 ? g_pipelines_uvec4[slot] : g_pipelines[slot];
+    VkPipeline miningPipe = *mining_pipeline_slot(variant, slot);
     if (slot >= GPU_PIPELINE_SLOT_COUNT || miningPipe == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
@@ -1100,8 +1191,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
 
     if (!g_workgroup_size_logged) {
-        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU local_size_x=%u hashesPerThread=%u uvec4=%d",
-            (unsigned)localSize, (unsigned)hpt, useUvec4);
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU local_size_x=%u hashesPerThread=%u vectorWidth=%u",
+            (unsigned)localSize, (unsigned)hpt, (unsigned)vectorWidth);
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan maxComputeWorkGroupCount[0]=%u", (unsigned)g_maxWorkGroupCount);
         g_workgroup_size_logged = 1;
     }
@@ -1121,9 +1212,9 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         return GPU_UNAVAILABLE;
     if (chunkInv > maxInvPerPass && !s_gpu_multipass_notice) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-            "GPU scan uses multiple dispatches per chunk (chunkNonces=%llu maxNoncesPerPass=%llu maxGroups=%u localSize=%u noncesPerThread=%u uvec4=%d)",
+            "GPU scan uses multiple dispatches per chunk (chunkNonces=%llu maxNoncesPerPass=%llu maxGroups=%u localSize=%u noncesPerThread=%u vectorWidth=%u)",
             (unsigned long long)chunkInv, (unsigned long long)maxInvPerPass, (unsigned)g_maxWorkGroupCount,
-            (unsigned)localSize, (unsigned)noncesPerThread, useUvec4);
+            (unsigned)localSize, (unsigned)noncesPerThread, (unsigned)vectorWidth);
         s_gpu_multipass_notice = 1;
     }
 
@@ -1301,7 +1392,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclas
     if (!ensure_compute_resources())
         return JNI_FALSE;
     if (!ensure_mining_pipeline((uint32_t)localSizeX, normalize_hashes_per_thread((int)hashesPerThread),
-            gpu_mode_uses_uvec4((int)gpuSha256Mode)))
+            gpu_mode_shader_variant((int)gpuSha256Mode)))
         return JNI_FALSE;
     return JNI_TRUE;
 #else

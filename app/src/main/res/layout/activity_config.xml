@@ -543,6 +543,12 @@
                 android:text="@string/config_gpu_sha_midstate" />
 
             <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/config_radio_gpu_sha_uvec2_mid"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/config_gpu_sha_uvec2_midstate" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
                 android:id="@+id/config_radio_gpu_sha_uvec4_mid"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

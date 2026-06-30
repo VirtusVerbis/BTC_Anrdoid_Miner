@@ -206,6 +206,12 @@ class NativeMiningEngine(
                     running.set(false)
                     return
                 }
+                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_UVEC2_MIDSTATE.ordinal)) {
+                    AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (uvec2 midstate path)" }
+                    statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
+                    running.set(false)
+                    return
+                }
             }
         }
 
