@@ -34,10 +34,11 @@ endif()
 if(GLSLANG_VALIDATOR)
     # -V = compile to SPIR-V; SDK 1.4.x glslangValidator does not use --target-env
     set(GLSLANG_FLAGS "-V" "-o")
+    set(SHADER_SCALAR_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_scalar.inc")
     add_custom_command(
         OUTPUT "${SHADER_SCALAR_SPV}"
         COMMAND ${GLSLANG_VALIDATOR} ${GLSLANG_FLAGS} "${SHADER_SCALAR_SPV}" "${SHADER_SCALAR_SRC}"
-        DEPENDS "${SHADER_SCALAR_SRC}"
+        DEPENDS "${SHADER_SCALAR_SRC}" "${SHADER_SCALAR_INC}"
         COMMENT "Compiling miner.comp to SPIR-V"
     )
     add_custom_command(
@@ -66,10 +67,11 @@ if(GLSLANG_VALIDATOR)
     )
     add_custom_target(miner_uvec4_shader ALL DEPENDS "${SHADER_UVEC4_H}")
 
+    set(SHADER_UVEC2_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_uvec2.inc")
     add_custom_command(
         OUTPUT "${SHADER_UVEC2_SPV}"
         COMMAND ${GLSLANG_VALIDATOR} ${GLSLANG_FLAGS} "${SHADER_UVEC2_SPV}" "${SHADER_UVEC2_SRC}"
-        DEPENDS "${SHADER_UVEC2_SRC}"
+        DEPENDS "${SHADER_UVEC2_SRC}" "${SHADER_UVEC2_INC}"
         COMMENT "Compiling miner_uvec2.comp to SPIR-V"
     )
     add_custom_command(
