@@ -85,26 +85,8 @@ uvec4 broadcast_uvec4(uint x) {
     return uvec4(x);
 }
 
-void sha256_transform_4way(inout uvec4 s[8], inout uvec4 w[16]) {
-    uvec4 a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];
-    #pragma unroll 8
-    for (int i = 0; i < 64; i++) {
-        uvec4 wi;
-        if (i >= 16) {
-            uvec4 s0 = SIG0(w[(i - 15) & 15]);
-            uvec4 s1 = SIG1(w[(i - 2) & 15]);
-            wi = w[i & 15] = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
-        } else {
-            wi = w[i];
-        }
-        uvec4 ch = (e & f) ^ (~e & g);
-        uvec4 maj = (a & b) ^ (a & c) ^ (b & c);
-        uvec4 t1 = h + EP1(e) + ch + broadcast_uvec4(K[i]) + wi;
-        uvec4 t2 = EP0(a) + maj;
-        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
-    }
-    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;
-}
+#extension GL_GOOGLE_include_directive : require
+#include "sha256_compress_uvec4.inc"
 
 void sha256_first_mid_4way(uint m0, uint m1, uint m2, uint m3, uint m4, uint m5, uint m6, uint m7,
     uint header64_67, uint header68_71, uint header72_75, uvec4 nonceW_sha_be,
@@ -123,7 +105,7 @@ void sha256_first_mid_4way(uint m0, uint m1, uint m2, uint m3, uint m4, uint m5,
     w[8] = uvec4(0u); w[9] = uvec4(0u); w[10] = uvec4(0u); w[11] = uvec4(0u);
     w[12] = uvec4(0u); w[13] = uvec4(0u); w[14] = uvec4(0u);
     w[15] = broadcast_uvec4(0x00000280u);
-    sha256_transform_4way(s, w);
+    sha256_compress_16w_4way(s, w);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3];
     out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }
@@ -142,7 +124,7 @@ void sha256_32bytes_4way(uvec4 h0, uvec4 h1, uvec4 h2, uvec4 h3, uvec4 h4, uvec4
     w[9] = uvec4(0u); w[10] = uvec4(0u); w[11] = uvec4(0u);
     w[12] = uvec4(0u); w[13] = uvec4(0u); w[14] = uvec4(0u);
     w[15] = broadcast_uvec4(0x00000100u);
-    sha256_transform_4way(s, w);
+    sha256_compress_16w_4way(s, w);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3];
     out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }

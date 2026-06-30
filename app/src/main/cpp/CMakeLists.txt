@@ -49,10 +49,11 @@ if(GLSLANG_VALIDATOR)
     )
     add_custom_target(miner_shader ALL DEPENDS "${SHADER_SCALAR_H}")
 
+    set(SHADER_UVEC4_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_uvec4.inc")
     add_custom_command(
         OUTPUT "${SHADER_UVEC4_SPV}"
         COMMAND ${GLSLANG_VALIDATOR} ${GLSLANG_FLAGS} "${SHADER_UVEC4_SPV}" "${SHADER_UVEC4_SRC}"
-        DEPENDS "${SHADER_UVEC4_SRC}"
+        DEPENDS "${SHADER_UVEC4_SRC}" "${SHADER_UVEC4_INC}"
         COMMENT "Compiling miner_uvec4.comp to SPIR-V"
     )
     add_custom_command(
