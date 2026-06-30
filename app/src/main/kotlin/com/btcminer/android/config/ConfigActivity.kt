@@ -293,10 +293,7 @@ class ConfigActivity : AppCompatActivity() {
         binding.configStatusIntervalValue.text = "$statusMs ms"
         applyCpuShaFlavorRadios()
         binding.configRadioGroupCpuSha.check(radioIdForFlavor(c.cpuSha256Flavor))
-        binding.configRadioGroupGpuSha.check(
-            if (c.gpuSha256Mode == GpuSha256Mode.GPU_MIDSTATE) R.id.config_radio_gpu_sha_mid
-            else R.id.config_radio_gpu_sha_full
-        )
+        binding.configRadioGroupGpuSha.check(radioIdForGpuSha256Mode(c.gpuSha256Mode))
         loadedConfig = c
     }
 
@@ -317,6 +314,19 @@ class ConfigActivity : AppCompatActivity() {
         R.id.config_radio_cpu_sha_4 -> CpuSha256Flavor.SCALAR_MIDSTATE
         R.id.config_radio_cpu_sha_5 -> CpuSha256Flavor.SCALAR
         else -> CpuSha256Flavor.SCALAR
+    }
+
+    private fun radioIdForGpuSha256Mode(mode: GpuSha256Mode): Int = when (mode) {
+        GpuSha256Mode.GPU_MIDSTATE -> R.id.config_radio_gpu_sha_mid
+        GpuSha256Mode.GPU_UVEC4_MIDSTATE -> R.id.config_radio_gpu_sha_uvec4_mid
+        GpuSha256Mode.GPU_FULL -> R.id.config_radio_gpu_sha_full
+    }
+
+    private fun gpuSha256ModeForCheckedRadio(): GpuSha256Mode = when (binding.configRadioGroupGpuSha.checkedRadioButtonId) {
+        R.id.config_radio_gpu_sha_mid -> GpuSha256Mode.GPU_MIDSTATE
+        R.id.config_radio_gpu_sha_uvec4_mid -> GpuSha256Mode.GPU_UVEC4_MIDSTATE
+        R.id.config_radio_gpu_sha_full -> GpuSha256Mode.GPU_FULL
+        else -> GpuSha256Mode.GPU_FULL
     }
 
     private fun applyCpuShaFlavorRadios() {
@@ -349,10 +359,7 @@ class ConfigActivity : AppCompatActivity() {
             if (CpuShaCapabilities.isSelectable(requestedFlavor)) requestedFlavor
             else CpuShaCapabilities.coerceToSupported(requestedFlavor)
 
-        val gpuSha256Mode = when (binding.configRadioGroupGpuSha.checkedRadioButtonId) {
-            R.id.config_radio_gpu_sha_mid -> GpuSha256Mode.GPU_MIDSTATE
-            else -> GpuSha256Mode.GPU_FULL
-        }
+        val gpuSha256Mode = gpuSha256ModeForCheckedRadio()
 
         val config = MiningConfig(
             stratumUrl = MiningConfig.sanitize(stratumUrlRaw, MiningConfig.MAX_STRATUM_URL_LEN),

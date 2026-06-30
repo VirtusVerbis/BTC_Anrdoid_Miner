@@ -1,4 +1,13 @@
 # Reads SPV_FILE (SPIR-V binary) and writes OUT_FILE (C header with byte array).
+# Required: SPV_FILE, OUT_FILE
+# Optional: ARRAY_NAME (default g_miner_spv), HEADER_GUARD (default MINER_SPV_H)
+if(NOT DEFINED ARRAY_NAME)
+    set(ARRAY_NAME "g_miner_spv")
+endif()
+if(NOT DEFINED HEADER_GUARD)
+    set(HEADER_GUARD "MINER_SPV_H")
+endif()
+
 file(READ "${SPV_FILE}" SPV_DATA HEX)
 string(LENGTH "${SPV_DATA}" SPV_HEX_LEN)
 math(EXPR SPV_BYTE_LEN "${SPV_HEX_LEN} / 2")
@@ -23,5 +32,6 @@ if(LINE)
     set(OUT_LINES "${OUT_LINES}${LINE}\n")
 endif()
 
-set(CONTENT "/* Auto-generated from miner.spv - do not edit */\n#ifndef MINER_SPV_H\n#define MINER_SPV_H\nstatic const unsigned char g_miner_spv[] = {\n${OUT_LINES}};\nstatic const unsigned int g_miner_spv_len = ${SPV_BYTE_LEN};\n#endif\n")
+set(LEN_NAME "${ARRAY_NAME}_len")
+set(CONTENT "/* Auto-generated from ${SPV_FILE} - do not edit */\n#ifndef ${HEADER_GUARD}\n#define ${HEADER_GUARD}\nstatic const unsigned char ${ARRAY_NAME}[] = {\n${OUT_LINES}};\nstatic const unsigned int ${LEN_NAME} = ${SPV_BYTE_LEN};\n#endif\n")
 file(WRITE "${OUT_FILE}" "${CONTENT}")

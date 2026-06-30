@@ -18,7 +18,13 @@
 #include <sys/system_properties.h>
 #include <vulkan/vulkan.h>
 #include "miner_spv.h"
+#include "miner_uvec4_spv.h"
 #endif
+
+/* Match com.btcminer.android.config.GpuSha256Mode ordinals. */
+#define GPU_MODE_FULL 0
+#define GPU_MODE_MIDSTATE 1
+#define GPU_MODE_UVEC4_MIDSTATE 2
 
 #define HEADER_PREFIX_SIZE 76
 #define BLOCK_HEADER_SIZE 80
@@ -94,7 +100,9 @@ static VulkanRuntimeEnv g_vulkan_env = VULKAN_ENV_UNKNOWN;
 static VkDescriptorSetLayout g_descriptorSetLayout = VK_NULL_HANDLE;
 static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
 static VkPipeline g_pipelines[GPU_PIPELINE_SLOT_COUNT];
+static VkPipeline g_pipelines_uvec4[GPU_PIPELINE_SLOT_COUNT];
 static VkPipeline g_pipeline_selftest = VK_NULL_HANDLE;
+static VkPipeline g_pipeline_selftest_uvec4 = VK_NULL_HANDLE;
 static VkDescriptorPool g_descriptorPool = VK_NULL_HANDLE;
 static VkDescriptorSet g_descriptorSet = VK_NULL_HANDLE;
 static VkBuffer g_uboBuffer = VK_NULL_HANDLE;
@@ -150,14 +158,25 @@ static void host_invalidate_after_gpu_write_while_mapped(VkDeviceMemory mem) {
     vkInvalidateMappedMemoryRanges(g_device, 1, &range);
 }
 
-static int create_miner_shader_module(VkShaderModule *outModule) {
+static int gpu_mode_uses_midstate(int gpuSha256Mode) {
+    return gpuSha256Mode != GPU_MODE_FULL;
+}
+
+static int gpu_mode_uses_uvec4(int gpuSha256Mode) {
+    return gpuSha256Mode == GPU_MODE_UVEC4_MIDSTATE;
+}
+
+static int create_miner_shader_module(int use_uvec4, VkShaderModule *outModule) {
+    size_t codeSize = use_uvec4 ? (size_t)g_miner_uvec4_spv_len : (size_t)g_miner_spv_len;
+    const uint32_t *pCode = use_uvec4 ? (const uint32_t *)g_miner_uvec4_spv : (const uint32_t *)g_miner_spv;
     VkShaderModuleCreateInfo modInfo = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = g_miner_spv_len,
-        .pCode = (const uint32_t *)g_miner_spv,
+        .codeSize = codeSize,
+        .pCode = pCode,
     };
-    if (g_miner_spv_len == 0 || (g_miner_spv_len % 4) != 0) {
-        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "No SPIR-V; using CPU fallback");
+    if (codeSize == 0 || (codeSize % 4) != 0) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "No SPIR-V (%s); using CPU fallback",
+            use_uvec4 ? "uvec4" : "scalar");
         return 0;
     }
     if (vkCreateShaderModule(g_device, &modInfo, NULL, outModule) != VK_SUCCESS) {
@@ -338,9 +357,9 @@ static void update_and_log_vulkan_limits(void) {
     }
 }
 
-static int create_pipeline_with_spec(uint32_t localSize, uint32_t hashesPerThread, VkPipeline *outPipeline) {
+static int create_pipeline_with_spec(uint32_t localSize, uint32_t hashesPerThread, int use_uvec4, VkPipeline *outPipeline) {
     VkShaderModule shaderModule;
-    if (!create_miner_shader_module(&shaderModule))
+    if (!create_miner_shader_module(use_uvec4, &shaderModule))
         return 0;
     uint32_t specData[2] = { localSize, hashesPerThread };
     VkSpecializationMapEntry specMap[2] = {
@@ -378,22 +397,23 @@ static int create_pipeline_with_spec(uint32_t localSize, uint32_t hashesPerThrea
     return 1;
 }
 
-static int ensure_mining_pipeline(uint32_t localSizeX, uint32_t hashesPerThread) {
+static int ensure_mining_pipeline(uint32_t localSizeX, uint32_t hashesPerThread, int use_uvec4) {
     localSizeX = normalize_local_size_x((int)localSizeX);
     hashesPerThread = normalize_hashes_per_thread((int)hashesPerThread);
     uint32_t slot = pipeline_slot(localSizeX, hashesPerThread);
     if (slot >= GPU_PIPELINE_SLOT_COUNT)
         return 0;
-    VkPipeline *pipeSlot = &g_pipelines[slot];
+    VkPipeline *pipeSlot = use_uvec4 ? &g_pipelines_uvec4[slot] : &g_pipelines[slot];
     if (*pipeSlot != VK_NULL_HANDLE)
         return 1;
-    return create_pipeline_with_spec(localSizeX, hashesPerThread, pipeSlot);
+    return create_pipeline_with_spec(localSizeX, hashesPerThread, use_uvec4, pipeSlot);
 }
 
-static int ensure_selftest_pipeline(void) {
-    if (g_pipeline_selftest != VK_NULL_HANDLE)
+static int ensure_selftest_pipeline(int use_uvec4) {
+    VkPipeline *pipeSlot = use_uvec4 ? &g_pipeline_selftest_uvec4 : &g_pipeline_selftest;
+    if (*pipeSlot != VK_NULL_HANDLE)
         return 1;
-    return create_pipeline_with_spec(1u, 1u, &g_pipeline_selftest);
+    return create_pipeline_with_spec(1u, 1u, use_uvec4, pipeSlot);
 }
 
 static int ensure_compute_resources(void) {
@@ -633,10 +653,18 @@ static void destroy_compute_resources(void) {
             vkDestroyPipeline(g_device, g_pipelines[i], NULL);
             g_pipelines[i] = VK_NULL_HANDLE;
         }
+        if (g_pipelines_uvec4[i] != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_device, g_pipelines_uvec4[i], NULL);
+            g_pipelines_uvec4[i] = VK_NULL_HANDLE;
+        }
     }
     if (g_pipeline_selftest != VK_NULL_HANDLE) {
         vkDestroyPipeline(g_device, g_pipeline_selftest, NULL);
         g_pipeline_selftest = VK_NULL_HANDLE;
+    }
+    if (g_pipeline_selftest_uvec4 != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pipeline_selftest_uvec4, NULL);
+        g_pipeline_selftest_uvec4 = VK_NULL_HANDLE;
     }
     if (g_descriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(g_device, g_descriptorPool, NULL);
@@ -931,14 +959,16 @@ static int submit_once_and_wait(VkPipeline pipeline, uint32_t groupX, uint32_t g
 }
 
 /** Vulkan SSBO readback self-test: nonce=1, digest write path; logs GPU_SELFTEST_TAG. Returns 1 if ok. */
-static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
+static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
+    int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
+    int useUvec4 = gpu_mode_uses_uvec4(gpuSha256Mode);
     if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE)
         return 0;
     if (!ensure_compute_resources()) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: ensure_compute_resources failed");
         return 0;
     }
-    if (!ensure_selftest_pipeline()) {
+    if (!ensure_selftest_pipeline(useUvec4)) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: self-test pipeline failed");
         return 0;
     }
@@ -972,7 +1002,7 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
     host_flush_before_gpu_read(g_resultMemory);
     vkUnmapMemory(g_device, g_resultMemory);
 
-    if (!submit_once_and_wait(g_pipeline_selftest, 1u, 1u, 1u))
+    if (!submit_once_and_wait(useUvec4 ? g_pipeline_selftest_uvec4 : g_pipeline_selftest, 1u, 1u, 1u))
         return 0;
 
     mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
@@ -991,8 +1021,13 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
     vkUnmapMemory(g_device, g_resultMemory);
 
     uint8_t ref_first[32], ref_final[32];
-    btc_first_sha_full(h76, 1u, ref_first);
-    btc_double_sha_full(h76, 1u, ref_final);
+    if (useMidstate) {
+        btc_first_sha_from_mid(h76, mid, 1u, ref_first);
+        btc_double_sha_from_mid(h76, mid, 1u, ref_final);
+    } else {
+        btc_first_sha_full(h76, 1u, ref_first);
+        btc_double_sha_full(h76, 1u, ref_final);
+    }
     uint8_t g_first[32], g_final[32];
     sha256_words_to_digest_be(gw_first, g_first);
     sha256_words_to_digest_be(gw_final, g_final);
@@ -1013,9 +1048,10 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
         snprintf(mid_line, sizeof(mid_line), "n/a");
     }
 
+    const char *modeLabel = useUvec4 ? "GPU_Uvec4_Midstate" : (useMidstate ? "GPU_Midstate" : "GPU_Full");
     __android_log_print(ANDROID_LOG_INFO, GPU_SELFTEST_TAG,
         "vulkan_readback mode=%s midstate=%s cpu_first=%s cpu_final=%s gpu_first=%s gpu_final=%s same_first=%d same_final=%d resultFound=%08x winningNonce=%08x",
-        useMidstate ? "GPU_Midstate" : "GPU_Full", mid_line, ref_f_hex, ref_l_hex, g_f_hex, g_l_hex, same_first, same_final,
+        modeLabel, mid_line, ref_f_hex, ref_l_hex, g_f_hex, g_l_hex, same_first, same_final,
         (unsigned)found, (unsigned)sent_nonce);
 
     if (useMidstate && same_first) {
@@ -1030,10 +1066,13 @@ static int gpu_sha_vulkan_selftest_inner(int useMidstate) {
 
 /* Returns GPU_UNAVAILABLE on failure; else 0. Sets *hit_out 0/1; if 1, *nonce_out is the winning nonce (may be 0xFFFFFFFFu). */
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
-                        const uint8_t *target, int localSizeX, int hashesPerThread, int useMidstate,
+                        const uint8_t *target, int localSizeX, int hashesPerThread, int gpuSha256Mode,
                         int *hit_out, uint32_t *nonce_out) {
+    int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
+    int useUvec4 = gpu_mode_uses_uvec4(gpuSha256Mode);
     uint32_t localSize = normalize_local_size_x(localSizeX);
     uint32_t hpt = normalize_hashes_per_thread(hashesPerThread);
+    uint32_t noncesPerThread = useUvec4 ? (4u * hpt) : hpt;
     uint32_t slot = pipeline_slot(localSize, hpt);
     /* Defensive: ensure core Vulkan handles are valid before proceeding. */
     if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE) {
@@ -1046,9 +1085,9 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (g_commandBuffer == VK_NULL_HANDLE || g_fence == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
-    if (!ensure_mining_pipeline(localSize, hpt))
+    if (!ensure_mining_pipeline(localSize, hpt, useUvec4))
         return GPU_UNAVAILABLE;
-    VkPipeline miningPipe = g_pipelines[slot];
+    VkPipeline miningPipe = useUvec4 ? g_pipelines_uvec4[slot] : g_pipelines[slot];
     if (slot >= GPU_PIPELINE_SLOT_COUNT || miningPipe == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
@@ -1061,8 +1100,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
 
     if (!g_workgroup_size_logged) {
-        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU local_size_x=%u hashesPerThread=%u",
-            (unsigned)localSize, (unsigned)hpt);
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU local_size_x=%u hashesPerThread=%u uvec4=%d",
+            (unsigned)localSize, (unsigned)hpt, useUvec4);
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan maxComputeWorkGroupCount[0]=%u", (unsigned)g_maxWorkGroupCount);
         g_workgroup_size_logged = 1;
     }
@@ -1077,14 +1116,14 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
      * shares and skews hashrate. Cover [nonceStart, nonceEnd] in one or more sub-ranges. */
     static int s_gpu_multipass_notice;
     uint64_t chunkInv = (uint64_t)nonceEnd - (uint64_t)nonceStart + 1ULL;
-    uint64_t maxInvPerPass = (uint64_t)g_maxWorkGroupCount * (uint64_t)localSize * (uint64_t)hpt;
+    uint64_t maxInvPerPass = (uint64_t)g_maxWorkGroupCount * (uint64_t)localSize * (uint64_t)noncesPerThread;
     if (maxInvPerPass == 0)
         return GPU_UNAVAILABLE;
     if (chunkInv > maxInvPerPass && !s_gpu_multipass_notice) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-            "GPU scan uses multiple dispatches per chunk (chunkNonces=%llu maxNoncesPerPass=%llu maxGroups=%u localSize=%u hashesPerThread=%u)",
+            "GPU scan uses multiple dispatches per chunk (chunkNonces=%llu maxNoncesPerPass=%llu maxGroups=%u localSize=%u noncesPerThread=%u uvec4=%d)",
             (unsigned long long)chunkInv, (unsigned long long)maxInvPerPass, (unsigned)g_maxWorkGroupCount,
-            (unsigned)localSize, (unsigned)hpt);
+            (unsigned)localSize, (unsigned)noncesPerThread, useUvec4);
         s_gpu_multipass_notice = 1;
     }
 
@@ -1092,7 +1131,7 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         uint64_t remain = (uint64_t)nonceEnd - (uint64_t)cursor + 1ULL;
         uint32_t thisInv = remain > maxInvPerPass ? (uint32_t)maxInvPerPass : (uint32_t)remain;
         uint32_t subEnd = (uint32_t)((uint64_t)cursor + (uint64_t)thisInv - 1ULL);
-        uint64_t invocations = (thisInv + hpt - 1u) / hpt;
+        uint64_t invocations = (thisInv + noncesPerThread - 1u) / noncesPerThread;
         uint32_t groupCountX = (uint32_t)((invocations + localSize - 1u) / localSize);
         if (groupCountX > g_maxWorkGroupCount)
             groupCountX = g_maxWorkGroupCount;
@@ -1261,8 +1300,8 @@ Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclas
         return JNI_FALSE;
     if (!ensure_compute_resources())
         return JNI_FALSE;
-    (void)gpuSha256Mode;
-    if (!ensure_mining_pipeline((uint32_t)localSizeX, normalize_hashes_per_thread((int)hashesPerThread)))
+    if (!ensure_mining_pipeline((uint32_t)localSizeX, normalize_hashes_per_thread((int)hashesPerThread),
+            gpu_mode_uses_uvec4((int)gpuSha256Mode)))
         return JNI_FALSE;
     return JNI_TRUE;
 #else
@@ -1274,7 +1313,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclas
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, jclass clazz, jint useMidstate) {
+Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, jclass clazz, jint gpuSha256Mode) {
     (void)env;
     (void)clazz;
 #ifdef __ANDROID__
@@ -1282,9 +1321,9 @@ Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, j
         return JNI_FALSE;
     if (!ensure_compute_resources())
         return JNI_FALSE;
-    return gpu_sha_vulkan_selftest_inner(useMidstate != 0) ? JNI_TRUE : JNI_FALSE;
+    return gpu_sha_vulkan_selftest_inner((int)gpuSha256Mode) ? JNI_TRUE : JNI_FALSE;
 #else
-    (void)useMidstate;
+    (void)gpuSha256Mode;
     return JNI_FALSE;
 #endif
 }
@@ -1323,11 +1362,10 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
     }
     (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
     (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
-    int useMid = (gpuSha256Mode != 0);
     int hit = 0;
     uint32_t winNonce = 0u;
     int rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)localSizeX,
-        (int)hashesPerThread, useMid, &hit, &winNonce);
+        (int)hashesPerThread, (int)gpuSha256Mode, &hit, &winNonce);
     if (rr == GPU_UNAVAILABLE) {
         out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
         out[1] = 0;

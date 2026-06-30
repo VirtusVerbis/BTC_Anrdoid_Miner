@@ -1,0 +1,250 @@
+// Bitcoin block header nonce scan: uvec4 midstate double-SHA256 path (4 nonces per thread).
+// Spec constant 0: local_size_x. Spec constant 1: hashesPerThread (1, 2, 4, or 8).
+#version 450
+
+layout(local_size_x_id = 0) in;
+layout(constant_id = 1) const uint hashesPerThread = 1u;
+
+layout(set = 0, binding = 0) uniform Uniforms {
+    uint header_0_3;
+    uint header_4_7;
+    uint header_8_11;
+    uint header_12_15;
+    uint header_16_19;
+    uint header_20_23;
+    uint header_24_27;
+    uint header_28_31;
+    uint header_32_35;
+    uint header_36_39;
+    uint header_40_43;
+    uint header_44_47;
+    uint header_48_51;
+    uint header_52_55;
+    uint header_56_59;
+    uint header_60_63;
+    uint header_64_67;
+    uint header_68_71;
+    uint header_72_75;
+    uint mid_0_3;
+    uint mid_4_7;
+    uint mid_8_11;
+    uint mid_12_15;
+    uint mid_16_19;
+    uint mid_20_23;
+    uint mid_24_27;
+    uint mid_28_31;
+    uint nonceStart;
+    uint nonceEnd;
+    uint target_0_3;
+    uint target_4_7;
+    uint target_8_11;
+    uint target_12_15;
+    uint target_16_19;
+    uint target_20_23;
+    uint target_24_27;
+    uint target_28_31;
+    uint gpu_use_midstate;
+    uint gpu_selftest_write_digest;
+};
+
+layout(set = 0, binding = 1) buffer Result {
+    coherent uint resultFound;
+    coherent uint winningNonce;
+    uint first_hash[8];
+    uint final_hash[8];
+};
+
+const uint K[64] = uint[64](
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+);
+
+#define ROR2(x)  (((x) >> 2)  | ((x) << 30))
+#define ROR6(x)  (((x) >> 6)  | ((x) << 26))
+#define ROR7(x)  (((x) >> 7)  | ((x) << 25))
+#define ROR11(x) (((x) >> 11) | ((x) << 21))
+#define ROR13(x) (((x) >> 13) | ((x) << 19))
+#define ROR17(x) (((x) >> 17) | ((x) << 15))
+#define ROR18(x) (((x) >> 18) | ((x) << 14))
+#define ROR19(x) (((x) >> 19) | ((x) << 13))
+#define ROR22(x) (((x) >> 22) | ((x) << 10))
+#define ROR25(x) (((x) >> 25) | ((x) << 7))
+
+#define SIG0(x) (ROR7(x) ^ ROR18(x) ^ ((x) >> 3))
+#define SIG1(x) (ROR17(x) ^ ROR19(x) ^ ((x) >> 10))
+#define EP0(x)  (ROR2(x) ^ ROR13(x) ^ ROR22(x))
+#define EP1(x)  (ROR6(x) ^ ROR11(x) ^ ROR25(x))
+
+uvec4 broadcast_uvec4(uint x) {
+    return uvec4(x);
+}
+
+void sha256_transform_4way(inout uvec4 s[8], inout uvec4 w[16]) {
+    uvec4 a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];
+    #pragma unroll 8
+    for (int i = 0; i < 64; i++) {
+        uvec4 wi;
+        if (i >= 16) {
+            uvec4 s0 = SIG0(w[(i - 15) & 15]);
+            uvec4 s1 = SIG1(w[(i - 2) & 15]);
+            wi = w[i & 15] = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
+        } else {
+            wi = w[i];
+        }
+        uvec4 ch = (e & f) ^ (~e & g);
+        uvec4 maj = (a & b) ^ (a & c) ^ (b & c);
+        uvec4 t1 = h + EP1(e) + ch + broadcast_uvec4(K[i]) + wi;
+        uvec4 t2 = EP0(a) + maj;
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;
+}
+
+void sha256_first_mid_4way(uint m0, uint m1, uint m2, uint m3, uint m4, uint m5, uint m6, uint m7,
+    uint header64_67, uint header68_71, uint header72_75, uvec4 nonceW_sha_be,
+    out uvec4 out0, out uvec4 out1, out uvec4 out2, out uvec4 out3,
+    out uvec4 out4, out uvec4 out5, out uvec4 out6, out uvec4 out7) {
+    uvec4 s[8];
+    s[0] = broadcast_uvec4(m0); s[1] = broadcast_uvec4(m1); s[2] = broadcast_uvec4(m2); s[3] = broadcast_uvec4(m3);
+    s[4] = broadcast_uvec4(m4); s[5] = broadcast_uvec4(m5); s[6] = broadcast_uvec4(m6); s[7] = broadcast_uvec4(m7);
+    uvec4 w[16];
+    w[0] = broadcast_uvec4(header64_67);
+    w[1] = broadcast_uvec4(header68_71);
+    w[2] = broadcast_uvec4(header72_75);
+    w[3] = nonceW_sha_be;
+    w[4] = broadcast_uvec4(0x80000000u);
+    w[5] = uvec4(0u); w[6] = uvec4(0u); w[7] = uvec4(0u);
+    w[8] = uvec4(0u); w[9] = uvec4(0u); w[10] = uvec4(0u); w[11] = uvec4(0u);
+    w[12] = uvec4(0u); w[13] = uvec4(0u); w[14] = uvec4(0u);
+    w[15] = broadcast_uvec4(0x00000280u);
+    sha256_transform_4way(s, w);
+    out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3];
+    out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
+}
+
+void sha256_32bytes_4way(uvec4 h0, uvec4 h1, uvec4 h2, uvec4 h3, uvec4 h4, uvec4 h5, uvec4 h6, uvec4 h7,
+    out uvec4 out0, out uvec4 out1, out uvec4 out2, out uvec4 out3,
+    out uvec4 out4, out uvec4 out5, out uvec4 out6, out uvec4 out7) {
+    uvec4 s[8];
+    s[0] = broadcast_uvec4(0x6a09e667u); s[1] = broadcast_uvec4(0xbb67ae85u);
+    s[2] = broadcast_uvec4(0x3c6ef372u); s[3] = broadcast_uvec4(0xa54ff53au);
+    s[4] = broadcast_uvec4(0x510e527fu); s[5] = broadcast_uvec4(0x9b05688cu);
+    s[6] = broadcast_uvec4(0x1f83d9abu); s[7] = broadcast_uvec4(0x5be0cd19u);
+    uvec4 w[16];
+    w[0] = h0; w[1] = h1; w[2] = h2; w[3] = h3; w[4] = h4; w[5] = h5; w[6] = h6; w[7] = h7;
+    w[8] = broadcast_uvec4(0x80000000u);
+    w[9] = uvec4(0u); w[10] = uvec4(0u); w[11] = uvec4(0u);
+    w[12] = uvec4(0u); w[13] = uvec4(0u); w[14] = uvec4(0u);
+    w[15] = broadcast_uvec4(0x00000100u);
+    sha256_transform_4way(s, w);
+    out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3];
+    out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
+}
+
+uint nonce_sha_word(uint nonce) {
+    return ((nonce & 0xffu) << 24) | (((nonce >> 8) & 0xffu) << 16) | (((nonce >> 16) & 0xffu) << 8) | ((nonce >> 24) & 0xffu);
+}
+
+uint bswap32(uint x) {
+    return ((x & 0xffu) << 24) | (((x >> 8) & 0xffu) << 16)
+         | (((x >> 16) & 0xffu) << 8) | ((x >> 24) & 0xffu);
+}
+
+bool hash_meets_target(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uint h6, uint h7) {
+    uint d7 = bswap32(h7);
+    uint t0 = bswap32(target_0_3);
+    if (d7 != t0) return d7 < t0;
+    uint d6 = bswap32(h6);
+    uint t1 = bswap32(target_4_7);
+    if (d6 != t1) return d6 < t1;
+    uint d5 = bswap32(h5);
+    uint t2 = bswap32(target_8_11);
+    if (d5 != t2) return d5 < t2;
+    uint d4 = bswap32(h4);
+    uint t3 = bswap32(target_12_15);
+    if (d4 != t3) return d4 < t3;
+    uint d3 = bswap32(h3);
+    uint t4 = bswap32(target_16_19);
+    if (d3 != t4) return d3 < t4;
+    uint d2 = bswap32(h2);
+    uint t5 = bswap32(target_20_23);
+    if (d2 != t5) return d2 < t5;
+    uint d1 = bswap32(h1);
+    uint t6 = bswap32(target_24_27);
+    if (d1 != t6) return d1 < t6;
+    uint d0 = bswap32(h0);
+    uint t7 = bswap32(target_28_31);
+    return d0 <= t7;
+}
+
+uvec4 nonce_words_uvec4(uint n0, uint n1, uint n2, uint n3) {
+    return uvec4(nonce_sha_word(n0), nonce_sha_word(n1), nonce_sha_word(n2), nonce_sha_word(n3));
+}
+
+void hash_batch_4way(uint n0, uint n1, uint n2, uint n3,
+    out uvec4 o0, out uvec4 o1, out uvec4 o2, out uvec4 o3,
+    out uvec4 o4, out uvec4 o5, out uvec4 o6, out uvec4 o7,
+    out uvec4 f0, out uvec4 f1, out uvec4 f2, out uvec4 f3,
+    out uvec4 f4, out uvec4 f5, out uvec4 f6, out uvec4 f7) {
+    uvec4 nword = nonce_words_uvec4(n0, n1, n2, n3);
+    sha256_first_mid_4way(mid_0_3, mid_4_7, mid_8_11, mid_12_15, mid_16_19, mid_20_23, mid_24_27, mid_28_31,
+        header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
+    sha256_32bytes_4way(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
+}
+
+void check_lane_hit(uint laneNonce, uvec4 f0, uvec4 f1, uvec4 f2, uvec4 f3, uvec4 f4, uvec4 f5, uvec4 f6, uvec4 f7, uint lane) {
+    if (laneNonce > nonceEnd)
+        return;
+    if (hash_meets_target(f0[lane], f1[lane], f2[lane], f3[lane], f4[lane], f5[lane], f6[lane], f7[lane])) {
+        atomicMax(resultFound, 1u);
+        atomicMin(winningNonce, laneNonce);
+    }
+}
+
+void main() {
+    if (gpu_selftest_write_digest != 0u) {
+        if (gl_GlobalInvocationID.x != 0u)
+            return;
+        uint nonce = nonceStart;
+        uvec4 o0, o1, o2, o3, o4, o5, o6, o7;
+        uvec4 f0, f1, f2, f3, f4, f5, f6, f7;
+        hash_batch_4way(nonce, nonce + 1u, nonce + 2u, nonce + 3u,
+            o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
+        resultFound = 2u;
+        winningNonce = 0xFFFFFFFFu;
+        first_hash[0] = o0.x; first_hash[1] = o1.x; first_hash[2] = o2.x; first_hash[3] = o3.x;
+        first_hash[4] = o4.x; first_hash[5] = o5.x; first_hash[6] = o6.x; first_hash[7] = o7.x;
+        final_hash[0] = f0.x; final_hash[1] = f1.x; final_hash[2] = f2.x; final_hash[3] = f3.x;
+        final_hash[4] = f4.x; final_hash[5] = f5.x; final_hash[6] = f6.x; final_hash[7] = f7.x;
+        return;
+    }
+
+    uint global_id = gl_GlobalInvocationID.x;
+    uint laneBase = nonceStart + global_id * 4u * hashesPerThread;
+    if (laneBase > nonceEnd)
+        return;
+
+    for (uint i = 0u; i < hashesPerThread; i++) {
+        uint n0 = laneBase + i * 4u;
+        if (n0 > nonceEnd)
+            continue;
+        uint n1 = n0 + 1u;
+        uint n2 = n0 + 2u;
+        uint n3 = n0 + 3u;
+
+        uvec4 o0, o1, o2, o3, o4, o5, o6, o7;
+        uvec4 f0, f1, f2, f3, f4, f5, f6, f7;
+        hash_batch_4way(n0, n1, n2, n3, o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
+
+        check_lane_hit(n0, f0, f1, f2, f3, f4, f5, f6, f7, 0u);
+        check_lane_hit(n1, f0, f1, f2, f3, f4, f5, f6, f7, 1u);
+        check_lane_hit(n2, f0, f1, f2, f3, f4, f5, f6, f7, 2u);
+        check_lane_hit(n3, f0, f1, f2, f3, f4, f5, f6, f7, 3u);
+    }
+}

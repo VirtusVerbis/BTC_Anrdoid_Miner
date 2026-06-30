@@ -72,8 +72,8 @@ object NativeMiner {
     /** Host-only: midstate vs full double-SHA for test header; logs GPU_SHA_SelfTest. */
     external fun gpuShaHostSelftest(): Boolean
 
-    /** Vulkan SSBO readback vs CPU first/final SHA for test header. [useMidstate] 0 = full, 1 = midstate path. */
-    external fun gpuShaVulkanSelftest(useMidstate: Int): Boolean
+    /** Vulkan SSBO readback vs CPU first/final SHA for test header. [gpuSha256Mode] is [GpuSha256Mode.ordinal]. */
+    external fun gpuShaVulkanSelftest(gpuSha256Mode: Int): Boolean
 
     /**
      * CPU nonce scan: writes [CpuNonceScanResult] wire format into [out] — `out[0]` = status, `out[1]` = winning

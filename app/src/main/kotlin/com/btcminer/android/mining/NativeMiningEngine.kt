@@ -188,14 +188,20 @@ class NativeMiningEngine(
                 return
             }
             if (GpuCapabilities.isVulkanAvailable()) {
-                if (!NativeMiner.gpuShaVulkanSelftest(0)) {
+                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_FULL.ordinal)) {
                     AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (full path)" }
                     statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                     running.set(false)
                     return
                 }
-                if (!NativeMiner.gpuShaVulkanSelftest(1)) {
+                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_MIDSTATE.ordinal)) {
                     AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (midstate path)" }
+                    statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
+                    running.set(false)
+                    return
+                }
+                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_UVEC4_MIDSTATE.ordinal)) {
+                    AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (uvec4 midstate path)" }
                     statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                     running.set(false)
                     return

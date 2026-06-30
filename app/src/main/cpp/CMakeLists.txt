@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.13.1)
 project("miner")
 
-# Compile compute shader to SPIR-V and embed as C array (for Vulkan compute path)
-set(SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/miner.comp")
-set(SHADER_SPV "${CMAKE_CURRENT_BINARY_DIR}/miner.spv")
-set(SHADER_H   "${CMAKE_CURRENT_BINARY_DIR}/miner_spv.h")
+# Compile compute shaders to SPIR-V and embed as C arrays (for Vulkan compute path)
+set(SHADER_SCALAR_SRC "${CMAKE_CURRENT_SOURCE_DIR}/miner.comp")
+set(SHADER_SCALAR_SPV "${CMAKE_CURRENT_BINARY_DIR}/miner.spv")
+set(SHADER_SCALAR_H   "${CMAKE_CURRENT_BINARY_DIR}/miner_spv.h")
+set(SHADER_UVEC4_SRC "${CMAKE_CURRENT_SOURCE_DIR}/miner_uvec4.comp")
+set(SHADER_UVEC4_SPV "${CMAKE_CURRENT_BINARY_DIR}/miner_uvec4.spv")
+set(SHADER_UVEC4_H   "${CMAKE_CURRENT_BINARY_DIR}/miner_uvec4_spv.h")
 
 # Try glslangValidator first (Vulkan SDK), then glslc (shaderc)
 find_program(GLSLANG_VALIDATOR NAMES glslangValidator glslc)
@@ -27,21 +30,37 @@ if(NOT GLSLANG_VALIDATOR)
 endif()
 if(GLSLANG_VALIDATOR)
     # -V = compile to SPIR-V; SDK 1.4.x glslangValidator does not use --target-env
-    set(GLSLANG_FLAGS "-V" "-o" "${SHADER_SPV}")
+    set(GLSLANG_FLAGS "-V" "-o")
     add_custom_command(
-        OUTPUT "${SHADER_SPV}"
-        COMMAND ${GLSLANG_VALIDATOR} ${GLSLANG_FLAGS} "${SHADER_SRC}"
-        DEPENDS "${SHADER_SRC}"
+        OUTPUT "${SHADER_SCALAR_SPV}"
+        COMMAND ${GLSLANG_VALIDATOR} ${GLSLANG_FLAGS} "${SHADER_SCALAR_SPV}" "${SHADER_SCALAR_SRC}"
+        DEPENDS "${SHADER_SCALAR_SRC}"
         COMMENT "Compiling miner.comp to SPIR-V"
     )
     add_custom_command(
-        OUTPUT "${SHADER_H}"
-        COMMAND ${CMAKE_COMMAND} -DSPV_FILE="${SHADER_SPV}" -DOUT_FILE="${SHADER_H}"
+        OUTPUT "${SHADER_SCALAR_H}"
+        COMMAND ${CMAKE_COMMAND} -DSPV_FILE="${SHADER_SCALAR_SPV}" -DOUT_FILE="${SHADER_SCALAR_H}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spv.cmake"
-        DEPENDS "${SHADER_SPV}"
+        DEPENDS "${SHADER_SCALAR_SPV}"
         COMMENT "Embedding SPIR-V into miner_spv.h"
     )
-    add_custom_target(miner_shader ALL DEPENDS "${SHADER_H}")
+    add_custom_target(miner_shader ALL DEPENDS "${SHADER_SCALAR_H}")
+
+    add_custom_command(
+        OUTPUT "${SHADER_UVEC4_SPV}"
+        COMMAND ${GLSLANG_VALIDATOR} ${GLSLANG_FLAGS} "${SHADER_UVEC4_SPV}" "${SHADER_UVEC4_SRC}"
+        DEPENDS "${SHADER_UVEC4_SRC}"
+        COMMENT "Compiling miner_uvec4.comp to SPIR-V"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_UVEC4_H}"
+        COMMAND ${CMAKE_COMMAND} -DSPV_FILE="${SHADER_UVEC4_SPV}" -DOUT_FILE="${SHADER_UVEC4_H}"
+            -DARRAY_NAME=g_miner_uvec4_spv -DHEADER_GUARD=MINER_UVEC4_SPV_H
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spv.cmake"
+        DEPENDS "${SHADER_UVEC4_SPV}"
+        COMMENT "Embedding SPIR-V into miner_uvec4_spv.h"
+    )
+    add_custom_target(miner_uvec4_shader ALL DEPENDS "${SHADER_UVEC4_H}")
 else()
     message(FATAL_ERROR "glslangValidator or glslc required for GPU path. Install Vulkan SDK or shaderc and add to PATH.")
 endif()
@@ -53,7 +72,7 @@ endif()
 
 add_library(miner SHARED ${MINER_SRCS})
 target_include_directories(miner PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
-add_dependencies(miner miner_shader)
+add_dependencies(miner miner_shader miner_uvec4_shader)
 target_compile_features(miner PRIVATE c_std_11)
 
 # Optional native self-test logs: pass -DSHA256_SELFTEST_DIAG=1 in Gradle cmake arguments, e.g.
