@@ -86,6 +86,7 @@ const uint K[64] = uint[64](
 #extension GL_GOOGLE_include_directive : require
 #include "sha256_compress_scalar.inc"
 #include "sha256_compress_second_scalar.inc"
+#include "sha256_compress_first_mid_scalar.inc"
 
 void sha256_transform(inout uint s[8], inout uint w[16]) {
     uint a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];
@@ -122,10 +123,7 @@ void sha256_80bytes(uint header0_3, uint header4_7, uint header8_11, uint header
     w[8] = header32_35; w[9] = header36_39; w[10] = header40_43; w[11] = header44_47;
     w[12] = header48_51; w[13] = header52_55; w[14] = header56_59; w[15] = header60_63;
     sha256_transform(s, w);
-    w[0] = header64_67; w[1] = header68_71; w[2] = header72_75; w[3] = nonceW_sha_be;
-    w[4] = 0x80000000u; w[5] = 0u; w[6] = 0u; w[7] = 0u; w[8] = 0u; w[9] = 0u; w[10] = 0u; w[11] = 0u;
-    w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000280u;
-    sha256_transform(s, w);
+    sha256_compress_first_mid_16w(header64_67, header68_71, header72_75, nonceW_sha_be, s);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3]; out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }
 
@@ -134,11 +132,7 @@ void sha256_first_mid(uint m0, uint m1, uint m2, uint m3, uint m4, uint m5, uint
     out uint out0, out uint out1, out uint out2, out uint out3,
     out uint out4, out uint out5, out uint out6, out uint out7) {
     uint s[8] = uint[8](m0, m1, m2, m3, m4, m5, m6, m7);
-    uint w[16];
-    w[0] = header64_67; w[1] = header68_71; w[2] = header72_75; w[3] = nonceW_sha_be;
-    w[4] = 0x80000000u; w[5] = 0u; w[6] = 0u; w[7] = 0u; w[8] = 0u; w[9] = 0u; w[10] = 0u; w[11] = 0u;
-    w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000280u;
-    sha256_compress_16w(s, w);
+    sha256_compress_first_mid_16w(header64_67, header68_71, header72_75, nonceW_sha_be, s);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3]; out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }
 
