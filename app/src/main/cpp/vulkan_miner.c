@@ -113,6 +113,8 @@ static VkBuffer g_uboBuffer = VK_NULL_HANDLE;
 static VkDeviceMemory g_uboMemory = VK_NULL_HANDLE;
 static VkBuffer g_resultBuffer = VK_NULL_HANDLE;
 static VkDeviceMemory g_resultMemory = VK_NULL_HANDLE;
+static void *g_uboMapped = NULL;
+static void *g_resultMapped = NULL;
 static VkCommandPool g_commandPool = VK_NULL_HANDLE;
 static VkCommandBuffer g_commandBuffer = VK_NULL_HANDLE;
 static VkFence g_fence = VK_NULL_HANDLE;
@@ -160,6 +162,44 @@ static void host_invalidate_after_gpu_write_while_mapped(VkDeviceMemory mem) {
         .size = VK_WHOLE_SIZE,
     };
     vkInvalidateMappedMemoryRanges(g_device, 1, &range);
+}
+
+static void cleanup_vulkan(void);
+
+static void unmap_host_buffers(void) {
+    if (g_uboMapped != NULL) {
+        vkUnmapMemory(g_device, g_uboMemory);
+        g_uboMapped = NULL;
+    }
+    if (g_resultMapped != NULL) {
+        vkUnmapMemory(g_device, g_resultMemory);
+        g_resultMapped = NULL;
+    }
+}
+
+/** Map UBO + result SSBO once for the lifetime of compute resources. Idempotent. */
+static int map_host_buffers(void) {
+    if (g_uboMapped != NULL && g_resultMapped != NULL)
+        return 1;
+    if (g_uboMemory == VK_NULL_HANDLE || g_resultMemory == VK_NULL_HANDLE)
+        return 0;
+    VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &g_uboMapped);
+    if (mapRes != VK_SUCCESS) {
+        g_uboMapped = NULL;
+        if (mapRes == VK_ERROR_DEVICE_LOST)
+            cleanup_vulkan();
+        return 0;
+    }
+    mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &g_resultMapped);
+    if (mapRes != VK_SUCCESS) {
+        vkUnmapMemory(g_device, g_uboMemory);
+        g_uboMapped = NULL;
+        g_resultMapped = NULL;
+        if (mapRes == VK_ERROR_DEVICE_LOST)
+            cleanup_vulkan();
+        return 0;
+    }
+    return 1;
 }
 
 static int gpu_mode_uses_midstate(int gpuSha256Mode) {
@@ -486,6 +526,8 @@ static int ensure_selftest_pipeline(GpuShaderVariant variant) {
 
 static int ensure_compute_resources(void) {
     if (g_descriptorSetLayout != VK_NULL_HANDLE) {
+        if (!map_host_buffers())
+            return 0;
         if (!g_resources_logged) {
             __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources ready (buffers, command buffer, fence)");
             g_resources_logged = 1;
@@ -657,12 +699,15 @@ static int ensure_compute_resources(void) {
         g_commandPool = VK_NULL_HANDLE;
         goto fail_result;
     }
+    if (!map_host_buffers())
+        goto fail_result;
     if (!g_resources_logged) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources ready (buffers, command buffer, fence)");
         g_resources_logged = 1;
     }
     return 1;
 fail_result:
+    unmap_host_buffers();
     vkFreeMemory(g_device, g_resultMemory, NULL);
     vkDestroyBuffer(g_device, g_resultBuffer, NULL);
     g_resultMemory = VK_NULL_HANDLE;
@@ -689,6 +734,7 @@ fail_buffers:
 }
 
 static void destroy_compute_resources(void) {
+    unmap_host_buffers();
     if (g_fence != VK_NULL_HANDLE) {
         vkDestroyFence(g_device, g_fence, NULL);
         g_fence = VK_NULL_HANDLE;
@@ -1048,6 +1094,8 @@ static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: self-test pipeline failed");
         return 0;
     }
+    if (g_uboMapped == NULL || g_resultMapped == NULL)
+        return 0;
     const uint8_t *h76 = btc_gpu_selftest_header76();
     uint32_t mid[8] = {0};
     if (useMidstate)
@@ -1057,44 +1105,22 @@ static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
     uint8_t ubo[UBO_SIZE];
     fill_ubo_mining(ubo, h76, 1u, 1u, target, useMidstate, 1, mid);
 
-    void *ptr;
-    VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr);
-    if (mapRes != VK_SUCCESS) {
-        if (mapRes == VK_ERROR_DEVICE_LOST)
-            cleanup_vulkan();
-        return 0;
-    }
-    memcpy(ptr, ubo, UBO_SIZE);
+    memcpy(g_uboMapped, ubo, UBO_SIZE);
     host_flush_before_gpu_read(g_uboMemory);
-    vkUnmapMemory(g_device, g_uboMemory);
 
-    mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
-    if (mapRes != VK_SUCCESS) {
-        if (mapRes == VK_ERROR_DEVICE_LOST)
-            cleanup_vulkan();
-        return 0;
-    }
-    memset(ptr, 0, RESULT_BUFFER_SIZE);
+    memset(g_resultMapped, 0, RESULT_BUFFER_SIZE);
     host_flush_before_gpu_read(g_resultMemory);
-    vkUnmapMemory(g_device, g_resultMemory);
 
     if (!submit_once_and_wait(*selftest_pipeline_slot(variant), 1u, 1u, 1u))
         return 0;
 
-    mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
-    if (mapRes != VK_SUCCESS) {
-        if (mapRes == VK_ERROR_DEVICE_LOST)
-            cleanup_vulkan();
-        return 0;
-    }
     host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
-    uint32_t *words = (uint32_t *)ptr;
+    uint32_t *words = (uint32_t *)g_resultMapped;
     uint32_t found = words[RES_WORD_FOUND];
     uint32_t sent_nonce = words[RES_WORD_NONCE];
     uint32_t gw_first[8], gw_final[8];
     memcpy(gw_first, words + RES_WORD_FIRST_HASH, sizeof(gw_first));
     memcpy(gw_final, words + RES_WORD_FIRST_HASH + 8u, sizeof(gw_final));
-    vkUnmapMemory(g_device, g_resultMemory);
 
     uint8_t ref_first[32], ref_final[32];
     if (useMidstate) {
@@ -1186,6 +1212,8 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
         g_descriptorSet == VK_NULL_HANDLE || g_pipelineLayout == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
+    if (g_uboMapped == NULL || g_resultMapped == NULL)
+        return GPU_UNAVAILABLE;
     *hit_out = 0;
     *nonce_out = 0u;
     atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
@@ -1231,54 +1259,20 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
 
         fill_ubo_mining(ubo, header76, cursor, subEnd, target, useMidstate, 0, mid);
 
-        void *ptr;
-        VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &ptr);
-        if (mapRes != VK_SUCCESS) {
-            if (mapRes == VK_ERROR_DEVICE_LOST) {
-                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (ubo)");
-                cleanup_vulkan();
-            } else {
-                __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(ubo) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
-            }
-            return GPU_UNAVAILABLE;
-        }
-        memcpy(ptr, ubo, UBO_SIZE);
+        memcpy(g_uboMapped, ubo, UBO_SIZE);
         host_flush_before_gpu_read(g_uboMemory);
-        vkUnmapMemory(g_device, g_uboMemory);
 
-        mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &ptr);
-        if (mapRes != VK_SUCCESS) {
-            if (mapRes == VK_ERROR_DEVICE_LOST) {
-                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result)");
-                cleanup_vulkan();
-            } else {
-                __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(result) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
-            }
-            return GPU_UNAVAILABLE;
-        }
-        mining_result_buffer_reset(ptr);
+        mining_result_buffer_reset(g_resultMapped);
         host_flush_before_gpu_read(g_resultMemory);
-        vkUnmapMemory(g_device, g_resultMemory);
 
         if (!submit_once_and_wait(miningPipe, groupCountX, 1u, 1u))
             return GPU_UNAVAILABLE;
 
-        mapRes = vkMapMemory(g_device, g_resultMemory, 0, 8u, 0, &ptr);
-        if (mapRes != VK_SUCCESS) {
-            if (mapRes == VK_ERROR_DEVICE_LOST) {
-                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkMapMemory (result read)");
-                cleanup_vulkan();
-            } else {
-                __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkMapMemory(result read) failed: %s (%d)", vk_result_str(mapRes), (int)mapRes);
-            }
-            return GPU_UNAVAILABLE;
-        }
         host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
         {
-            uint32_t *words = (uint32_t *)ptr;
+            uint32_t *words = (uint32_t *)g_resultMapped;
             uint32_t found = words[RES_WORD_FOUND];
             uint32_t win = words[RES_WORD_NONCE];
-            vkUnmapMemory(g_device, g_resultMemory);
             if (found == 1u) {
                 *hit_out = 1;
                 *nonce_out = win;
