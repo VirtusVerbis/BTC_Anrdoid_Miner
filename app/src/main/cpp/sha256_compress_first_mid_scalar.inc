@@ -7,7 +7,8 @@ void sha256_compress_first_mid_16w(
     inout uint s[8]) {
     uint w[16];
     w[0] = header64_67; w[1] = header68_71; w[2] = header72_75; w[3] = nonceW_sha_be;
-    w[4] = 0x80000000u; w[5] = 0u; w[6] = 0u; w[7] = 0u; w[8] = 0u; w[9] = 0u; w[10] = 0u; w[11] = 0u;
+    w[4] = 0x80000000u; w[5] = 0u; w[6] = 0u; w[7] = 0u;
+    w[8] = 0u; w[9] = 0u; w[10] = 0u; w[11] = 0u;
     w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000280u;
     uint a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];
     SHA256_ROUND(a, b, c, d, e, f, g, h, w[0], K[0]);

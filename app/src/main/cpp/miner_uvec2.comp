@@ -87,6 +87,8 @@ uvec2 broadcast_uvec2(uint x) {
 
 #extension GL_GOOGLE_include_directive : require
 #include "sha256_compress_uvec2.inc"
+#include "sha256_compress_second_uvec2.inc"
+#include "sha256_compress_first_mid_uvec2.inc"
 
 void sha256_first_mid_2way(uint m0, uint m1, uint m2, uint m3, uint m4, uint m5, uint m6, uint m7,
     uint header64_67, uint header68_71, uint header72_75, uvec2 nonceW_sha_be,
@@ -95,17 +97,7 @@ void sha256_first_mid_2way(uint m0, uint m1, uint m2, uint m3, uint m4, uint m5,
     uvec2 s[8];
     s[0] = broadcast_uvec2(m0); s[1] = broadcast_uvec2(m1); s[2] = broadcast_uvec2(m2); s[3] = broadcast_uvec2(m3);
     s[4] = broadcast_uvec2(m4); s[5] = broadcast_uvec2(m5); s[6] = broadcast_uvec2(m6); s[7] = broadcast_uvec2(m7);
-    uvec2 w[16];
-    w[0] = broadcast_uvec2(header64_67);
-    w[1] = broadcast_uvec2(header68_71);
-    w[2] = broadcast_uvec2(header72_75);
-    w[3] = nonceW_sha_be;
-    w[4] = broadcast_uvec2(0x80000000u);
-    w[5] = uvec2(0u); w[6] = uvec2(0u); w[7] = uvec2(0u);
-    w[8] = uvec2(0u); w[9] = uvec2(0u); w[10] = uvec2(0u); w[11] = uvec2(0u);
-    w[12] = uvec2(0u); w[13] = uvec2(0u); w[14] = uvec2(0u);
-    w[15] = broadcast_uvec2(0x00000280u);
-    sha256_compress_16w_2way(s, w);
+    sha256_compress_first_mid_16w_2way(header64_67, header68_71, header72_75, nonceW_sha_be, s);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3];
     out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }
@@ -118,13 +110,7 @@ void sha256_32bytes_2way(uvec2 h0, uvec2 h1, uvec2 h2, uvec2 h3, uvec2 h4, uvec2
     s[2] = broadcast_uvec2(0x3c6ef372u); s[3] = broadcast_uvec2(0xa54ff53au);
     s[4] = broadcast_uvec2(0x510e527fu); s[5] = broadcast_uvec2(0x9b05688cu);
     s[6] = broadcast_uvec2(0x1f83d9abu); s[7] = broadcast_uvec2(0x5be0cd19u);
-    uvec2 w[16];
-    w[0] = h0; w[1] = h1; w[2] = h2; w[3] = h3; w[4] = h4; w[5] = h5; w[6] = h6; w[7] = h7;
-    w[8] = broadcast_uvec2(0x80000000u);
-    w[9] = uvec2(0u); w[10] = uvec2(0u); w[11] = uvec2(0u);
-    w[12] = uvec2(0u); w[13] = uvec2(0u); w[14] = uvec2(0u);
-    w[15] = broadcast_uvec2(0x00000100u);
-    sha256_compress_16w_2way(s, w);
+    sha256_compress_second_16w_2way(h0, h1, h2, h3, h4, h5, h6, h7, s);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3];
     out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }
