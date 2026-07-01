@@ -85,6 +85,7 @@ const uint K[64] = uint[64](
 
 #extension GL_GOOGLE_include_directive : require
 #include "sha256_compress_scalar.inc"
+#include "sha256_compress_second_scalar.inc"
 
 void sha256_transform(inout uint s[8], inout uint w[16]) {
     uint a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];
@@ -145,10 +146,7 @@ void sha256_32bytes(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uint h
     out uint out0, out uint out1, out uint out2, out uint out3,
     out uint out4, out uint out5, out uint out6, out uint out7) {
     uint s[8] = uint[8](0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au, 0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u);
-    uint w[16];
-    w[0] = h0; w[1] = h1; w[2] = h2; w[3] = h3; w[4] = h4; w[5] = h5; w[6] = h6; w[7] = h7;
-    w[8] = 0x80000000u; w[9] = 0u; w[10] = 0u; w[11] = 0u; w[12] = 0u; w[13] = 0u; w[14] = 0u; w[15] = 0x00000100u;
-    sha256_compress_16w(s, w);
+    sha256_compress_second_16w(h0, h1, h2, h3, h4, h5, h6, h7, s);
     out0 = s[0]; out1 = s[1]; out2 = s[2]; out3 = s[3]; out4 = s[4]; out5 = s[5]; out6 = s[6]; out7 = s[7];
 }
 

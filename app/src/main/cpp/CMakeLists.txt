@@ -35,10 +35,24 @@ if(GLSLANG_VALIDATOR)
     # -V = compile to SPIR-V; SDK 1.4.x glslangValidator does not use --target-env
     set(GLSLANG_FLAGS "-V" "-o")
     set(SHADER_SCALAR_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_scalar.inc")
+    set(SHADER_SECOND_SCALAR_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_second_scalar.inc")
+    set(SHADER_SECOND_GEN "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_sha256_second_compress.py")
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_custom_command(
+            OUTPUT "${SHADER_SECOND_SCALAR_INC}"
+            COMMAND ${Python3_EXECUTABLE} "${SHADER_SECOND_GEN}"
+            DEPENDS "${SHADER_SECOND_GEN}"
+            COMMENT "Generating sha256_compress_second_scalar.inc"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+    else()
+        message(STATUS "Python3 not found; using committed sha256_compress_second_scalar.inc")
+    endif()
     add_custom_command(
         OUTPUT "${SHADER_SCALAR_SPV}"
         COMMAND ${GLSLANG_VALIDATOR} ${GLSLANG_FLAGS} "${SHADER_SCALAR_SPV}" "${SHADER_SCALAR_SRC}"
-        DEPENDS "${SHADER_SCALAR_SRC}" "${SHADER_SCALAR_INC}"
+        DEPENDS "${SHADER_SCALAR_SRC}" "${SHADER_SCALAR_INC}" "${SHADER_SECOND_SCALAR_INC}"
         COMMENT "Compiling miner.comp to SPIR-V"
     )
     add_custom_command(
