@@ -50,6 +50,9 @@ _Static_assert(HEADER_PREFIX_SIZE % 4 == 0, "UBO header must be a multiple of 4 
 #define GPU_PIPELINE_SLOT_COUNT (MAX_GPU_WORKGROUP_STEPS * GPU_HASH_PER_THREAD_VARIANTS)
 /** Max sub-ranges batched into one vkQueueSubmit; beyond this, fall back to per-pass submits. */
 #define GPU_MAX_MULTIPASS_PASSES 64
+/** Double-buffer pipelined submits when session active; 0 = synchronous gpuScanNoncesInto only. */
+#define GPU_PIPE_ENABLED 1
+#define GPU_PIPE_SLOT_COUNT 2
 /* Returned to Java when GPU path is unavailable (no SPIR-V or Vulkan failure). */
 #define GPU_UNAVAILABLE (-2)
 /* JNI jlong[0] status values for GPU path only (not shared with miner.c). */
@@ -109,7 +112,45 @@ static VkPipeline g_pipelines_uvec4[GPU_PIPELINE_SLOT_COUNT];
 static VkPipeline g_pipeline_selftest = VK_NULL_HANDLE;
 static VkPipeline g_pipeline_selftest_uvec2 = VK_NULL_HANDLE;
 static VkPipeline g_pipeline_selftest_uvec4 = VK_NULL_HANDLE;
+typedef struct {
+    VkBuffer uboBuffer;
+    VkDeviceMemory uboMemory;
+    void *uboMapped;
+    VkBuffer resultBuffer;
+    VkDeviceMemory resultMemory;
+    void *resultMapped;
+    VkCommandBuffer commandBuffer;
+    VkFence fence;
+    VkDescriptorSet descriptorSet;
+    uint32_t nonceStart;
+    uint32_t nonceEnd;
+    int inFlight;
+} GpuPipeSlot;
+
+typedef struct {
+    int active;
+    int writeIndex;
+    int inFlightIndex;
+    int syncPending;
+    int syncPendingHit;
+    uint32_t syncPendingNonce;
+    uint8_t header76[HEADER_PREFIX_SIZE];
+    uint8_t target[HASH_SIZE];
+    uint32_t mid[8];
+    int useMidstate;
+    int gpuSha256Mode;
+    VkPipeline miningPipe;
+    uint32_t localSize;
+    uint32_t hpt;
+    uint32_t noncesPerThread;
+} GpuPipeSession;
+
+static GpuPipeSlot g_pipeSlots[GPU_PIPE_SLOT_COUNT];
+static GpuPipeSession g_pipeSession;
+static int s_gpu_pipe_logged;
+
 static VkDescriptorPool g_descriptorPool = VK_NULL_HANDLE;
+/** Legacy aliases for slot 0 (self-test + synchronous scan). */
 static VkDescriptorSet g_descriptorSet = VK_NULL_HANDLE;
 static VkBuffer g_uboBuffer = VK_NULL_HANDLE;
 static VkDeviceMemory g_uboMemory = VK_NULL_HANDLE;
@@ -167,40 +208,71 @@ static void host_invalidate_after_gpu_write_while_mapped(VkDeviceMemory mem) {
 }
 
 static void cleanup_vulkan(void);
+static void gpu_pipeline_session_end_inner(void);
+static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd, const uint8_t *target,
+                        int localSizeX, int hashesPerThread, int gpuSha256Mode, int *hit_out, uint32_t *nonce_out);
 
-static void unmap_host_buffers(void) {
-    if (g_uboMapped != NULL) {
-        vkUnmapMemory(g_device, g_uboMemory);
-        g_uboMapped = NULL;
+static void sync_legacy_slot0_aliases(void) {
+    g_descriptorSet = g_pipeSlots[0].descriptorSet;
+    g_uboBuffer = g_pipeSlots[0].uboBuffer;
+    g_uboMemory = g_pipeSlots[0].uboMemory;
+    g_uboMapped = g_pipeSlots[0].uboMapped;
+    g_resultBuffer = g_pipeSlots[0].resultBuffer;
+    g_resultMemory = g_pipeSlots[0].resultMemory;
+    g_resultMapped = g_pipeSlots[0].resultMapped;
+    g_commandBuffer = g_pipeSlots[0].commandBuffer;
+    g_fence = g_pipeSlots[0].fence;
+}
+
+static void unmap_pipe_slot(GpuPipeSlot *slot) {
+    if (slot->uboMapped != NULL) {
+        vkUnmapMemory(g_device, slot->uboMemory);
+        slot->uboMapped = NULL;
     }
-    if (g_resultMapped != NULL) {
-        vkUnmapMemory(g_device, g_resultMemory);
-        g_resultMapped = NULL;
+    if (slot->resultMapped != NULL) {
+        vkUnmapMemory(g_device, slot->resultMemory);
+        slot->resultMapped = NULL;
     }
 }
 
-/** Map UBO + result SSBO once for the lifetime of compute resources. Idempotent. */
-static int map_host_buffers(void) {
-    if (g_uboMapped != NULL && g_resultMapped != NULL)
+static void unmap_host_buffers(void) {
+    for (uint32_t i = 0; i < GPU_PIPE_SLOT_COUNT; i++)
+        unmap_pipe_slot(&g_pipeSlots[i]);
+    g_uboMapped = NULL;
+    g_resultMapped = NULL;
+}
+
+static int map_pipe_slot(GpuPipeSlot *slot) {
+    if (slot->uboMapped != NULL && slot->resultMapped != NULL)
         return 1;
-    if (g_uboMemory == VK_NULL_HANDLE || g_resultMemory == VK_NULL_HANDLE)
+    if (slot->uboMemory == VK_NULL_HANDLE || slot->resultMemory == VK_NULL_HANDLE)
         return 0;
-    VkResult mapRes = vkMapMemory(g_device, g_uboMemory, 0, UBO_SIZE, 0, &g_uboMapped);
+    VkResult mapRes = vkMapMemory(g_device, slot->uboMemory, 0, UBO_SIZE, 0, &slot->uboMapped);
     if (mapRes != VK_SUCCESS) {
-        g_uboMapped = NULL;
+        slot->uboMapped = NULL;
         if (mapRes == VK_ERROR_DEVICE_LOST)
             cleanup_vulkan();
         return 0;
     }
-    mapRes = vkMapMemory(g_device, g_resultMemory, 0, RESULT_BUFFER_SIZE, 0, &g_resultMapped);
+    mapRes = vkMapMemory(g_device, slot->resultMemory, 0, RESULT_BUFFER_SIZE, 0, &slot->resultMapped);
     if (mapRes != VK_SUCCESS) {
-        vkUnmapMemory(g_device, g_uboMemory);
-        g_uboMapped = NULL;
-        g_resultMapped = NULL;
+        vkUnmapMemory(g_device, slot->uboMemory);
+        slot->uboMapped = NULL;
+        slot->resultMapped = NULL;
         if (mapRes == VK_ERROR_DEVICE_LOST)
             cleanup_vulkan();
         return 0;
     }
+    return 1;
+}
+
+/** Map UBO + result SSBO for all pipe slots. Idempotent. */
+static int map_host_buffers(void) {
+    for (uint32_t i = 0; i < GPU_PIPE_SLOT_COUNT; i++) {
+        if (!map_pipe_slot(&g_pipeSlots[i]))
+            return 0;
+    }
+    sync_legacy_slot0_aliases();
     return 1;
 }
 
@@ -574,12 +646,12 @@ static int ensure_compute_resources(void) {
         return 0;
     }
     VkDescriptorPoolSize poolSizes[2] = {
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, GPU_PIPE_SLOT_COUNT },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, GPU_PIPE_SLOT_COUNT },
     };
     VkDescriptorPoolCreateInfo poolInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets = 1,
+        .maxSets = GPU_PIPE_SLOT_COUNT,
         .poolSizeCount = 2,
         .pPoolSizes = poolSizes,
     };
@@ -594,13 +666,17 @@ static int ensure_compute_resources(void) {
         }
         return 0;
     }
+    VkDescriptorSetLayout setLayouts[GPU_PIPE_SLOT_COUNT] = {
+        g_descriptorSetLayout, g_descriptorSetLayout,
+    };
+    VkDescriptorSet sets[GPU_PIPE_SLOT_COUNT];
     VkDescriptorSetAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = g_descriptorPool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &g_descriptorSetLayout,
+        .descriptorSetCount = GPU_PIPE_SLOT_COUNT,
+        .pSetLayouts = setLayouts,
     };
-    if (vkAllocateDescriptorSets(g_device, &allocInfo, &g_descriptorSet) != VK_SUCCESS) {
+    if (vkAllocateDescriptorSets(g_device, &allocInfo, sets) != VK_SUCCESS) {
         vkDestroyDescriptorPool(g_device, g_descriptorPool, NULL);
         vkDestroyPipelineLayout(g_device, g_pipelineLayout, NULL);
         vkDestroyDescriptorSetLayout(g_device, g_descriptorSetLayout, NULL);
@@ -614,27 +690,29 @@ static int ensure_compute_resources(void) {
         return 0;
     }
     VkMemoryRequirements memReq;
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(g_physicalDevice, &memProps);
+    uint32_t memTypeIndex = (uint32_t)-1;
     VkBufferCreateInfo bufInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = UBO_SIZE,
         .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
     };
-    if (vkCreateBuffer(g_device, &bufInfo, NULL, &g_uboBuffer) != VK_SUCCESS)
+    VkMemoryRequirements uboMemReq;
+    if (vkCreateBuffer(g_device, &bufInfo, NULL, &g_pipeSlots[0].uboBuffer) != VK_SUCCESS)
         goto fail_buffers;
-    vkGetBufferMemoryRequirements(g_device, g_uboBuffer, &memReq);
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(g_physicalDevice, &memProps);
-    uint32_t memTypeIndex = (uint32_t)-1;
+    vkGetBufferMemoryRequirements(g_device, g_pipeSlots[0].uboBuffer, &uboMemReq);
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-        if ((memReq.memoryTypeBits & (1u << i)) &&
-            (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        if ((uboMemReq.memoryTypeBits & (1u << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
             memTypeIndex = i;
             break;
         }
     }
     if (memTypeIndex == (uint32_t)-1) {
         for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-            if ((memReq.memoryTypeBits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+            if ((uboMemReq.memoryTypeBits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
                 memTypeIndex = i;
                 break;
             }
@@ -646,34 +724,55 @@ static int ensure_compute_resources(void) {
         (memProps.memoryTypes[memTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
     VkMemoryAllocateInfo allocMem = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = memReq.size,
+        .allocationSize = uboMemReq.size,
         .memoryTypeIndex = memTypeIndex,
     };
-    if (vkAllocateMemory(g_device, &allocMem, NULL, &g_uboMemory) != VK_SUCCESS)
-        goto fail_buffers;
-    vkBindBufferMemory(g_device, g_uboBuffer, g_uboMemory, 0);
-
-    bufInfo.size = RESULT_BUFFER_SIZE;
-    bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    if (vkCreateBuffer(g_device, &bufInfo, NULL, &g_resultBuffer) != VK_SUCCESS)
-        goto fail_ubo;
-    vkGetBufferMemoryRequirements(g_device, g_resultBuffer, &memReq);
-    allocMem.allocationSize = memReq.size;
-    allocMem.memoryTypeIndex = memTypeIndex;
-    if (vkAllocateMemory(g_device, &allocMem, NULL, &g_resultMemory) != VK_SUCCESS) {
-        vkDestroyBuffer(g_device, g_resultBuffer, NULL);
-        g_resultBuffer = VK_NULL_HANDLE;
-        goto fail_ubo;
+    for (uint32_t si = 0; si < GPU_PIPE_SLOT_COUNT; si++) {
+        GpuPipeSlot *ps = &g_pipeSlots[si];
+        ps->descriptorSet = sets[si];
+        ps->inFlight = 0;
+        ps->nonceStart = 0u;
+        ps->nonceEnd = 0u;
+        if (si > 0) {
+            bufInfo.size = UBO_SIZE;
+            bufInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            if (vkCreateBuffer(g_device, &bufInfo, NULL, &ps->uboBuffer) != VK_SUCCESS)
+                goto fail_slot_partial;
+            vkGetBufferMemoryRequirements(g_device, ps->uboBuffer, &memReq);
+            allocMem.allocationSize = memReq.size;
+            if (vkAllocateMemory(g_device, &allocMem, NULL, &ps->uboMemory) != VK_SUCCESS)
+                goto fail_slot_partial;
+            vkBindBufferMemory(g_device, ps->uboBuffer, ps->uboMemory, 0);
+        } else {
+            ps->uboBuffer = g_pipeSlots[0].uboBuffer;
+            if (vkAllocateMemory(g_device, &allocMem, NULL, &ps->uboMemory) != VK_SUCCESS)
+                goto fail_buffers;
+            vkBindBufferMemory(g_device, ps->uboBuffer, ps->uboMemory, 0);
+        }
+        bufInfo.size = RESULT_BUFFER_SIZE;
+        bufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (vkCreateBuffer(g_device, &bufInfo, NULL, &ps->resultBuffer) != VK_SUCCESS)
+            goto fail_slot_partial;
+        vkGetBufferMemoryRequirements(g_device, ps->resultBuffer, &memReq);
+        allocMem.allocationSize = memReq.size;
+        if (vkAllocateMemory(g_device, &allocMem, NULL, &ps->resultMemory) != VK_SUCCESS)
+            goto fail_slot_partial;
+        vkBindBufferMemory(g_device, ps->resultBuffer, ps->resultMemory, 0);
+        VkDescriptorBufferInfo uboInfo = { ps->uboBuffer, 0, UBO_SIZE };
+        VkDescriptorBufferInfo resultInfo = { ps->resultBuffer, 0, RESULT_BUFFER_SIZE };
+        VkWriteDescriptorSet writes[2] = {
+            { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ps->descriptorSet, .dstBinding = 0, .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &uboInfo },
+            { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ps->descriptorSet, .dstBinding = 1, .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &resultInfo },
+        };
+        vkUpdateDescriptorSets(g_device, 2, writes, 0, NULL);
+        VkFenceCreateInfo fenceInfo = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+        if (vkCreateFence(g_device, &fenceInfo, NULL, &ps->fence) != VK_SUCCESS)
+            goto fail_slot_partial;
     }
-    vkBindBufferMemory(g_device, g_resultBuffer, g_resultMemory, 0);
-
-    VkDescriptorBufferInfo uboInfo = { g_uboBuffer, 0, UBO_SIZE };
-    VkDescriptorBufferInfo resultInfo = { g_resultBuffer, 0, RESULT_BUFFER_SIZE };
-    VkWriteDescriptorSet writes[2] = {
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_descriptorSet, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &uboInfo },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_descriptorSet, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &resultInfo },
-    };
-    vkUpdateDescriptorSets(g_device, 2, writes, 0, NULL);
+    bufInfo.size = UBO_SIZE;
+    bufInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
     VkCommandPoolCreateInfo cmdPoolInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -681,28 +780,27 @@ static int ensure_compute_resources(void) {
         .queueFamilyIndex = g_computeQueueFamily,
     };
     if (vkCreateCommandPool(g_device, &cmdPoolInfo, NULL, &g_commandPool) != VK_SUCCESS)
-        goto fail_result;
+        goto fail_slot_partial;
+    VkCommandBuffer cmdBufs[GPU_PIPE_SLOT_COUNT];
     VkCommandBufferAllocateInfo cmdAlloc = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = g_commandPool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
+        .commandBufferCount = GPU_PIPE_SLOT_COUNT,
     };
-    if (vkAllocateCommandBuffers(g_device, &cmdAlloc, &g_commandBuffer) != VK_SUCCESS) {
+    if (vkAllocateCommandBuffers(g_device, &cmdAlloc, cmdBufs) != VK_SUCCESS) {
         vkDestroyCommandPool(g_device, g_commandPool, NULL);
         g_commandPool = VK_NULL_HANDLE;
-        goto fail_result;
+        goto fail_slot_partial;
     }
-    VkFenceCreateInfo fenceInfo = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-    if (vkCreateFence(g_device, &fenceInfo, NULL, &g_fence) != VK_SUCCESS) {
-        vkFreeCommandBuffers(g_device, g_commandPool, 1, &g_commandBuffer);
-        vkDestroyCommandPool(g_device, g_commandPool, NULL);
-        g_commandBuffer = VK_NULL_HANDLE;
-        g_commandPool = VK_NULL_HANDLE;
-        goto fail_result;
-    }
+    for (uint32_t si = 0; si < GPU_PIPE_SLOT_COUNT; si++)
+        g_pipeSlots[si].commandBuffer = cmdBufs[si];
     if (!map_host_buffers())
         goto fail_result;
+    if (!s_gpu_pipe_logged && GPU_PIPE_ENABLED) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU double-buffer pipe enabled (%u slots)", (unsigned)GPU_PIPE_SLOT_COUNT);
+        s_gpu_pipe_logged = 1;
+    }
     if (!g_resources_logged) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan compute resources ready (buffers, command buffer, fence)");
         g_resources_logged = 1;
@@ -710,15 +808,45 @@ static int ensure_compute_resources(void) {
     return 1;
 fail_result:
     unmap_host_buffers();
-    vkFreeMemory(g_device, g_resultMemory, NULL);
-    vkDestroyBuffer(g_device, g_resultBuffer, NULL);
-    g_resultMemory = VK_NULL_HANDLE;
-    g_resultBuffer = VK_NULL_HANDLE;
+fail_slot_partial:
+    for (uint32_t si = 0; si < GPU_PIPE_SLOT_COUNT; si++) {
+        GpuPipeSlot *ps = &g_pipeSlots[si];
+        if (ps->fence != VK_NULL_HANDLE) {
+            vkDestroyFence(g_device, ps->fence, NULL);
+            ps->fence = VK_NULL_HANDLE;
+        }
+        if (ps->resultMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_device, ps->resultMemory, NULL);
+            ps->resultMemory = VK_NULL_HANDLE;
+        }
+        if (ps->resultBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_device, ps->resultBuffer, NULL);
+            ps->resultBuffer = VK_NULL_HANDLE;
+        }
+        if (si > 0 && ps->uboMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_device, ps->uboMemory, NULL);
+            ps->uboMemory = VK_NULL_HANDLE;
+        }
+        if (si > 0 && ps->uboBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_device, ps->uboBuffer, NULL);
+            ps->uboBuffer = VK_NULL_HANDLE;
+        }
+        ps->descriptorSet = VK_NULL_HANDLE;
+        ps->commandBuffer = VK_NULL_HANDLE;
+    }
+    if (g_commandPool != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(g_device, g_commandPool, NULL);
+        g_commandPool = VK_NULL_HANDLE;
+    }
 fail_ubo:
-    vkFreeMemory(g_device, g_uboMemory, NULL);
-    vkDestroyBuffer(g_device, g_uboBuffer, NULL);
-    g_uboMemory = VK_NULL_HANDLE;
-    g_uboBuffer = VK_NULL_HANDLE;
+    if (g_pipeSlots[0].uboMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(g_device, g_pipeSlots[0].uboMemory, NULL);
+        g_pipeSlots[0].uboMemory = VK_NULL_HANDLE;
+    }
+    if (g_pipeSlots[0].uboBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(g_device, g_pipeSlots[0].uboBuffer, NULL);
+        g_pipeSlots[0].uboBuffer = VK_NULL_HANDLE;
+    }
 fail_buffers:
     vkFreeDescriptorSets(g_device, g_descriptorPool, 1, &g_descriptorSet);
     vkDestroyDescriptorPool(g_device, g_descriptorPool, NULL);
@@ -736,34 +864,48 @@ fail_buffers:
 }
 
 static void destroy_compute_resources(void) {
+    gpu_pipeline_session_end_inner();
     unmap_host_buffers();
-    if (g_fence != VK_NULL_HANDLE) {
-        vkDestroyFence(g_device, g_fence, NULL);
-        g_fence = VK_NULL_HANDLE;
+    for (uint32_t si = 0; si < GPU_PIPE_SLOT_COUNT; si++) {
+        GpuPipeSlot *ps = &g_pipeSlots[si];
+        if (ps->fence != VK_NULL_HANDLE) {
+            vkDestroyFence(g_device, ps->fence, NULL);
+            ps->fence = VK_NULL_HANDLE;
+        }
     }
     if (g_commandPool != VK_NULL_HANDLE) {
-        if (g_commandBuffer != VK_NULL_HANDLE)
-            vkFreeCommandBuffers(g_device, g_commandPool, 1, &g_commandBuffer);
-        g_commandBuffer = VK_NULL_HANDLE;
         vkDestroyCommandPool(g_device, g_commandPool, NULL);
         g_commandPool = VK_NULL_HANDLE;
     }
-    if (g_resultBuffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(g_device, g_resultBuffer, NULL);
-        g_resultBuffer = VK_NULL_HANDLE;
+    for (uint32_t si = 0; si < GPU_PIPE_SLOT_COUNT; si++) {
+        GpuPipeSlot *ps = &g_pipeSlots[si];
+        ps->commandBuffer = VK_NULL_HANDLE;
+        if (ps->resultBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_device, ps->resultBuffer, NULL);
+            ps->resultBuffer = VK_NULL_HANDLE;
+        }
+        if (ps->resultMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_device, ps->resultMemory, NULL);
+            ps->resultMemory = VK_NULL_HANDLE;
+        }
+        if (ps->uboBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(g_device, ps->uboBuffer, NULL);
+            ps->uboBuffer = VK_NULL_HANDLE;
+        }
+        if (ps->uboMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(g_device, ps->uboMemory, NULL);
+            ps->uboMemory = VK_NULL_HANDLE;
+        }
+        ps->descriptorSet = VK_NULL_HANDLE;
+        ps->inFlight = 0;
     }
-    if (g_resultMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(g_device, g_resultMemory, NULL);
-        g_resultMemory = VK_NULL_HANDLE;
-    }
-    if (g_uboBuffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(g_device, g_uboBuffer, NULL);
-        g_uboBuffer = VK_NULL_HANDLE;
-    }
-    if (g_uboMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(g_device, g_uboMemory, NULL);
-        g_uboMemory = VK_NULL_HANDLE;
-    }
+    g_commandBuffer = VK_NULL_HANDLE;
+    g_fence = VK_NULL_HANDLE;
+    g_uboBuffer = VK_NULL_HANDLE;
+    g_uboMemory = VK_NULL_HANDLE;
+    g_resultBuffer = VK_NULL_HANDLE;
+    g_resultMemory = VK_NULL_HANDLE;
+    g_descriptorSet = VK_NULL_HANDLE;
     for (uint32_t i = 0; i < GPU_PIPELINE_SLOT_COUNT; i++) {
         if (g_pipelines[i] != VK_NULL_HANDLE) {
             vkDestroyPipeline(g_device, g_pipelines[i], NULL);
@@ -979,6 +1121,400 @@ static void bytes32_to_hex(const uint8_t b[32], char out[65]) {
     out[64] = '\0';
 }
 
+typedef struct {
+    uint32_t nonceStart;
+    uint32_t nonceEnd;
+    uint32_t groupCountX;
+} GpuScanPass;
+
+static void slot_prepare_chunk(GpuPipeSlot *slot, const uint8_t *header76, const uint8_t *target,
+                               uint32_t nonceStart, uint32_t nonceEnd, const uint32_t mid[8], int useMidstate) {
+    uint8_t ubo[UBO_SIZE];
+    fill_ubo_mining(ubo, header76, nonceStart, nonceEnd, target, useMidstate, 0, mid);
+    memcpy(slot->uboMapped, ubo, UBO_SIZE);
+    host_flush_before_gpu_read(slot->uboMemory);
+    mining_result_buffer_reset(slot->resultMapped);
+    host_flush_before_gpu_read(slot->resultMemory);
+    slot->nonceStart = nonceStart;
+    slot->nonceEnd = nonceEnd;
+}
+
+static int slot_read_result(GpuPipeSlot *slot, int *hit_out, uint32_t *nonce_out) {
+    host_invalidate_after_gpu_write_while_mapped(slot->resultMemory);
+    uint32_t *words = (uint32_t *)slot->resultMapped;
+    uint32_t found = words[RES_WORD_FOUND];
+    uint32_t win = words[RES_WORD_NONCE];
+    if (found == 1u) {
+        *hit_out = 1;
+        *nonce_out = win;
+    } else {
+        *hit_out = 0;
+        *nonce_out = 0u;
+    }
+    return 1;
+}
+
+static int slot_wait(GpuPipeSlot *slot) {
+    if (slot->fence == VK_NULL_HANDLE)
+        return 0;
+    for (;;) {
+        VkResult res = vkWaitForFences(g_device, 1, &slot->fence, VK_TRUE, 1000000000ull);
+        if (res == VK_SUCCESS) {
+            slot->inFlight = 0;
+            return 1;
+        }
+        if (res == VK_TIMEOUT) {
+            if (atomic_exchange_explicit(&g_interrupt_requested, 0, memory_order_acq_rel)) {
+                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU scan interrupted by watchdog");
+                return 0;
+            }
+            continue;
+        }
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkWaitForFences");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkWaitForFences failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+}
+
+static int slot_record_multipass(GpuPipeSlot *slot, VkPipeline pipeline, const GpuScanPass *passes, uint32_t passCount) {
+    if (passCount == 0 || passes == NULL || slot == NULL)
+        return 0;
+    VkResult res = vkResetFences(g_device, 1, &slot->fence);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetFences");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkResetFences failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    res = vkResetCommandBuffer(slot->commandBuffer, 0);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetCommandBuffer");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkResetCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    res = vkBeginCommandBuffer(slot->commandBuffer, &beginInfo);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkBeginCommandBuffer");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vkBeginCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    vkCmdBindPipeline(slot->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(slot->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelineLayout, 0, 1,
+        &slot->descriptorSet, 0, NULL);
+    VkMemoryBarrier hostToCompute = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT,
+    };
+    vkCmdPipelineBarrier(slot->commandBuffer, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+        &hostToCompute, 0, NULL, 0, NULL);
+    for (uint32_t i = 0; i < passCount; i++) {
+        if (i > 0) {
+            uint8_t nonceData[8];
+            write_le32(nonceData, passes[i].nonceStart);
+            write_le32(nonceData + 4, passes[i].nonceEnd);
+            vkCmdUpdateBuffer(slot->commandBuffer, slot->uboBuffer, UBO_OFFSET_NONCE_START, 8, nonceData);
+            VkMemoryBarrier transferToCompute = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT,
+            };
+            vkCmdPipelineBarrier(slot->commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 1, &transferToCompute, 0, NULL, 0, NULL);
+        }
+        vkCmdDispatch(slot->commandBuffer, passes[i].groupCountX, 1u, 1u);
+        if (i + 1u < passCount) {
+            VkMemoryBarrier betweenPasses = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            };
+            vkCmdPipelineBarrier(slot->commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &betweenPasses, 0, NULL, 0, NULL);
+        }
+    }
+    VkMemoryBarrier computeToHost = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+    };
+    vkCmdPipelineBarrier(slot->commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1,
+        &computeToHost, 0, NULL, 0, NULL);
+    res = vkEndCommandBuffer(slot->commandBuffer);
+    if (res != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkEndCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        return 0;
+    }
+    return 1;
+}
+
+static int slot_submit(GpuPipeSlot *slot) {
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &slot->commandBuffer,
+    };
+    if (g_first_dispatch_state == 0) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch submitted");
+        g_first_dispatch_state = 1;
+    }
+    VkResult res = vkQueueSubmit(g_queue, 1, &submitInfo, slot->fence);
+    if (res != VK_SUCCESS) {
+        if (g_first_dispatch_state < 2) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
+            g_first_dispatch_state = 2;
+        }
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkQueueSubmit");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkQueueSubmit failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    slot->inFlight = 1;
+    return 1;
+}
+
+static int build_chunk_passes(uint32_t nonceStart, uint32_t nonceEnd, uint32_t localSize, uint32_t noncesPerThread,
+                              GpuScanPass *passes, uint32_t passCap, uint32_t *passCountOut, int *legacyOut) {
+    uint64_t chunkInv = (uint64_t)nonceEnd - (uint64_t)nonceStart + 1ULL;
+    uint64_t maxInvPerPass = (uint64_t)g_maxWorkGroupCount * (uint64_t)localSize * (uint64_t)noncesPerThread;
+    if (maxInvPerPass == 0)
+        return GPU_UNAVAILABLE;
+    uint32_t passCount = 0;
+    int useLegacyMultipass = 0;
+    for (uint32_t cursor = nonceStart; cursor <= nonceEnd;) {
+        uint64_t remain = (uint64_t)nonceEnd - (uint64_t)cursor + 1ULL;
+        uint32_t thisInv = remain > maxInvPerPass ? (uint32_t)maxInvPerPass : (uint32_t)remain;
+        uint32_t subEnd = (uint32_t)((uint64_t)cursor + (uint64_t)thisInv - 1ULL);
+        uint64_t invocations = (thisInv + noncesPerThread - 1u) / noncesPerThread;
+        uint32_t groupCountX = (uint32_t)((invocations + localSize - 1u) / localSize);
+        if (groupCountX > g_maxWorkGroupCount)
+            groupCountX = g_maxWorkGroupCount;
+        if (groupCountX == 0)
+            return GPU_UNAVAILABLE;
+        if (passCount >= passCap) {
+            useLegacyMultipass = 1;
+            break;
+        }
+        passes[passCount].nonceStart = cursor;
+        passes[passCount].nonceEnd = subEnd;
+        passes[passCount].groupCountX = groupCountX;
+        passCount++;
+        if (subEnd >= nonceEnd)
+            break;
+        cursor = subEnd + 1u;
+    }
+    if (legacyOut)
+        *legacyOut = useLegacyMultipass;
+    if (passCountOut)
+        *passCountOut = passCount;
+    (void)chunkInv;
+    return 0;
+}
+
+static void pipe_write_jni_out(int hit, uint32_t nonce, int statusMissOrHit, jlong *out) {
+    if (hit) {
+        out[0] = (jlong)GPU_JNI_STATUS_HIT;
+        out[1] = (jlong)(uint32_t)nonce;
+    } else {
+        out[0] = (jlong)statusMissOrHit;
+        out[1] = 0;
+    }
+}
+
+static int pipe_drain_inflight(int *hit_out, uint32_t *nonce_out) {
+    if (g_pipeSession.inFlightIndex < 0)
+        return 0;
+    GpuPipeSlot *slot = &g_pipeSlots[g_pipeSession.inFlightIndex];
+    if (!slot_wait(slot))
+        return GPU_UNAVAILABLE;
+    slot_read_result(slot, hit_out, nonce_out);
+    g_pipeSession.inFlightIndex = -1;
+    return 1;
+}
+
+static void gpu_pipeline_session_end_inner(void) {
+    if (!g_pipeSession.active)
+        return;
+    int hit = 0;
+    uint32_t nonce = 0u;
+    while (g_pipeSession.inFlightIndex >= 0) {
+        if (pipe_drain_inflight(&hit, &nonce) == GPU_UNAVAILABLE)
+            break;
+    }
+    memset(&g_pipeSession, 0, sizeof(g_pipeSession));
+    g_pipeSession.inFlightIndex = -1;
+}
+
+static int gpu_pipeline_session_begin_inner(const uint8_t *header76, const uint8_t *target, int localSizeX,
+                                            int hashesPerThread, int gpuSha256Mode) {
+    if (!GPU_PIPE_ENABLED)
+        return 0;
+    gpu_pipeline_session_end_inner();
+    int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
+    GpuShaderVariant variant = gpu_mode_shader_variant(gpuSha256Mode);
+    uint32_t vectorWidth = gpu_vector_width(gpuSha256Mode);
+    uint32_t localSize = normalize_local_size_x(localSizeX);
+    uint32_t hpt = normalize_hashes_per_thread(hashesPerThread);
+    if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE)
+        return GPU_UNAVAILABLE;
+    if (!ensure_compute_resources())
+        return GPU_UNAVAILABLE;
+    if (!ensure_mining_pipeline(localSize, hpt, variant))
+        return GPU_UNAVAILABLE;
+    uint32_t pipeSlot = pipeline_slot(localSize, hpt);
+    VkPipeline miningPipe = *mining_pipeline_slot(variant, pipeSlot);
+    if (pipeSlot >= GPU_PIPELINE_SLOT_COUNT || miningPipe == VK_NULL_HANDLE)
+        return GPU_UNAVAILABLE;
+    memset(&g_pipeSession, 0, sizeof(g_pipeSession));
+    memcpy(g_pipeSession.header76, header76, HEADER_PREFIX_SIZE);
+    memcpy(g_pipeSession.target, target, HASH_SIZE);
+    if (useMidstate)
+        btc_midstate_header76(header76, g_pipeSession.mid);
+    g_pipeSession.useMidstate = useMidstate;
+    g_pipeSession.gpuSha256Mode = gpuSha256Mode;
+    g_pipeSession.miningPipe = miningPipe;
+    g_pipeSession.localSize = localSize;
+    g_pipeSession.hpt = hpt;
+    g_pipeSession.noncesPerThread = vectorWidth * hpt;
+    g_pipeSession.writeIndex = 0;
+    g_pipeSession.inFlightIndex = -1;
+    g_pipeSession.active = 1;
+    atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
+    if (!g_workgroup_size_logged) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU local_size_x=%u hashesPerThread=%u vectorWidth=%u",
+            (unsigned)localSize, (unsigned)hpt, (unsigned)vectorWidth);
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan maxComputeWorkGroupCount[0]=%u", (unsigned)g_maxWorkGroupCount);
+        g_workgroup_size_logged = 1;
+    }
+    return 0;
+}
+
+static int gpu_pipeline_flush_inner(jlong *out, int maxPending) {
+    if (!g_pipeSession.active || maxPending <= 0)
+        return 0;
+    int hit = 0;
+    uint32_t nonce = 0u;
+    int drained = 0;
+    if (g_pipeSession.syncPending && drained < maxPending) {
+        hit = g_pipeSession.syncPendingHit;
+        nonce = g_pipeSession.syncPendingNonce;
+        g_pipeSession.syncPending = 0;
+        if (out)
+            pipe_write_jni_out(hit, nonce, GPU_JNI_STATUS_MISS, out);
+        return 1;
+    }
+    if (g_pipeSession.inFlightIndex >= 0 && drained < maxPending) {
+        int dr = pipe_drain_inflight(&hit, &nonce);
+        if (dr == GPU_UNAVAILABLE) {
+            if (out) {
+                out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
+                out[1] = 0;
+            }
+            return -1;
+        }
+        if (dr > 0) {
+            if (out)
+                pipe_write_jni_out(hit, nonce, GPU_JNI_STATUS_MISS, out);
+            drained = 1;
+        }
+    }
+    return drained;
+}
+
+static int run_gpu_scan_pipelined(uint32_t nonceStart, uint32_t nonceEnd, int *hit_out, uint32_t *nonce_out) {
+    GpuPipeSession *sess = &g_pipeSession;
+    int completedHit = 0;
+    uint32_t completedNonce = 0u;
+    int haveCompleted = 0;
+
+    if (sess->syncPending) {
+        completedHit = sess->syncPendingHit;
+        completedNonce = sess->syncPendingNonce;
+        sess->syncPending = 0;
+        haveCompleted = 1;
+    } else if (sess->inFlightIndex >= 0) {
+        int dr = pipe_drain_inflight(&completedHit, &completedNonce);
+        if (dr == GPU_UNAVAILABLE)
+            return GPU_UNAVAILABLE;
+        if (dr > 0)
+            haveCompleted = 1;
+    }
+
+    if (haveCompleted) {
+        *hit_out = completedHit;
+        *nonce_out = completedNonce;
+    } else {
+        *hit_out = 0;
+        *nonce_out = 0u;
+    }
+
+    GpuScanPass passes[GPU_MAX_MULTIPASS_PASSES];
+    uint32_t passCount = 0;
+    int legacy = 0;
+    int br = build_chunk_passes(nonceStart, nonceEnd, sess->localSize, sess->noncesPerThread, passes,
+        GPU_MAX_MULTIPASS_PASSES, &passCount, &legacy);
+    if (br == GPU_UNAVAILABLE)
+        return GPU_UNAVAILABLE;
+
+    if (legacy || passCount == 0) {
+        int syncHit = 0;
+        uint32_t syncNonce = 0u;
+        int rr = run_gpu_scan(sess->header76, nonceStart, nonceEnd, sess->target, (int)sess->localSize, (int)sess->hpt,
+            sess->gpuSha256Mode, &syncHit, &syncNonce);
+        if (rr == GPU_UNAVAILABLE)
+            return GPU_UNAVAILABLE;
+        sess->syncPending = 1;
+        sess->syncPendingHit = syncHit;
+        sess->syncPendingNonce = syncNonce;
+        sess->inFlightIndex = -1;
+        return 0;
+    }
+
+    static int s_gpu_multipass_notice;
+    uint64_t chunkInv = (uint64_t)nonceEnd - (uint64_t)nonceStart + 1ULL;
+    uint64_t maxInvPerPass =
+        (uint64_t)g_maxWorkGroupCount * (uint64_t)sess->localSize * (uint64_t)sess->noncesPerThread;
+    if (passCount > 1 && chunkInv > maxInvPerPass && !s_gpu_multipass_notice) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+            "GPU scan: %u dispatches in one submit (chunkNonces=%llu maxNoncesPerPass=%llu maxGroups=%u localSize=%u noncesPerThread=%u)",
+            (unsigned)passCount, (unsigned long long)chunkInv, (unsigned long long)maxInvPerPass,
+            (unsigned)g_maxWorkGroupCount, (unsigned)sess->localSize, (unsigned)sess->noncesPerThread);
+        s_gpu_multipass_notice = 1;
+    }
+
+    GpuPipeSlot *slot = &g_pipeSlots[sess->writeIndex];
+    slot_prepare_chunk(slot, sess->header76, sess->target, nonceStart, nonceEnd, sess->mid, sess->useMidstate);
+    if (!slot_record_multipass(slot, sess->miningPipe, passes, passCount))
+        return GPU_UNAVAILABLE;
+    if (!slot_submit(slot))
+        return GPU_UNAVAILABLE;
+    sess->inFlightIndex = sess->writeIndex;
+    sess->writeIndex ^= 1;
+    return 0;
+}
+
 static int submit_once_and_wait(VkPipeline pipeline, uint32_t groupX, uint32_t groupY, uint32_t groupZ) {
     VkResult res = vkResetFences(g_device, 1, &g_fence);
     if (res != VK_SUCCESS) {
@@ -1081,12 +1617,6 @@ static int submit_once_and_wait(VkPipeline pipeline, uint32_t groupX, uint32_t g
     }
     return 1;
 }
-
-typedef struct {
-    uint32_t nonceStart;
-    uint32_t nonceEnd;
-    uint32_t groupCountX;
-} GpuScanPass;
 
 /** Record passCount dispatches in one command buffer; one vkQueueSubmit + fence wait. Pass 0 UBO must be host-written before call. */
 static int submit_multipass_and_wait(VkPipeline pipeline, const GpuScanPass *passes, uint32_t passCount) {
@@ -1616,6 +2146,66 @@ Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, j
 
 /* Parameter order must match Kotlin [NativeMiner.gpuScanNoncesInto] (out is last). */
 JNIEXPORT void JNICALL
+Java_com_btcminer_android_mining_NativeMiner_gpuPipelineSessionBegin(JNIEnv *env, jclass clazz, jbyteArray header76Java,
+                                                                     jbyteArray targetJava, jint localSizeX,
+                                                                     jint hashesPerThread, jint gpuSha256Mode) {
+    (void)clazz;
+#ifdef __ANDROID__
+    if (!header76Java || !targetJava ||
+        (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
+        (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
+        return;
+    }
+    if (!try_init_vulkan())
+        return;
+    uint8_t header76[HEADER_PREFIX_SIZE];
+    uint8_t target[HASH_SIZE];
+    (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
+    (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
+    gpu_pipeline_session_begin_inner(header76, target, (int)localSizeX, (int)hashesPerThread, (int)gpuSha256Mode);
+#else
+    (void)env;
+    (void)localSizeX;
+    (void)hashesPerThread;
+    (void)gpuSha256Mode;
+#endif
+}
+
+JNIEXPORT jint JNICALL
+Java_com_btcminer_android_mining_NativeMiner_gpuPipelineFlush(JNIEnv *env, jclass clazz, jlongArray outJava,
+                                                              jint maxPending) {
+    (void)clazz;
+#ifdef __ANDROID__
+    if (!outJava || (*env)->GetArrayLength(env, outJava) < 2)
+        return 0;
+    jlong *out = (*env)->GetLongArrayElements(env, outJava, NULL);
+    if (!out)
+        return 0;
+    int drained = gpu_pipeline_flush_inner(out, (int)maxPending);
+    if (drained < 0) {
+        (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+        return 0;
+    }
+    (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+    return (jint)drained;
+#else
+    (void)env;
+    (void)outJava;
+    (void)maxPending;
+    return 0;
+#endif
+}
+
+JNIEXPORT void JNICALL
+Java_com_btcminer_android_mining_NativeMiner_gpuPipelineSessionEnd(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+#ifdef __ANDROID__
+    gpu_pipeline_session_end_inner();
+#endif
+}
+
+JNIEXPORT void JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jclass clazz, jbyteArray header76Java,
                                                                jint nonceStart, jint nonceEnd, jbyteArray targetJava,
                                                                jint localSizeX, jint hashesPerThread, jint gpuSha256Mode,
@@ -1650,8 +2240,13 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
     (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
     int hit = 0;
     uint32_t winNonce = 0u;
-    int rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)localSizeX,
-        (int)hashesPerThread, (int)gpuSha256Mode, &hit, &winNonce);
+    int rr;
+    if (g_pipeSession.active && GPU_PIPE_ENABLED) {
+        rr = run_gpu_scan_pipelined((uint32_t)nonceStart, (uint32_t)nonceEnd, &hit, &winNonce);
+    } else {
+        rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)localSizeX,
+            (int)hashesPerThread, (int)gpuSha256Mode, &hit, &winNonce);
+    }
     if (rr == GPU_UNAVAILABLE) {
         out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
         out[1] = 0;

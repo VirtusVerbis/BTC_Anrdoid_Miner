@@ -526,91 +526,142 @@ class NativeMiningEngine(
         val nextChunkStart = AtomicLong(CPU_NONCE_END)
         val roundStartTimeMs = System.currentTimeMillis()
         val roundStartGpuNonces = gpuNoncesScanned.get()
+        val localSizeX = config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
+        val hashesPerThread = MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread)
 
         val gpuWorkerFuture: Future<*> = gpuWorkerExecutor.submit {
             Process.setThreadPriority(config.miningThreadPriority)
             val workerJobId = job.jobId
-            while (running.get() && activeJobId.get() == workerJobId) {
-                if (throttleStateRef?.get()?.stopDueToOverheat == true) break
-                val throttle = throttleStateRef?.get()
-                val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
-                if (start > MAX_NONCE) break
-                val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
-                val nonceEnd = nonceEndL.toInt()
-                val t0 = System.currentTimeMillis()
-                val jniOut = LongArray(2)
-                val gpuMode = GpuSha256Mode.fromOrdinal(config.gpuSha256Mode.ordinal)
-                val preJniStartMs = System.currentTimeMillis()
-                val localSizeX = config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
-                val hashesPerThread = MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread)
-                NativeMiner.gpuScanNoncesInto(
-                    ctx.header76,
-                    start.toInt(),
-                    nonceEnd,
-                    ctx.target,
-                    localSizeX,
-                    hashesPerThread,
-                    config.gpuSha256Mode.ordinal,
-                    jniOut,
-                )
-                val scan = GpuNonceScanResult.fromJniOut(jniOut)
-                val workMs = System.currentTimeMillis() - t0
-                gpuWorkMsSum.addAndGet(workMs)
-                gpuWorkMsCount.incrementAndGet()
-                val preJniMs = preJniStartMs - t0
-                if (preJniMs >= 100L || workMs >= 500L || scan.status != GpuNonceScanResult.MISS) {
-                    AppLog.d(LOG_TAG) {
-                        "GPU scan anomaly jobId=${job.jobId} range=${String.format(Locale.US, "%08x", start.toInt())}-${String.format(Locale.US, "%08x", nonceEnd)} mode=${gpuMode.name} localSize=$localSizeX hashesPerThread=$hashesPerThread status=${scan.status} nonce=${String.format(Locale.US, "%08x", (scan.nonceU32 and 0xFFFFFFFFL).toInt())} preJniMs=$preJniMs workMs=$workMs"
+            NativeMiner.gpuPipelineSessionBegin(
+                ctx.header76,
+                ctx.target,
+                localSizeX,
+                hashesPerThread,
+                config.gpuSha256Mode.ordinal,
+            )
+            var pendingChunkStart: Long? = null
+            var pendingChunkEnd: Long? = null
+            var hitShare = false
+            try {
+                while (running.get() && activeJobId.get() == workerJobId && !hitShare) {
+                    if (throttleStateRef?.get()?.stopDueToOverheat == true) break
+                    val throttle = throttleStateRef?.get()
+                    val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
+                    if (start > MAX_NONCE) break
+                    val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
+                    val nonceEnd = nonceEndL.toInt()
+                    val t0 = System.currentTimeMillis()
+                    val jniOut = LongArray(2)
+                    val gpuMode = GpuSha256Mode.fromOrdinal(config.gpuSha256Mode.ordinal)
+                    NativeMiner.gpuScanNoncesInto(
+                        ctx.header76,
+                        start.toInt(),
+                        nonceEnd,
+                        ctx.target,
+                        localSizeX,
+                        hashesPerThread,
+                        config.gpuSha256Mode.ordinal,
+                        jniOut,
+                    )
+                    val scan = GpuNonceScanResult.fromJniOut(jniOut)
+                    val workMs = System.currentTimeMillis() - t0
+                    gpuWorkMsSum.addAndGet(workMs)
+                    gpuWorkMsCount.incrementAndGet()
+                    if (workMs >= 500L || scan.status != GpuNonceScanResult.MISS) {
+                        AppLog.d(LOG_TAG) {
+                            "GPU scan jobId=${job.jobId} submit=${String.format(Locale.US, "%08x", start.toInt())}-${String.format(Locale.US, "%08x", nonceEnd)} result=${pendingChunkStart?.let { String.format(Locale.US, "%08x", it.toInt()) } ?: "none"} mode=${gpuMode.name} localSize=$localSizeX hashesPerThread=$hashesPerThread status=${scan.status} nonce=${String.format(Locale.US, "%08x", (scan.nonceU32 and 0xFFFFFFFFL).toInt())} workMs=$workMs"
+                        }
+                        AppLog.d(LOG_TAG) { DeviceTelemetryReader.formatScanLine(workMs) }
                     }
-                    AppLog.d(LOG_TAG) { DeviceTelemetryReader.formatScanLine(workMs) }
-                }
-                if (scan.status == GpuNonceScanResult.UNAVAILABLE) {
-                    if (!gpuUnavailable.getAndSet(true)) {
-                        AppLog.d(LOG_TAG) { "GPU unavailable (gpuScanNoncesInto status=UNAVAILABLE)" }
-                        onGpuUnavailable?.invoke()
-                        startGpuRetryThreadIfNeeded(config)
-                    }
-                    break
-                }
-                val startU = start.toLong() and 0xFFFFFFFFL
-                val endU = nonceEndL
-                val scanned = if (scan.isHit) {
-                    ((scan.nonceU32 and 0xFFFFFFFFL) - startU + 1L).coerceIn(1L, endU - startU + 1L)
-                } else {
-                    endU - startU + 1L
-                }
-                gpuNoncesScanned.addAndGet(scanned)
-                val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent).coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
-                val throttleSleep = throttle?.throttleSleepMs ?: 0L
-                val gpuIntensityDelay = fixedIntensitySleepMs(gpuUtil)
-                lastGpuIntensityDelayMs.set(gpuIntensityDelay)
-                val totalSleep = gpuIntensityDelay + throttleSleep
-                if (totalSleep > 0L) {
-                    try {
-                        Thread.sleep(totalSleep)
-                    } catch (_: InterruptedException) {
+                    if (scan.status == GpuNonceScanResult.UNAVAILABLE) {
+                        if (!gpuUnavailable.getAndSet(true)) {
+                            AppLog.d(LOG_TAG) { "GPU unavailable (gpuScanNoncesInto status=UNAVAILABLE)" }
+                            onGpuUnavailable?.invoke()
+                            startGpuRetryThreadIfNeeded(config)
+                        }
                         break
                     }
+                    pendingChunkStart?.let { prevStart ->
+                        val prevEnd = pendingChunkEnd ?: prevStart
+                        val startU = prevStart and 0xFFFFFFFFL
+                        val endU = prevEnd
+                        val scanned = if (scan.isHit) {
+                            ((scan.nonceU32 and 0xFFFFFFFFL) - startU + 1L).coerceIn(1L, endU - startU + 1L)
+                        } else {
+                            endU - startU + 1L
+                        }
+                        gpuNoncesScanned.addAndGet(scanned)
+                        if (scan.isHit) {
+                            val nu = scan.nonceU32 and 0xFFFFFFFFL
+                            foundSharesQueue.offer(
+                                FoundResult(job.jobId, nu, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76, "gpu"),
+                            )
+                            hitShare = true
+                        }
+                    }
+                    if (hitShare) break
+                    pendingChunkStart = start
+                    pendingChunkEnd = nonceEndL
+                    val gpuUtil = (throttle?.effectiveGpuUtilizationPercent ?: config.gpuUtilizationPercent)
+                        .coerceIn(MiningConfig.GPU_UTILIZATION_MIN, MiningConfig.GPU_UTILIZATION_MAX)
+                    val throttleSleep = throttle?.throttleSleepMs ?: 0L
+                    val gpuIntensityDelay = fixedIntensitySleepMs(gpuUtil)
+                    lastGpuIntensityDelayMs.set(gpuIntensityDelay)
+                    val totalSleep = gpuIntensityDelay + throttleSleep
+                    if (totalSleep > 0L) {
+                        try {
+                            Thread.sleep(totalSleep)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
+                    }
                 }
-                if (scan.isHit) {
-                    val nu = scan.nonceU32 and 0xFFFFFFFFL
-                    foundSharesQueue.offer(
-                        FoundResult(job.jobId, nu, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76, "gpu"),
-                    )
-                    break
+            } finally {
+                val flushOut = LongArray(2)
+                NativeMiner.gpuPipelineFlush(flushOut, 1)
+                if (!hitShare) {
+                    val flushScan = GpuNonceScanResult.fromJniOut(flushOut)
+                    if (flushScan.status == GpuNonceScanResult.UNAVAILABLE) {
+                        if (!gpuUnavailable.getAndSet(true)) {
+                            AppLog.d(LOG_TAG) { "GPU unavailable (gpuPipelineFlush status=UNAVAILABLE)" }
+                            onGpuUnavailable?.invoke()
+                            startGpuRetryThreadIfNeeded(config)
+                        }
+                    } else if (flushScan.status != GpuNonceScanResult.MISS) {
+                        pendingChunkStart?.let { prevStart ->
+                            val prevEnd = pendingChunkEnd ?: prevStart
+                            val startU = prevStart and 0xFFFFFFFFL
+                            val endU = prevEnd
+                            val scanned = if (flushScan.isHit) {
+                                ((flushScan.nonceU32 and 0xFFFFFFFFL) - startU + 1L).coerceIn(1L, endU - startU + 1L)
+                            } else {
+                                endU - startU + 1L
+                            }
+                            gpuNoncesScanned.addAndGet(scanned)
+                            if (flushScan.isHit) {
+                                val nu = flushScan.nonceU32 and 0xFFFFFFFFL
+                                foundSharesQueue.offer(
+                                    FoundResult(job.jobId, nu, ctx.extranonce2Hex, ctx.ntimeHex, ctx.header76, "gpu"),
+                                )
+                            }
+                        }
+                    }
                 }
+                NativeMiner.gpuPipelineSessionEnd()
             }
         }
         while (!gpuWorkerFuture.isDone) {
             if (!ctx.isOfflineRound && !client.isConnected()) {
                 AppLog.d(LOG_TAG) { "Connection lost during GPU mining, breaking out to try reconnect" }
                 activeJobId.set(null)
+                NativeMiner.gpuRequestInterrupt()
                 gpuWorkerFuture.cancel(true)
                 break
             }
             if (client.isConnected() && client.consumeCleanJobsInvalidation()) {
                 AppLog.d(LOG_TAG) { "Job changed (clean_jobs), switching to new template" }
                 activeJobId.set(null)
+                NativeMiner.gpuRequestInterrupt()
                 gpuWorkerFuture.cancel(true)
             }
             try {

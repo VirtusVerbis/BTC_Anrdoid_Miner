@@ -94,9 +94,31 @@ object NativeMiner {
 
     /**
      * Requests the GPU worker to interrupt. When set, [gpuScanNoncesInto] reports unavailable on the next
-     * vkWaitForFences timeout (within ~1s). Used by the stuck-worker watchdog.
+     * vkWaitForFences timeout (within ~1s). Used by the stuck-worker watchdog and job invalidation.
      */
     external fun gpuRequestInterrupt(): Unit
+
+    /**
+     * Begin a double-buffered GPU pipe session for one mining round. Caches header/target/midstate in native.
+     * While active, [gpuScanNoncesInto] uses deferred results: call N returns the scan result for chunk N−1
+     * (first call returns [GpuNonceScanResult.MISS]). End with [gpuPipelineFlush] + [gpuPipelineSessionEnd].
+     */
+    external fun gpuPipelineSessionBegin(
+        header76: ByteArray,
+        target: ByteArray,
+        localSizeX: Int,
+        hashesPerThread: Int,
+        gpuSha256Mode: Int,
+    )
+
+    /**
+     * Drain up to [maxPending] in-flight pipelined chunk(s). Writes status + nonce into [out] when a chunk
+     * completes. Returns the number drained (0 or 1 with double-buffering).
+     */
+    external fun gpuPipelineFlush(out: LongArray, maxPending: Int): Int
+
+    /** Abort pipelined session; waits for in-flight work and clears session state. */
+    external fun gpuPipelineSessionEnd()
 
     /**
      * Requests CPU workers to interrupt. When set, [nativeScanNoncesInto] reports interrupted on its next
@@ -142,6 +164,11 @@ object NativeMiner {
     /**
      * GPU nonce scan: writes [GpuNonceScanResult] wire format into [out] — `out[0]` = status, `out[1]` = winning
      * nonce as [Long] in `0..0xFFFFFFFFL` when status is [GpuNonceScanResult.HIT] (including `0xFFFFFFFFL` as a valid hit).
+     *
+     * When a [gpuPipelineSessionBegin] session is active, each call returns the result for the **previous** chunk
+     * (deferred one call); the first call in a round returns [GpuNonceScanResult.MISS]. Credit nonces using the
+     * chunk start from the prior iteration, then call [gpuPipelineFlush] + [gpuPipelineSessionEnd] at round end.
+     *
      * @param localSizeX threads per workgroup (local_size_x), multiple of 32.
      * @param hashesPerThread scalar hashes each thread runs per invocation (1, 2, 4, or 8).
      * @param gpuSha256Mode [com.btcminer.android.config.GpuSha256Mode.ordinal].
