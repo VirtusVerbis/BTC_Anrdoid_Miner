@@ -36,10 +36,12 @@ if(GLSLANG_VALIDATOR)
     set(GLSLANG_FLAGS "-V" "-o")
     set(SHADER_SCALAR_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_scalar.inc")
     set(SHADER_SECOND_SCALAR_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_second_scalar.inc")
+    set(SHADER_SECOND_CPU_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_second_cpu.inc")
     set(SHADER_SECOND_UVEC2_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_second_uvec2.inc")
     set(SHADER_SECOND_UVEC4_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_second_uvec4.inc")
     set(SHADER_SECOND_GEN "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_sha256_second_compress.py")
     set(SHADER_FIRST_MID_SCALAR_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_first_mid_scalar.inc")
+    set(SHADER_FIRST_MID_CPU_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_first_mid_cpu.inc")
     set(SHADER_FIRST_MID_UVEC2_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_first_mid_uvec2.inc")
     set(SHADER_FIRST_MID_UVEC4_INC "${CMAKE_CURRENT_SOURCE_DIR}/sha256_compress_first_mid_uvec4.inc")
     set(SHADER_FIRST_MID_GEN "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_sha256_first_mid_compress.py")
@@ -47,14 +49,14 @@ if(GLSLANG_VALIDATOR)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         add_custom_command(
-            OUTPUT "${SHADER_SECOND_SCALAR_INC}" "${SHADER_SECOND_UVEC2_INC}" "${SHADER_SECOND_UVEC4_INC}"
+            OUTPUT "${SHADER_SECOND_SCALAR_INC}" "${SHADER_SECOND_CPU_INC}" "${SHADER_SECOND_UVEC2_INC}" "${SHADER_SECOND_UVEC4_INC}"
             COMMAND ${Python3_EXECUTABLE} "${SHADER_SECOND_GEN}"
             DEPENDS "${SHADER_SECOND_GEN}" "${SHADER_CODEGEN}"
             COMMENT "Generating sha256_compress_second_*.inc"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         )
         add_custom_command(
-            OUTPUT "${SHADER_FIRST_MID_SCALAR_INC}" "${SHADER_FIRST_MID_UVEC2_INC}" "${SHADER_FIRST_MID_UVEC4_INC}"
+            OUTPUT "${SHADER_FIRST_MID_SCALAR_INC}" "${SHADER_FIRST_MID_CPU_INC}" "${SHADER_FIRST_MID_UVEC2_INC}" "${SHADER_FIRST_MID_UVEC4_INC}"
             COMMAND ${Python3_EXECUTABLE} "${SHADER_FIRST_MID_GEN}"
             DEPENDS "${SHADER_FIRST_MID_GEN}" "${SHADER_CODEGEN}"
             COMMENT "Generating sha256_compress_first_mid_*.inc"
@@ -67,7 +69,7 @@ if(GLSLANG_VALIDATOR)
     add_custom_command(
         OUTPUT "${SHADER_SCALAR_SPV}"
         COMMAND ${GLSLANG_VALIDATOR} ${GLSLANG_FLAGS} "${SHADER_SCALAR_SPV}" "${SHADER_SCALAR_SRC}"
-        DEPENDS "${SHADER_SCALAR_SRC}" "${SHADER_SCALAR_INC}" "${SHADER_SECOND_SCALAR_INC}" "${SHADER_FIRST_MID_SCALAR_INC}"
+        DEPENDS "${SHADER_SCALAR_SRC}" "${SHADER_SCALAR_INC}" "${SHADER_SECOND_SCALAR_INC}" "${SHADER_FIRST_MID_SCALAR_INC}" "${SHADER_SECOND_CPU_INC}" "${SHADER_FIRST_MID_CPU_INC}"
         COMMENT "Compiling miner.comp to SPIR-V"
     )
     add_custom_command(
@@ -120,7 +122,7 @@ else()
     message(FATAL_ERROR "glslangValidator or glslc required for GPU path. Install Vulkan SDK or shaderc and add to PATH.")
 endif()
 
-set(MINER_SRCS miner.c sha256.c sha256_scan.c btc_header_sha256.c vulkan_miner.c)
+set(MINER_SRCS miner.c sha256.c sha256_btc_fast.c sha256_scan.c btc_header_sha256.c vulkan_miner.c)
 if(ANDROID_ABI STREQUAL "arm64-v8a")
     list(APPEND MINER_SRCS sha256_arm_sha2.c sha256_neon_4way.c)
 endif()

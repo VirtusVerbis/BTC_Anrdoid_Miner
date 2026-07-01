@@ -15,10 +15,14 @@ from sha256_compress_codegen import (
     MASK32,
     WSlot,
     WidthConfig,
+    c_const,
+    c_zero,
     emit_compress_body,
+    emit_compress_body_c,
     glsl_const,
     glsl_zero,
     header_comment,
+    header_comment_c,
 )
 
 K = [
@@ -206,6 +210,37 @@ def out_path(cfg: WidthConfig) -> Path:
     return OUT_DIR / f"sha256_compress_first_mid_{cfg.file_suffix}.inc"
 
 
+def cpu_out_path() -> Path:
+    return OUT_DIR / "sha256_compress_first_mid_cpu.inc"
+
+
+def generate_cpu_inc() -> str:
+    z = c_zero()
+    lines: List[str] = [
+        header_comment_c(
+            "gen_sha256_first_mid_compress.py",
+            "Bitcoin first-SHA256 block 1: header tail + nonce + 80-byte padding (640-bit length).",
+        ),
+        "",
+        "static void sha256_compress_first_mid_16w_cpu(",
+        "    uint32_t header64_67, uint32_t header68_71, uint32_t header72_75,",
+        "    uint32_t nonceW_sha_be, uint32_t s[8]) {",
+        "    uint32_t w[16];",
+        "    w[0] = header64_67; w[1] = header68_71; w[2] = header72_75; w[3] = nonceW_sha_be;",
+        f"    w[4] = {c_const(0x80000000)}; w[5] = {z}; w[6] = {z}; w[7] = {z};",
+        f"    w[8] = {z}; w[9] = {z}; w[10] = {z}; w[11] = {z};",
+        f"    w[12] = {z}; w[13] = {z}; w[14] = {z}; w[15] = {c_const(0x00000280)};",
+        "    uint32_t a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];",
+    ]
+    lines.extend(emit_compress_body_c(initial_slots()))
+    lines.extend([
+        "    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;",
+        "}",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def digest_to_be_words(d32: bytes) -> List[int]:
     return [struct.unpack(">I", d32[i : i + 4])[0] for i in range(0, 32, 4)]
 
@@ -215,38 +250,36 @@ def gpu_selftest_first_digest_words() -> List[int]:
     return digest_to_be_words(hashlib.sha256(h80).digest())
 
 
-def run_selftests() -> None:
+def iter_first_mid_vectors():
+    """Yield (label, mid, h0, h1, h2, nonce_word, expected_out) golden vectors for phase 2."""
     rng = random.Random(0xF157B101)
 
-    def check(mid: List[int], h0: int, h1: int, h2: int, nonce_word: int, label: str) -> None:
-        ref = first_mid_reference(mid, h0, h1, h2, nonce_word)
-        got = simulate_slots(mid, h0, h1, h2, nonce_word)
-        if ref != got:
-            raise SystemExit(f"mismatch {label}: ref={ref} got={got}")
+    def vec(mid, h0, h1, h2, nonce_word, label):
+        return label, list(mid), h0, h1, h2, nonce_word, first_mid_reference(mid, h0, h1, h2, nonce_word)
 
     mid_gpu = midstate_reference(GPU_SELFTEST_HEADER76)
     h0, h1, h2 = header_tail_words(GPU_SELFTEST_HEADER76)
     nonce1 = bswap32(1)
-    check(mid_gpu, h0, h1, h2, nonce1, "gpu_selftest")
+    yield vec(mid_gpu, h0, h1, h2, nonce1, "gpu_selftest")
     if first_mid_reference(mid_gpu, h0, h1, h2, nonce1) != gpu_selftest_first_digest_words():
         raise SystemExit("gpu_selftest hashlib cross-check failed")
 
-    check([0] * 8, 0, 0, 0, 0, "zero_mid_zero_tail")
-    check([MASK32] * 8, MASK32, MASK32, MASK32, bswap32(0xDEADBEEF), "all_ones")
+    yield vec([0] * 8, 0, 0, 0, 0, "zero_mid_zero_tail")
+    yield vec([MASK32] * 8, MASK32, MASK32, MASK32, bswap32(0xDEADBEEF), "all_ones")
     for bit in range(8):
         mid = [0] * 8
         mid[bit] = 1
-        check(mid, 1, 2, 3, bswap32(4), f"single_bit_mid{bit}")
+        yield vec(mid, 1, 2, 3, bswap32(4), f"single_bit_mid{bit}")
 
-    for _ in range(256):
+    for i in range(256):
         mid = [rng.getrandbits(32) for _ in range(8)]
         h0 = rng.getrandbits(32)
         h1 = rng.getrandbits(32)
         h2 = rng.getrandbits(32)
         nonce_word = bswap32(rng.getrandbits(32))
-        check(mid, h0, h1, h2, nonce_word, "random")
+        yield vec(mid, h0, h1, h2, nonce_word, f"random_{i}")
 
-    for _ in range(64):
+    for i in range(64):
         header76 = bytes(rng.getrandbits(8) for _ in range(76))
         nonce = rng.getrandbits(32)
         h80 = header76 + struct.pack("<I", nonce)
@@ -254,12 +287,17 @@ def run_selftests() -> None:
         h0, h1, h2 = header_tail_words(header76)
         nonce_word = bswap32(nonce)
         ref_words = digest_to_be_words(hashlib.sha256(h80).digest())
-        got_ref = first_mid_reference(mid, h0, h1, h2, nonce_word)
-        got_sim = simulate_slots(mid, h0, h1, h2, nonce_word)
-        if got_ref != ref_words or got_sim != ref_words:
-            raise SystemExit("hashlib cross-check failed")
+        yield f"hashlib_{i}", mid, h0, h1, h2, nonce_word, ref_words
 
-    print(f"self-test OK ({256 + 64 + 11} vectors)")
+
+def run_selftests() -> None:
+    count = 0
+    for label, mid, h0, h1, h2, nonce_word, expected in iter_first_mid_vectors():
+        got_sim = simulate_slots(mid, h0, h1, h2, nonce_word)
+        if got_sim != expected:
+            raise SystemExit(f"mismatch {label}: expected={expected} got={got_sim}")
+        count += 1
+    print(f"self-test OK ({count} vectors)")
 
 
 def main() -> int:
@@ -269,6 +307,17 @@ def main() -> int:
         path = out_path(cfg)
         path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Wrote {path} ({len(content)} bytes)")
+    cpu_content = generate_cpu_inc()
+    cpu_path = cpu_out_path()
+    cpu_path.write_text(cpu_content, encoding="utf-8", newline="\n")
+    print(f"Wrote {cpu_path} ({len(cpu_content)} bytes)")
+    try:
+        import test_cpu_compress  # noqa: WPS433
+
+        if test_cpu_compress.main() != 0:
+            return 1
+    except ImportError:
+        pass
     return 0
 
 

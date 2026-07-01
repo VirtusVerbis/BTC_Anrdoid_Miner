@@ -5,6 +5,7 @@
 #include "sha256.h"
 #include "sha256_arm_sha2.h"
 #include "sha256_neon_4way.h"
+#include "sha256_btc_fast.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -117,8 +118,8 @@ static int scan_scalar_mid(const uint8_t *header76, uint32_t start, uint32_t end
             atomic_exchange_explicit(&g_cpu_interrupt_requested, 0, memory_order_acq_rel)) {
             return -3;
         }
-        first_hash_mid(mid, header76, nonce, d32, scalar_compress_fn);
-        double_from_mid_digest(d32, hash);
+        sha256_btc_first_mid_from_header(mid, header76, nonce, d32);
+        sha256_btc_second_from_digest(d32, hash);
         if (hash_meets_target(hash, target)) return (int)nonce;
     }
     return -1;
@@ -334,8 +335,8 @@ void cpu_sha256_double_flavor(int flavor, const uint8_t *header76, uint32_t nonc
         case 4: {
             uint32_t mid[8];
             midstate_after_block0(header76, mid, scalar_compress_fn);
-            first_hash_mid(mid, header76, nonce, d32, scalar_compress_fn);
-            double_from_mid_digest(d32, out);
+            sha256_btc_first_mid_from_header(mid, header76, nonce, d32);
+            sha256_btc_second_from_digest(d32, out);
             break;
         }
         case 5:
@@ -390,7 +391,7 @@ int cpu_sha_selftest_flavor(int flavor) {
             uint32_t mid_dbg[8];
             midstate_after_block0(kSelftestHeader76, mid_dbg, scalar_compress_fn);
             uint8_t first_mid[32];
-            first_hash_mid(mid_dbg, kSelftestHeader76, nonce, first_mid, scalar_compress_fn);
+            sha256_btc_first_mid_from_header(mid_dbg, kSelftestHeader76, nonce, first_mid);
             if (memcmp(first_ref, first_mid, 32) != 0) {
                 __android_log_print(ANDROID_LOG_ERROR, "SHA256_SelfTest",
                     "first SHA mismatch: scalar ref vs midstate+second block (nonce=1)");

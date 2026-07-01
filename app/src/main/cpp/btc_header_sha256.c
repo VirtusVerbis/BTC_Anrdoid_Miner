@@ -1,5 +1,6 @@
 #include "btc_header_sha256.h"
 #include "sha256.h"
+#include "sha256_btc_fast.h"
 
 #include <android/log.h>
 #include <stdio.h>
@@ -26,30 +27,14 @@ void btc_header80_from_76(const uint8_t header76[BTC_HEADER76_SIZE], uint32_t no
 
 void btc_first_sha_from_mid(const uint8_t header76[BTC_HEADER76_SIZE], const uint32_t mid[8], uint32_t nonce,
                             uint8_t digest32[BTC_HASH32_SIZE]) {
-    uint8_t last16[16];
-    memcpy(last16, header76 + 64, 12);
-    last16[12] = (uint8_t)nonce;
-    last16[13] = (uint8_t)(nonce >> 8);
-    last16[14] = (uint8_t)(nonce >> 16);
-    last16[15] = (uint8_t)(nonce >> 24);
-    uint8_t block[64];
-    sha256_pad_second_block_80(last16, block);
-    uint32_t s[8];
-    memcpy(s, mid, sizeof(s));
-    scalar_compress_one(s, block);
-    for (int i = 0; i < 8; i++) {
-        digest32[i * 4 + 0] = (uint8_t)(s[i] >> 24);
-        digest32[i * 4 + 1] = (uint8_t)(s[i] >> 16);
-        digest32[i * 4 + 2] = (uint8_t)(s[i] >> 8);
-        digest32[i * 4 + 3] = (uint8_t)s[i];
-    }
+    sha256_btc_first_mid_from_header(mid, header76, nonce, digest32);
 }
 
 void btc_double_sha_from_mid(const uint8_t header76[BTC_HEADER76_SIZE], const uint32_t mid[8], uint32_t nonce,
                              uint8_t out32[BTC_HASH32_SIZE]) {
     uint8_t d32[BTC_HASH32_SIZE];
-    btc_first_sha_from_mid(header76, mid, nonce, d32);
-    sha256(d32, SHA256_DIGEST_SIZE, out32);
+    sha256_btc_first_mid_from_header(mid, header76, nonce, d32);
+    sha256_btc_second_from_digest(d32, out32);
 }
 
 void btc_first_sha_full(const uint8_t header76[BTC_HEADER76_SIZE], uint32_t nonce, uint8_t digest32[BTC_HASH32_SIZE]) {

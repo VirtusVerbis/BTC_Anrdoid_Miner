@@ -15,10 +15,14 @@ from sha256_compress_codegen import (
     MASK32,
     WSlot,
     WidthConfig,
+    c_const,
+    c_zero,
     emit_compress_body,
+    emit_compress_body_c,
     glsl_const,
     glsl_zero,
     header_comment,
+    header_comment_c,
 )
 
 K = [
@@ -159,6 +163,37 @@ def out_path(cfg: WidthConfig) -> Path:
     return OUT_DIR / f"sha256_compress_second_{cfg.file_suffix}.inc"
 
 
+def cpu_out_path() -> Path:
+    return OUT_DIR / "sha256_compress_second_cpu.inc"
+
+
+def generate_cpu_inc() -> str:
+    z = c_zero()
+    lines: List[str] = [
+        header_comment_c(
+            "gen_sha256_second_compress.py",
+            "Bitcoin double-SHA256 outer step: single block, fixed padding (256-bit length).",
+        ),
+        "",
+        "static void sha256_compress_second_16w_cpu(",
+        "    uint32_t h0, uint32_t h1, uint32_t h2, uint32_t h3,",
+        "    uint32_t h4, uint32_t h5, uint32_t h6, uint32_t h7,",
+        "    uint32_t s[8]) {",
+        "    uint32_t w[16];",
+        "    w[0] = h0; w[1] = h1; w[2] = h2; w[3] = h3; w[4] = h4; w[5] = h5; w[6] = h6; w[7] = h7;",
+        f"    w[8] = {c_const(0x80000000)}; w[9] = {z}; w[10] = {z}; w[11] = {z};",
+        f"    w[12] = {z}; w[13] = {z}; w[14] = {z}; w[15] = {c_const(0x00000100)};",
+        "    uint32_t a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];",
+    ]
+    lines.extend(emit_compress_body_c(initial_slots()))
+    lines.extend([
+        "    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;",
+        "}",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def digest_to_be_words(d32: bytes) -> List[int]:
     return [struct.unpack(">I", d32[i : i + 4])[0] for i in range(0, 32, 4)]
 
@@ -168,31 +203,37 @@ def gpu_selftest_first_digest() -> List[int]:
     return digest_to_be_words(hashlib.sha256(h80).digest())
 
 
-def run_selftests() -> None:
+def iter_second_vectors():
+    """Yield (label, h_words, expected_out) golden vectors for phase 1."""
     rng = random.Random(0xB17C0A1)
 
-    def check(h_words: List[int], label: str) -> None:
-        ref = second_hash_reference(h_words)
-        got = simulate_slots(h_words)
-        if ref != got:
-            raise SystemExit(f"mismatch {label}: ref={ref} got={got}")
+    def vec(h_words: List[int], label: str):
+        return label, list(h_words), second_hash_reference(h_words)
 
-    check(gpu_selftest_first_digest(), "gpu_selftest_first_digest")
-    check([0] * 8, "all_zero")
-    check([MASK32] * 8, "all_ones")
+    yield vec(gpu_selftest_first_digest(), "gpu_selftest_first_digest")
+    yield vec([0] * 8, "all_zero")
+    yield vec([MASK32] * 8, "all_ones")
     for bit in range(8):
         words = [0] * 8
         words[bit] = 1
-        check(words, f"single_bit_h{bit}")
-    for _ in range(256):
-        check([rng.getrandbits(32) for _ in range(8)], "random")
-    for _ in range(64):
+        yield vec(words, f"single_bit_h{bit}")
+    for i in range(256):
+        yield vec([rng.getrandbits(32) for _ in range(8)], f"random_{i}")
+    for i in range(64):
         d32 = bytes(rng.getrandbits(8) for _ in range(32))
         h_words = digest_to_be_words(d32)
         ref_words = digest_to_be_words(hashlib.sha256(d32).digest())
-        if second_hash_reference(h_words) != ref_words or simulate_slots(h_words) != ref_words:
-            raise SystemExit("hashlib cross-check failed")
-    print(f"self-test OK ({256 + 64 + 10} vectors)")
+        yield f"hashlib_{i}", h_words, ref_words
+
+
+def run_selftests() -> None:
+    count = 0
+    for label, h_words, expected in iter_second_vectors():
+        got = simulate_slots(h_words)
+        if got != expected:
+            raise SystemExit(f"mismatch {label}: expected={expected} got={got}")
+        count += 1
+    print(f"self-test OK ({count} vectors)")
 
 
 def main() -> int:
@@ -202,6 +243,17 @@ def main() -> int:
         path = out_path(cfg)
         path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Wrote {path} ({len(content)} bytes)")
+    cpu_content = generate_cpu_inc()
+    cpu_path = cpu_out_path()
+    cpu_path.write_text(cpu_content, encoding="utf-8", newline="\n")
+    print(f"Wrote {cpu_path} ({len(cpu_content)} bytes)")
+    try:
+        import test_cpu_compress  # noqa: WPS433
+
+        if test_cpu_compress.main() != 0:
+            return 1
+    except ImportError:
+        pass
     return 0
 
 
