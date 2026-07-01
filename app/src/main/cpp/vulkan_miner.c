@@ -48,6 +48,8 @@ _Static_assert(HEADER_PREFIX_SIZE % 4 == 0, "UBO header must be a multiple of 4 
 #define MAX_GPU_WORKGROUP_STEPS 64
 #define GPU_HASH_PER_THREAD_VARIANTS 4
 #define GPU_PIPELINE_SLOT_COUNT (MAX_GPU_WORKGROUP_STEPS * GPU_HASH_PER_THREAD_VARIANTS)
+/** Max sub-ranges batched into one vkQueueSubmit; beyond this, fall back to per-pass submits. */
+#define GPU_MAX_MULTIPASS_PASSES 64
 /* Returned to Java when GPU path is unavailable (no SPIR-V or Vulkan failure). */
 #define GPU_UNAVAILABLE (-2)
 /* JNI jlong[0] status values for GPU path only (not shared with miner.c). */
@@ -615,7 +617,7 @@ static int ensure_compute_resources(void) {
     VkBufferCreateInfo bufInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = UBO_SIZE,
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
     };
     if (vkCreateBuffer(g_device, &bufInfo, NULL, &g_uboBuffer) != VK_SUCCESS)
         goto fail_buffers;
@@ -1080,6 +1082,152 @@ static int submit_once_and_wait(VkPipeline pipeline, uint32_t groupX, uint32_t g
     return 1;
 }
 
+typedef struct {
+    uint32_t nonceStart;
+    uint32_t nonceEnd;
+    uint32_t groupCountX;
+} GpuScanPass;
+
+/** Record passCount dispatches in one command buffer; one vkQueueSubmit + fence wait. Pass 0 UBO must be host-written before call. */
+static int submit_multipass_and_wait(VkPipeline pipeline, const GpuScanPass *passes, uint32_t passCount) {
+    if (passCount == 0 || passes == NULL)
+        return 0;
+    VkResult res = vkResetFences(g_device, 1, &g_fence);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetFences");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkResetFences failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    res = vkResetCommandPool(g_device, g_commandPool, 0);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkResetCommandPool");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkResetCommandPool failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    res = vkBeginCommandBuffer(g_commandBuffer, &beginInfo);
+    if (res != VK_SUCCESS) {
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkBeginCommandBuffer");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vkBeginCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    vkCmdBindPipeline(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(g_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipelineLayout, 0, 1, &g_descriptorSet, 0, NULL);
+
+    VkMemoryBarrier hostToCompute = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT,
+    };
+    vkCmdPipelineBarrier(g_commandBuffer, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &hostToCompute,
+        0, NULL, 0, NULL);
+
+    for (uint32_t i = 0; i < passCount; i++) {
+        if (i > 0) {
+            uint8_t nonceData[8];
+            write_le32(nonceData, passes[i].nonceStart);
+            write_le32(nonceData + 4, passes[i].nonceEnd);
+            vkCmdUpdateBuffer(g_commandBuffer, g_uboBuffer, UBO_OFFSET_NONCE_START, 8, nonceData);
+            VkMemoryBarrier transferToCompute = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT,
+            };
+            vkCmdPipelineBarrier(g_commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                1, &transferToCompute, 0, NULL, 0, NULL);
+        }
+        vkCmdDispatch(g_commandBuffer, passes[i].groupCountX, 1u, 1u);
+        if (i + 1u < passCount) {
+            VkMemoryBarrier betweenPasses = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+            };
+            vkCmdPipelineBarrier(g_commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &betweenPasses, 0, NULL, 0, NULL);
+        }
+    }
+
+    VkMemoryBarrier computeToHost = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+    };
+    vkCmdPipelineBarrier(g_commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &computeToHost,
+        0, NULL, 0, NULL);
+    res = vkEndCommandBuffer(g_commandBuffer);
+    if (res != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkEndCommandBuffer failed: %s (%d)", vk_result_str(res), (int)res);
+        return 0;
+    }
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &g_commandBuffer,
+    };
+    if (g_first_dispatch_state == 0) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch submitted");
+        g_first_dispatch_state = 1;
+    }
+    res = vkQueueSubmit(g_queue, 1, &submitInfo, g_fence);
+    if (res != VK_SUCCESS) {
+        if (g_first_dispatch_state < 2) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
+            g_first_dispatch_state = 2;
+        }
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkQueueSubmit");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkQueueSubmit failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    for (;;) {
+        res = vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 1000000000ull);
+        if (res == VK_SUCCESS)
+            break;
+        if (res == VK_TIMEOUT) {
+            if (atomic_exchange_explicit(&g_interrupt_requested, 0, memory_order_acq_rel)) {
+                __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU scan interrupted by watchdog");
+                return 0;
+            }
+            continue;
+        }
+        if (g_first_dispatch_state < 2) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch failed (queue submit or wait)");
+            g_first_dispatch_state = 2;
+        }
+        if (res == VK_ERROR_DEVICE_LOST) {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Vulkan device lost on vkWaitForFences");
+            cleanup_vulkan();
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "vkWaitForFences failed: %s (%d)", vk_result_str(res), (int)res);
+        }
+        return 0;
+    }
+    if (g_first_dispatch_state == 1) {
+        __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "First GPU dispatch completed");
+        g_first_dispatch_state = 2;
+    }
+    return 1;
+}
+
 /** Vulkan SSBO readback self-test: nonce=1, digest write path; logs GPU_SELFTEST_TAG. Returns 1 if ok. */
 static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
     int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
@@ -1238,14 +1386,10 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     uint64_t maxInvPerPass = (uint64_t)g_maxWorkGroupCount * (uint64_t)localSize * (uint64_t)noncesPerThread;
     if (maxInvPerPass == 0)
         return GPU_UNAVAILABLE;
-    if (chunkInv > maxInvPerPass && !s_gpu_multipass_notice) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-            "GPU scan uses multiple dispatches per chunk (chunkNonces=%llu maxNoncesPerPass=%llu maxGroups=%u localSize=%u noncesPerThread=%u vectorWidth=%u)",
-            (unsigned long long)chunkInv, (unsigned long long)maxInvPerPass, (unsigned)g_maxWorkGroupCount,
-            (unsigned)localSize, (unsigned)noncesPerThread, (unsigned)vectorWidth);
-        s_gpu_multipass_notice = 1;
-    }
 
+    GpuScanPass passes[GPU_MAX_MULTIPASS_PASSES];
+    uint32_t passCount = 0;
+    int useLegacyMultipass = 0;
     for (uint32_t cursor = nonceStart; cursor <= nonceEnd;) {
         uint64_t remain = (uint64_t)nonceEnd - (uint64_t)cursor + 1ULL;
         uint32_t thisInv = remain > maxInvPerPass ? (uint32_t)maxInvPerPass : (uint32_t)remain;
@@ -1256,33 +1400,90 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
             groupCountX = g_maxWorkGroupCount;
         if (groupCountX == 0)
             return GPU_UNAVAILABLE;
-
-        fill_ubo_mining(ubo, header76, cursor, subEnd, target, useMidstate, 0, mid);
-
-        memcpy(g_uboMapped, ubo, UBO_SIZE);
-        host_flush_before_gpu_read(g_uboMemory);
-
-        mining_result_buffer_reset(g_resultMapped);
-        host_flush_before_gpu_read(g_resultMemory);
-
-        if (!submit_once_and_wait(miningPipe, groupCountX, 1u, 1u))
-            return GPU_UNAVAILABLE;
-
-        host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
-        {
-            uint32_t *words = (uint32_t *)g_resultMapped;
-            uint32_t found = words[RES_WORD_FOUND];
-            uint32_t win = words[RES_WORD_NONCE];
-            if (found == 1u) {
-                *hit_out = 1;
-                *nonce_out = win;
-                return 0;
-            }
+        if (passCount >= GPU_MAX_MULTIPASS_PASSES) {
+            useLegacyMultipass = 1;
+            break;
         }
-
+        passes[passCount].nonceStart = cursor;
+        passes[passCount].nonceEnd = subEnd;
+        passes[passCount].groupCountX = groupCountX;
+        passCount++;
         if (subEnd >= nonceEnd)
             break;
         cursor = subEnd + 1u;
+    }
+
+    if (useLegacyMultipass) {
+        for (uint32_t cursor = nonceStart; cursor <= nonceEnd;) {
+            uint64_t remain = (uint64_t)nonceEnd - (uint64_t)cursor + 1ULL;
+            uint32_t thisInv = remain > maxInvPerPass ? (uint32_t)maxInvPerPass : (uint32_t)remain;
+            uint32_t subEnd = (uint32_t)((uint64_t)cursor + (uint64_t)thisInv - 1ULL);
+            uint64_t invocations = (thisInv + noncesPerThread - 1u) / noncesPerThread;
+            uint32_t groupCountX = (uint32_t)((invocations + localSize - 1u) / localSize);
+            if (groupCountX > g_maxWorkGroupCount)
+                groupCountX = g_maxWorkGroupCount;
+            if (groupCountX == 0)
+                return GPU_UNAVAILABLE;
+
+            fill_ubo_mining(ubo, header76, cursor, subEnd, target, useMidstate, 0, mid);
+            memcpy(g_uboMapped, ubo, UBO_SIZE);
+            host_flush_before_gpu_read(g_uboMemory);
+            mining_result_buffer_reset(g_resultMapped);
+            host_flush_before_gpu_read(g_resultMemory);
+
+            if (!submit_once_and_wait(miningPipe, groupCountX, 1u, 1u))
+                return GPU_UNAVAILABLE;
+
+            host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
+            {
+                uint32_t *words = (uint32_t *)g_resultMapped;
+                uint32_t found = words[RES_WORD_FOUND];
+                uint32_t win = words[RES_WORD_NONCE];
+                if (found == 1u) {
+                    *hit_out = 1;
+                    *nonce_out = win;
+                    return 0;
+                }
+            }
+            if (subEnd >= nonceEnd)
+                break;
+            cursor = subEnd + 1u;
+        }
+        return 0;
+    }
+
+    if (passCount > 1 && chunkInv > maxInvPerPass && !s_gpu_multipass_notice) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+            "GPU scan: %u dispatches in one submit (chunkNonces=%llu maxNoncesPerPass=%llu maxGroups=%u localSize=%u noncesPerThread=%u vectorWidth=%u)",
+            (unsigned)passCount, (unsigned long long)chunkInv, (unsigned long long)maxInvPerPass, (unsigned)g_maxWorkGroupCount,
+            (unsigned)localSize, (unsigned)noncesPerThread, (unsigned)vectorWidth);
+        s_gpu_multipass_notice = 1;
+    }
+
+    fill_ubo_mining(ubo, header76, passes[0].nonceStart, passes[0].nonceEnd, target, useMidstate, 0, mid);
+    memcpy(g_uboMapped, ubo, UBO_SIZE);
+    host_flush_before_gpu_read(g_uboMemory);
+    mining_result_buffer_reset(g_resultMapped);
+    host_flush_before_gpu_read(g_resultMemory);
+
+    if (passCount == 1) {
+        if (!submit_once_and_wait(miningPipe, passes[0].groupCountX, 1u, 1u))
+            return GPU_UNAVAILABLE;
+    } else {
+        if (!submit_multipass_and_wait(miningPipe, passes, passCount))
+            return GPU_UNAVAILABLE;
+    }
+
+    host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
+    {
+        uint32_t *words = (uint32_t *)g_resultMapped;
+        uint32_t found = words[RES_WORD_FOUND];
+        uint32_t win = words[RES_WORD_NONCE];
+        if (found == 1u) {
+            *hit_out = 1;
+            *nonce_out = win;
+            return 0;
+        }
     }
     return 0; /* Chunk scanned, no solution */
 }
