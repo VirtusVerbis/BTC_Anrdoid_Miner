@@ -6,6 +6,7 @@
 
 #include "sha256_neon_4way.h"
 #include "sha256.h"
+#include "sha256_btc_fast.h"
 
 #if defined(__aarch64__)
 
@@ -214,32 +215,8 @@ static void neon4_first_sha_four(const uint8_t header76[76], uint32_t n0, uint32
 }
 
 static void neon4_second_sha_four(const uint8_t digests[4][32], uint8_t out[4][32]) {
-    uint8_t blk[4][64];
-    for (int l = 0; l < 4; l++) {
-        memcpy(blk[l], digests[l], 32);
-        blk[l][32] = 0x80;
-        memset(blk[l] + 33, 0, 23);
-        uint64_t bitlen = 32u * 8u;
-        blk[l][63] = (uint8_t)bitlen;
-        blk[l][62] = (uint8_t)(bitlen >> 8);
-        blk[l][61] = (uint8_t)(bitlen >> 16);
-        blk[l][60] = (uint8_t)(bitlen >> 24);
-        blk[l][59] = (uint8_t)(bitlen >> 32);
-        blk[l][58] = (uint8_t)(bitlen >> 40);
-        blk[l][57] = (uint8_t)(bitlen >> 48);
-        blk[l][56] = (uint8_t)(bitlen >> 56);
-    }
-
-    uint32x4_t A = vdupq_n_u32(0x6a09e667);
-    uint32x4_t B = vdupq_n_u32(0xbb67ae85);
-    uint32x4_t C = vdupq_n_u32(0x3c6ef372);
-    uint32x4_t D = vdupq_n_u32(0xa54ff53a);
-    uint32x4_t E = vdupq_n_u32(0x510e527f);
-    uint32x4_t F = vdupq_n_u32(0x9b05688c);
-    uint32x4_t G = vdupq_n_u32(0x1f83d9ab);
-    uint32x4_t H = vdupq_n_u32(0x5be0cd19);
-    sha256_4way_one_block(&A, &B, &C, &D, &E, &F, &G, &H, blk);
-    digest_from_state(A, B, C, D, E, F, G, H, out);
+    for (int l = 0; l < 4; l++)
+        sha256_btc_second_from_digest(digests[l], out[l]);
 }
 
 void sha256_neon4_double(const uint8_t header76[76], uint32_t n0, uint32_t n1, uint32_t n2, uint32_t n3,

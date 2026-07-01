@@ -11,7 +11,19 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifndef __ANDROID__
+#include <stdarg.h>
+#define ANDROID_LOG_INFO 4
+#define ANDROID_LOG_ERROR 6
+static int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
+    (void)prio;
+    (void)tag;
+    (void)fmt;
+    return 0;
+}
+#else
 #include <android/log.h>
+#endif
 
 #define HEADER_PREFIX_SIZE 76
 #define BLOCK_HEADER_SIZE 80
@@ -75,11 +87,6 @@ static void arm_compress_fn(uint32_t *st, const uint8_t *c, size_t blocks) {
     (void)blocks;
 }
 #endif
-
-/** Bitcoin double-SHA256 outer step only: [d32] is already SHA256(header80). */
-static void double_from_mid_digest(const uint8_t d32[32], uint8_t final_hash[32]) {
-    sha256(d32, SHA256_DIGEST_SIZE, final_hash);
-}
 
 static void header80_from_76_nonce(const uint8_t *header76, uint32_t nonce, uint8_t *header80) {
     memcpy(header80, header76, HEADER_PREFIX_SIZE);
@@ -149,7 +156,7 @@ static int scan_arm_full(const uint8_t *header76, uint32_t start, uint32_t end, 
             dig32[i * 4 + 2] = (uint8_t)(st[i] >> 8);
             dig32[i * 4 + 3] = (uint8_t)st[i];
         }
-        sha256(dig32, SHA256_DIGEST_SIZE, hash);
+        sha256_btc_second_from_digest(dig32, hash);
         if (hash_meets_target(hash, target)) return (int)nonce;
     }
     return -1;
@@ -166,7 +173,7 @@ static int scan_arm_mid(const uint8_t *header76, uint32_t start, uint32_t end, c
             return -3;
         }
         first_hash_mid(mid, header76, nonce, d32, arm_compress_fn);
-        double_from_mid_digest(d32, hash);
+        sha256_btc_second_from_digest(d32, hash);
         if (hash_meets_target(hash, target)) return (int)nonce;
     }
     return -1;
@@ -217,8 +224,8 @@ static int scan_neon4_mid(const uint8_t *header76, uint32_t start, uint32_t end,
             }
             n += 4;
         } else {
-            first_hash_mid(mid, header76, n, d32, scalar_compress_fn);
-            double_from_mid_digest(d32, hash);
+            sha256_btc_first_mid_from_header(mid, header76, n, d32);
+            sha256_btc_second_from_digest(d32, hash);
             if (hash_meets_target(hash, target)) return (int)n;
             n++;
         }
@@ -287,7 +294,7 @@ void cpu_sha256_double_flavor(int flavor, const uint8_t *header76, uint32_t nonc
             uint32_t mid[8];
             midstate_after_block0(header76, mid, arm_compress_fn);
             first_hash_mid(mid, header76, nonce, d32, arm_compress_fn);
-            double_from_mid_digest(d32, out);
+            sha256_btc_second_from_digest(d32, out);
             break;
         }
         case 1: {
@@ -304,7 +311,7 @@ void cpu_sha256_double_flavor(int flavor, const uint8_t *header76, uint32_t nonc
                 d32[i * 4 + 2] = (uint8_t)(st[i] >> 8);
                 d32[i * 4 + 3] = (uint8_t)st[i];
             }
-            sha256(d32, SHA256_DIGEST_SIZE, out);
+            sha256_btc_second_from_digest(d32, out);
 #else
             memset(out, 0, 32);
 #endif
