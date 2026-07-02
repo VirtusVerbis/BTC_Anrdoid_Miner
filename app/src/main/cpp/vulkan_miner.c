@@ -19,7 +19,9 @@
 #include <vulkan/vulkan.h>
 #include "miner_spv.h"
 #include "miner_uvec2_spv.h"
+#include "miner_uvec2_loop_spv.h"
 #include "miner_uvec4_spv.h"
+#include "miner_uvec4_loop_spv.h"
 #endif
 
 /* Match com.btcminer.android.config.GpuSha256Mode ordinals. */
@@ -27,6 +29,10 @@
 #define GPU_MODE_MIDSTATE 1
 #define GPU_MODE_UVEC4_MIDSTATE 2
 #define GPU_MODE_UVEC2_MIDSTATE 3
+
+/* Match com.btcminer.android.config.GpuCompressStyle ordinals. */
+#define GPU_COMPRESS_FULL 0
+#define GPU_COMPRESS_LOOP 1
 
 #define HEADER_PREFIX_SIZE 76
 #define BLOCK_HEADER_SIZE 80
@@ -108,10 +114,14 @@ static VkDescriptorSetLayout g_descriptorSetLayout = VK_NULL_HANDLE;
 static VkPipelineLayout g_pipelineLayout = VK_NULL_HANDLE;
 static VkPipeline g_pipelines[GPU_PIPELINE_SLOT_COUNT];
 static VkPipeline g_pipelines_uvec2[GPU_PIPELINE_SLOT_COUNT];
+static VkPipeline g_pipelines_uvec2_loop[GPU_PIPELINE_SLOT_COUNT];
 static VkPipeline g_pipelines_uvec4[GPU_PIPELINE_SLOT_COUNT];
+static VkPipeline g_pipelines_uvec4_loop[GPU_PIPELINE_SLOT_COUNT];
 static VkPipeline g_pipeline_selftest = VK_NULL_HANDLE;
 static VkPipeline g_pipeline_selftest_uvec2 = VK_NULL_HANDLE;
+static VkPipeline g_pipeline_selftest_uvec2_loop = VK_NULL_HANDLE;
 static VkPipeline g_pipeline_selftest_uvec4 = VK_NULL_HANDLE;
+static VkPipeline g_pipeline_selftest_uvec4_loop = VK_NULL_HANDLE;
 typedef struct {
     VkBuffer uboBuffer;
     VkDeviceMemory uboMemory;
@@ -139,6 +149,7 @@ typedef struct {
     uint32_t mid[8];
     int useMidstate;
     int gpuSha256Mode;
+    int gpuCompressStyle;
     VkPipeline miningPipe;
     uint32_t localSize;
     uint32_t hpt;
@@ -210,7 +221,8 @@ static void host_invalidate_after_gpu_write_while_mapped(VkDeviceMemory mem) {
 static void cleanup_vulkan(void);
 static void gpu_pipeline_session_end_inner(void);
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd, const uint8_t *target,
-                        int localSizeX, int hashesPerThread, int gpuSha256Mode, int *hit_out, uint32_t *nonce_out);
+                        int localSizeX, int hashesPerThread, int gpuSha256Mode, int gpuCompressStyle,
+                        int *hit_out, uint32_t *nonce_out);
 
 static void sync_legacy_slot0_aliases(void) {
     g_descriptorSet = g_pipeSlots[0].descriptorSet;
@@ -286,6 +298,17 @@ typedef enum {
     GPU_SHADER_UVEC4 = 2,
 } GpuShaderVariant;
 
+typedef enum {
+    GPU_COMPRESS_STYLE_FULL = 0,
+    GPU_COMPRESS_STYLE_LOOP = 1,
+} GpuCompressStyle;
+
+static GpuCompressStyle normalize_compress_style(int compressStyle, GpuShaderVariant variant) {
+    if (variant == GPU_SHADER_SCALAR)
+        return GPU_COMPRESS_STYLE_FULL;
+    return compressStyle == GPU_COMPRESS_LOOP ? GPU_COMPRESS_STYLE_LOOP : GPU_COMPRESS_STYLE_FULL;
+}
+
 static GpuShaderVariant gpu_mode_shader_variant(int gpuSha256Mode) {
     switch (gpuSha256Mode) {
         case GPU_MODE_UVEC4_MIDSTATE:
@@ -308,20 +331,33 @@ static uint32_t gpu_vector_width(int gpuSha256Mode) {
     }
 }
 
-static int create_miner_shader_module(GpuShaderVariant variant, VkShaderModule *outModule) {
+static int create_miner_shader_module(GpuShaderVariant variant, GpuCompressStyle compressStyle,
+                                      VkShaderModule *outModule) {
     size_t codeSize;
     const uint32_t *pCode;
     const char *label;
     switch (variant) {
         case GPU_SHADER_UVEC4:
-            codeSize = (size_t)g_miner_uvec4_spv_len;
-            pCode = (const uint32_t *)g_miner_uvec4_spv;
-            label = "uvec4";
+            if (compressStyle == GPU_COMPRESS_STYLE_LOOP) {
+                codeSize = (size_t)g_miner_uvec4_loop_spv_len;
+                pCode = (const uint32_t *)g_miner_uvec4_loop_spv;
+                label = "uvec4_loop";
+            } else {
+                codeSize = (size_t)g_miner_uvec4_spv_len;
+                pCode = (const uint32_t *)g_miner_uvec4_spv;
+                label = "uvec4";
+            }
             break;
         case GPU_SHADER_UVEC2:
-            codeSize = (size_t)g_miner_uvec2_spv_len;
-            pCode = (const uint32_t *)g_miner_uvec2_spv;
-            label = "uvec2";
+            if (compressStyle == GPU_COMPRESS_STYLE_LOOP) {
+                codeSize = (size_t)g_miner_uvec2_loop_spv_len;
+                pCode = (const uint32_t *)g_miner_uvec2_loop_spv;
+                label = "uvec2_loop";
+            } else {
+                codeSize = (size_t)g_miner_uvec2_spv_len;
+                pCode = (const uint32_t *)g_miner_uvec2_spv;
+                label = "uvec2";
+            }
             break;
         default:
             codeSize = (size_t)g_miner_spv_len;
@@ -517,9 +553,9 @@ static void update_and_log_vulkan_limits(void) {
 }
 
 static int create_pipeline_with_spec(uint32_t localSize, uint32_t hashesPerThread, GpuShaderVariant variant,
-                                     VkPipeline *outPipeline) {
+                                     GpuCompressStyle compressStyle, VkPipeline *outPipeline) {
     VkShaderModule shaderModule;
-    if (!create_miner_shader_module(variant, &shaderModule))
+    if (!create_miner_shader_module(variant, compressStyle, &shaderModule))
         return 0;
     uint32_t specData[2] = { localSize, hashesPerThread };
     VkSpecializationMapEntry specMap[2] = {
@@ -557,45 +593,52 @@ static int create_pipeline_with_spec(uint32_t localSize, uint32_t hashesPerThrea
     return 1;
 }
 
-static VkPipeline *mining_pipeline_slot(GpuShaderVariant variant, uint32_t slot) {
+static VkPipeline *mining_pipeline_slot(GpuShaderVariant variant, GpuCompressStyle compressStyle, uint32_t slot) {
     switch (variant) {
         case GPU_SHADER_UVEC4:
-            return &g_pipelines_uvec4[slot];
+            return compressStyle == GPU_COMPRESS_STYLE_LOOP ? &g_pipelines_uvec4_loop[slot]
+                                                            : &g_pipelines_uvec4[slot];
         case GPU_SHADER_UVEC2:
-            return &g_pipelines_uvec2[slot];
+            return compressStyle == GPU_COMPRESS_STYLE_LOOP ? &g_pipelines_uvec2_loop[slot]
+                                                            : &g_pipelines_uvec2[slot];
         default:
             return &g_pipelines[slot];
     }
 }
 
-static VkPipeline *selftest_pipeline_slot(GpuShaderVariant variant) {
+static VkPipeline *selftest_pipeline_slot(GpuShaderVariant variant, GpuCompressStyle compressStyle) {
     switch (variant) {
         case GPU_SHADER_UVEC4:
-            return &g_pipeline_selftest_uvec4;
+            return compressStyle == GPU_COMPRESS_STYLE_LOOP ? &g_pipeline_selftest_uvec4_loop
+                                                            : &g_pipeline_selftest_uvec4;
         case GPU_SHADER_UVEC2:
-            return &g_pipeline_selftest_uvec2;
+            return compressStyle == GPU_COMPRESS_STYLE_LOOP ? &g_pipeline_selftest_uvec2_loop
+                                                            : &g_pipeline_selftest_uvec2;
         default:
             return &g_pipeline_selftest;
     }
 }
 
-static int ensure_mining_pipeline(uint32_t localSizeX, uint32_t hashesPerThread, GpuShaderVariant variant) {
+static int ensure_mining_pipeline(uint32_t localSizeX, uint32_t hashesPerThread, GpuShaderVariant variant,
+                                  GpuCompressStyle compressStyle) {
     localSizeX = normalize_local_size_x((int)localSizeX);
     hashesPerThread = normalize_hashes_per_thread((int)hashesPerThread);
+    compressStyle = normalize_compress_style((int)compressStyle, variant);
     uint32_t slot = pipeline_slot(localSizeX, hashesPerThread);
     if (slot >= GPU_PIPELINE_SLOT_COUNT)
         return 0;
-    VkPipeline *pipeSlot = mining_pipeline_slot(variant, slot);
+    VkPipeline *pipeSlot = mining_pipeline_slot(variant, compressStyle, slot);
     if (*pipeSlot != VK_NULL_HANDLE)
         return 1;
-    return create_pipeline_with_spec(localSizeX, hashesPerThread, variant, pipeSlot);
+    return create_pipeline_with_spec(localSizeX, hashesPerThread, variant, compressStyle, pipeSlot);
 }
 
-static int ensure_selftest_pipeline(GpuShaderVariant variant) {
-    VkPipeline *pipeSlot = selftest_pipeline_slot(variant);
+static int ensure_selftest_pipeline(GpuShaderVariant variant, GpuCompressStyle compressStyle) {
+    compressStyle = normalize_compress_style((int)compressStyle, variant);
+    VkPipeline *pipeSlot = selftest_pipeline_slot(variant, compressStyle);
     if (*pipeSlot != VK_NULL_HANDLE)
         return 1;
-    return create_pipeline_with_spec(1u, 1u, variant, pipeSlot);
+    return create_pipeline_with_spec(1u, 1u, variant, compressStyle, pipeSlot);
 }
 
 static int ensure_compute_resources(void) {
@@ -915,9 +958,17 @@ static void destroy_compute_resources(void) {
             vkDestroyPipeline(g_device, g_pipelines_uvec4[i], NULL);
             g_pipelines_uvec4[i] = VK_NULL_HANDLE;
         }
+        if (g_pipelines_uvec4_loop[i] != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_device, g_pipelines_uvec4_loop[i], NULL);
+            g_pipelines_uvec4_loop[i] = VK_NULL_HANDLE;
+        }
         if (g_pipelines_uvec2[i] != VK_NULL_HANDLE) {
             vkDestroyPipeline(g_device, g_pipelines_uvec2[i], NULL);
             g_pipelines_uvec2[i] = VK_NULL_HANDLE;
+        }
+        if (g_pipelines_uvec2_loop[i] != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g_device, g_pipelines_uvec2_loop[i], NULL);
+            g_pipelines_uvec2_loop[i] = VK_NULL_HANDLE;
         }
     }
     if (g_pipeline_selftest != VK_NULL_HANDLE) {
@@ -928,9 +979,17 @@ static void destroy_compute_resources(void) {
         vkDestroyPipeline(g_device, g_pipeline_selftest_uvec2, NULL);
         g_pipeline_selftest_uvec2 = VK_NULL_HANDLE;
     }
+    if (g_pipeline_selftest_uvec2_loop != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pipeline_selftest_uvec2_loop, NULL);
+        g_pipeline_selftest_uvec2_loop = VK_NULL_HANDLE;
+    }
     if (g_pipeline_selftest_uvec4 != VK_NULL_HANDLE) {
         vkDestroyPipeline(g_device, g_pipeline_selftest_uvec4, NULL);
         g_pipeline_selftest_uvec4 = VK_NULL_HANDLE;
+    }
+    if (g_pipeline_selftest_uvec4_loop != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g_device, g_pipeline_selftest_uvec4_loop, NULL);
+        g_pipeline_selftest_uvec4_loop = VK_NULL_HANDLE;
     }
     if (g_descriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(g_device, g_descriptorPool, NULL);
@@ -1368,12 +1427,13 @@ static void gpu_pipeline_session_end_inner(void) {
 }
 
 static int gpu_pipeline_session_begin_inner(const uint8_t *header76, const uint8_t *target, int localSizeX,
-                                            int hashesPerThread, int gpuSha256Mode) {
+                                            int hashesPerThread, int gpuSha256Mode, int gpuCompressStyle) {
     if (!GPU_PIPE_ENABLED)
         return 0;
     gpu_pipeline_session_end_inner();
     int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
     GpuShaderVariant variant = gpu_mode_shader_variant(gpuSha256Mode);
+    GpuCompressStyle compressStyle = normalize_compress_style(gpuCompressStyle, variant);
     uint32_t vectorWidth = gpu_vector_width(gpuSha256Mode);
     uint32_t localSize = normalize_local_size_x(localSizeX);
     uint32_t hpt = normalize_hashes_per_thread(hashesPerThread);
@@ -1381,10 +1441,10 @@ static int gpu_pipeline_session_begin_inner(const uint8_t *header76, const uint8
         return GPU_UNAVAILABLE;
     if (!ensure_compute_resources())
         return GPU_UNAVAILABLE;
-    if (!ensure_mining_pipeline(localSize, hpt, variant))
+    if (!ensure_mining_pipeline(localSize, hpt, variant, compressStyle))
         return GPU_UNAVAILABLE;
     uint32_t pipeSlot = pipeline_slot(localSize, hpt);
-    VkPipeline miningPipe = *mining_pipeline_slot(variant, pipeSlot);
+    VkPipeline miningPipe = *mining_pipeline_slot(variant, compressStyle, pipeSlot);
     if (pipeSlot >= GPU_PIPELINE_SLOT_COUNT || miningPipe == VK_NULL_HANDLE)
         return GPU_UNAVAILABLE;
     memset(&g_pipeSession, 0, sizeof(g_pipeSession));
@@ -1394,6 +1454,7 @@ static int gpu_pipeline_session_begin_inner(const uint8_t *header76, const uint8
         btc_midstate_header76(header76, g_pipeSession.mid);
     g_pipeSession.useMidstate = useMidstate;
     g_pipeSession.gpuSha256Mode = gpuSha256Mode;
+    g_pipeSession.gpuCompressStyle = (int)compressStyle;
     g_pipeSession.miningPipe = miningPipe;
     g_pipeSession.localSize = localSize;
     g_pipeSession.hpt = hpt;
@@ -1482,7 +1543,7 @@ static int run_gpu_scan_pipelined(uint32_t nonceStart, uint32_t nonceEnd, int *h
         int syncHit = 0;
         uint32_t syncNonce = 0u;
         int rr = run_gpu_scan(sess->header76, nonceStart, nonceEnd, sess->target, (int)sess->localSize, (int)sess->hpt,
-            sess->gpuSha256Mode, &syncHit, &syncNonce);
+            sess->gpuSha256Mode, sess->gpuCompressStyle, &syncHit, &syncNonce);
         if (rr == GPU_UNAVAILABLE)
             return GPU_UNAVAILABLE;
         sess->syncPending = 1;
@@ -1759,16 +1820,17 @@ static int submit_multipass_and_wait(VkPipeline pipeline, const GpuScanPass *pas
 }
 
 /** Vulkan SSBO readback self-test: nonce=1, digest write path; logs GPU_SELFTEST_TAG. Returns 1 if ok. */
-static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
+static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode, int gpuCompressStyle) {
     int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
     GpuShaderVariant variant = gpu_mode_shader_variant(gpuSha256Mode);
+    GpuCompressStyle compressStyle = normalize_compress_style(gpuCompressStyle, variant);
     if (g_device == VK_NULL_HANDLE || g_queue == VK_NULL_HANDLE)
         return 0;
     if (!ensure_compute_resources()) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: ensure_compute_resources failed");
         return 0;
     }
-    if (!ensure_selftest_pipeline(variant)) {
+    if (!ensure_selftest_pipeline(variant, compressStyle)) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "vulkan_selftest: self-test pipeline failed");
         return 0;
     }
@@ -1789,7 +1851,7 @@ static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
     memset(g_resultMapped, 0, RESULT_BUFFER_SIZE);
     host_flush_before_gpu_read(g_resultMemory);
 
-    if (!submit_once_and_wait(*selftest_pipeline_slot(variant), 1u, 1u, 1u))
+    if (!submit_once_and_wait(*selftest_pipeline_slot(variant, compressStyle), 1u, 1u, 1u))
         return 0;
 
     host_invalidate_after_gpu_write_while_mapped(g_resultMemory);
@@ -1861,9 +1923,10 @@ static int gpu_sha_vulkan_selftest_inner(int gpuSha256Mode) {
 /* Returns GPU_UNAVAILABLE on failure; else 0. Sets *hit_out 0/1; if 1, *nonce_out is the winning nonce (may be 0xFFFFFFFFu). */
 static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
                         const uint8_t *target, int localSizeX, int hashesPerThread, int gpuSha256Mode,
-                        int *hit_out, uint32_t *nonce_out) {
+                        int gpuCompressStyle, int *hit_out, uint32_t *nonce_out) {
     int useMidstate = gpu_mode_uses_midstate(gpuSha256Mode);
     GpuShaderVariant variant = gpu_mode_shader_variant(gpuSha256Mode);
+    GpuCompressStyle compressStyle = normalize_compress_style(gpuCompressStyle, variant);
     uint32_t vectorWidth = gpu_vector_width(gpuSha256Mode);
     uint32_t localSize = normalize_local_size_x(localSizeX);
     uint32_t hpt = normalize_hashes_per_thread(hashesPerThread);
@@ -1880,9 +1943,9 @@ static int run_gpu_scan(const uint8_t *header76, uint32_t nonceStart, uint32_t n
     if (g_commandBuffer == VK_NULL_HANDLE || g_fence == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
-    if (!ensure_mining_pipeline(localSize, hpt, variant))
+    if (!ensure_mining_pipeline(localSize, hpt, variant, compressStyle))
         return GPU_UNAVAILABLE;
-    VkPipeline miningPipe = *mining_pipeline_slot(variant, slot);
+    VkPipeline miningPipe = *mining_pipeline_slot(variant, compressStyle, slot);
     if (slot >= GPU_PIPELINE_SLOT_COUNT || miningPipe == VK_NULL_HANDLE) {
         return GPU_UNAVAILABLE;
     }
@@ -2106,7 +2169,8 @@ Java_com_btcminer_android_mining_NativeMiner_getVulkanGpuInfo(JNIEnv *env, jclas
 
 JNIEXPORT jboolean JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclass clazz, jint localSizeX,
-                                                              jint hashesPerThread, jint gpuSha256Mode) {
+                                                              jint hashesPerThread, jint gpuSha256Mode,
+                                                              jint gpuCompressStyle) {
     (void)env;
     (void)clazz;
 #ifdef __ANDROID__
@@ -2117,19 +2181,21 @@ Java_com_btcminer_android_mining_NativeMiner_gpuPipelineReady(JNIEnv *env, jclas
     if (!ensure_compute_resources())
         return JNI_FALSE;
     if (!ensure_mining_pipeline((uint32_t)localSizeX, normalize_hashes_per_thread((int)hashesPerThread),
-            gpu_mode_shader_variant((int)gpuSha256Mode)))
+            gpu_mode_shader_variant((int)gpuSha256Mode), (GpuCompressStyle)gpuCompressStyle))
         return JNI_FALSE;
     return JNI_TRUE;
 #else
     (void)localSizeX;
     (void)hashesPerThread;
     (void)gpuSha256Mode;
+    (void)gpuCompressStyle;
     return JNI_FALSE;
 #endif
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, jclass clazz, jint gpuSha256Mode) {
+Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, jclass clazz, jint gpuSha256Mode,
+                                                                    jint gpuCompressStyle) {
     (void)env;
     (void)clazz;
 #ifdef __ANDROID__
@@ -2137,9 +2203,10 @@ Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, j
         return JNI_FALSE;
     if (!ensure_compute_resources())
         return JNI_FALSE;
-    return gpu_sha_vulkan_selftest_inner((int)gpuSha256Mode) ? JNI_TRUE : JNI_FALSE;
+    return gpu_sha_vulkan_selftest_inner((int)gpuSha256Mode, (int)gpuCompressStyle) ? JNI_TRUE : JNI_FALSE;
 #else
     (void)gpuSha256Mode;
+    (void)gpuCompressStyle;
     return JNI_FALSE;
 #endif
 }
@@ -2148,7 +2215,8 @@ Java_com_btcminer_android_mining_NativeMiner_gpuShaVulkanSelftest(JNIEnv *env, j
 JNIEXPORT void JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuPipelineSessionBegin(JNIEnv *env, jclass clazz, jbyteArray header76Java,
                                                                      jbyteArray targetJava, jint localSizeX,
-                                                                     jint hashesPerThread, jint gpuSha256Mode) {
+                                                                     jint hashesPerThread, jint gpuSha256Mode,
+                                                                     jint gpuCompressStyle) {
     (void)clazz;
 #ifdef __ANDROID__
     if (!header76Java || !targetJava ||
@@ -2162,12 +2230,14 @@ Java_com_btcminer_android_mining_NativeMiner_gpuPipelineSessionBegin(JNIEnv *env
     uint8_t target[HASH_SIZE];
     (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
     (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
-    gpu_pipeline_session_begin_inner(header76, target, (int)localSizeX, (int)hashesPerThread, (int)gpuSha256Mode);
+    gpu_pipeline_session_begin_inner(header76, target, (int)localSizeX, (int)hashesPerThread, (int)gpuSha256Mode,
+        (int)gpuCompressStyle);
 #else
     (void)env;
     (void)localSizeX;
     (void)hashesPerThread;
     (void)gpuSha256Mode;
+    (void)gpuCompressStyle;
 #endif
 }
 
@@ -2209,7 +2279,7 @@ JNIEXPORT void JNICALL
 Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jclass clazz, jbyteArray header76Java,
                                                                jint nonceStart, jint nonceEnd, jbyteArray targetJava,
                                                                jint localSizeX, jint hashesPerThread, jint gpuSha256Mode,
-                                                               jlongArray outJava) {
+                                                               jint gpuCompressStyle, jlongArray outJava) {
     (void)clazz;
     if (!outJava || (*env)->GetArrayLength(env, outJava) < 2) {
         return;
@@ -2245,7 +2315,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
         rr = run_gpu_scan_pipelined((uint32_t)nonceStart, (uint32_t)nonceEnd, &hit, &winNonce);
     } else {
         rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)localSizeX,
-            (int)hashesPerThread, (int)gpuSha256Mode, &hit, &winNonce);
+            (int)hashesPerThread, (int)gpuSha256Mode, (int)gpuCompressStyle, &hit, &winNonce);
     }
     if (rr == GPU_UNAVAILABLE) {
         out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
@@ -2263,6 +2333,7 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
     (void)localSizeX;
     (void)hashesPerThread;
     (void)gpuSha256Mode;
+    (void)gpuCompressStyle;
     out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
     out[1] = 0;
 #endif

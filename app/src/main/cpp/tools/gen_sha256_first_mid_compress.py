@@ -15,10 +15,13 @@ from sha256_compress_codegen import (
     MASK32,
     WSlot,
     WidthConfig,
+    WIDTH_UVEC2,
+    WIDTH_UVEC4,
     c_const,
     c_zero,
     emit_compress_body,
     emit_compress_body_c,
+    emit_compress_loop_body,
     glsl_const,
     glsl_zero,
     header_comment,
@@ -168,10 +171,15 @@ def simulate_slots(mid: List[int], h0: int, h1: int, h2: int, nonce_word: int) -
     return [(mid[i] + x) & MASK32 for i, x in enumerate([a, b, c_, d, e, f, g, h])]
 
 
-def generate_inc(cfg: WidthConfig) -> str:
+def generate_inc(cfg: WidthConfig, *, use_loop: bool = False) -> str:
     t = cfg.glsl_type
     z = glsl_zero(cfg)
     nonce_type = t if cfg.width > 1 else "uint"
+    desc = (
+        "Bitcoin first-SHA256 block 1: header tail + nonce + 80-byte padding (640-bit length, compact loop)."
+        if use_loop
+        else "Bitcoin first-SHA256 block 1: header tail + nonce + 80-byte padding (640-bit length)."
+    )
     if cfg.width == 1:
         w_header = "    w[0] = header64_67; w[1] = header68_71; w[2] = header72_75; w[3] = nonceW_sha_be;"
     else:
@@ -183,7 +191,7 @@ def generate_inc(cfg: WidthConfig) -> str:
     lines: List[str] = [
         header_comment(
             "gen_sha256_first_mid_compress.py",
-            "Bitcoin first-SHA256 block 1: header tail + nonce + 80-byte padding (640-bit length).",
+            desc,
             cfg,
         ),
         "",
@@ -197,7 +205,10 @@ def generate_inc(cfg: WidthConfig) -> str:
         f"    w[12] = {z}; w[13] = {z}; w[14] = {z}; w[15] = {glsl_const(0x00000280, cfg)};",
         f"    {t} a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];",
     ]
-    lines.extend(emit_compress_body(initial_slots(), cfg))
+    if use_loop:
+        lines.extend(emit_compress_loop_body(cfg))
+    else:
+        lines.extend(emit_compress_body(initial_slots(), cfg))
     lines.extend([
         "    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;",
         "}",
@@ -206,8 +217,12 @@ def generate_inc(cfg: WidthConfig) -> str:
     return "\n".join(lines)
 
 
-def out_path(cfg: WidthConfig) -> Path:
-    return OUT_DIR / f"sha256_compress_first_mid_{cfg.file_suffix}.inc"
+def out_path(cfg: WidthConfig, *, loop: bool = False) -> Path:
+    suffix = f"{cfg.file_suffix}_loop" if loop else cfg.file_suffix
+    return OUT_DIR / f"sha256_compress_first_mid_{suffix}.inc"
+
+
+LOOP_WIDTHS = (WIDTH_UVEC2, WIDTH_UVEC4)
 
 
 def cpu_out_path() -> Path:
@@ -305,6 +320,11 @@ def main() -> int:
     for cfg in ALL_WIDTHS:
         content = generate_inc(cfg)
         path = out_path(cfg)
+        path.write_text(content, encoding="utf-8", newline="\n")
+        print(f"Wrote {path} ({len(content)} bytes)")
+    for cfg in LOOP_WIDTHS:
+        content = generate_inc(cfg, use_loop=True)
+        path = out_path(cfg, loop=True)
         path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Wrote {path} ({len(content)} bytes)")
     cpu_content = generate_cpu_inc()

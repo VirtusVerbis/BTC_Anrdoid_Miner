@@ -23,8 +23,8 @@ object GpuCapabilities {
     fun vulkanGpuInfo(): String =
         safeNative { NativeMiner.getVulkanGpuInfo() } ?: "|"
 
-    fun pipelineReady(localSizeX: Int, hashesPerThread: Int, gpuSha256Mode: Int): Boolean =
-        safeNative { NativeMiner.gpuPipelineReady(localSizeX, hashesPerThread, gpuSha256Mode) } == true
+    fun pipelineReady(localSizeX: Int, hashesPerThread: Int, gpuSha256Mode: Int, gpuCompressStyle: Int): Boolean =
+        safeNative { NativeMiner.gpuPipelineReady(localSizeX, hashesPerThread, gpuSha256Mode, gpuCompressStyle) } == true
 
     fun vulkanRuntimeEnv(): Int =
         safeNative { NativeMiner.getVulkanRuntimeEnv() } ?: VULKAN_ENV_UNKNOWN

@@ -188,25 +188,26 @@ class NativeMiningEngine(
                 return
             }
             if (GpuCapabilities.isVulkanAvailable()) {
-                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_FULL.ordinal)) {
+                val compressOrd = config.gpuCompressStyle.ordinal
+                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_FULL.ordinal, compressOrd)) {
                     AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (full path)" }
                     statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                     running.set(false)
                     return
                 }
-                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_MIDSTATE.ordinal)) {
+                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_MIDSTATE.ordinal, compressOrd)) {
                     AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (midstate path)" }
                     statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                     running.set(false)
                     return
                 }
-                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_UVEC4_MIDSTATE.ordinal)) {
+                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_UVEC4_MIDSTATE.ordinal, compressOrd)) {
                     AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (uvec4 midstate path)" }
                     statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                     running.set(false)
                     return
                 }
-                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_UVEC2_MIDSTATE.ordinal)) {
+                if (!NativeMiner.gpuShaVulkanSelftest(GpuSha256Mode.GPU_UVEC2_MIDSTATE.ordinal, compressOrd)) {
                     AppLog.e(LOG_TAG) { "GPU SHA-256 Vulkan self-test failed (uvec2 midstate path)" }
                     statusRef.set(MiningStatus(MiningStatus.State.Error, lastError = GPU_SHA256_SELFTEST_LAST_ERROR, queuedShares = queuedSharesCount(null)))
                     running.set(false)
@@ -528,6 +529,7 @@ class NativeMiningEngine(
         val roundStartGpuNonces = gpuNoncesScanned.get()
         val localSizeX = config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
         val hashesPerThread = MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread)
+        val gpuCompressStyle = config.gpuCompressStyle.ordinal
 
         val gpuWorkerFuture: Future<*> = gpuWorkerExecutor.submit {
             Process.setThreadPriority(config.miningThreadPriority)
@@ -538,6 +540,7 @@ class NativeMiningEngine(
                 localSizeX,
                 hashesPerThread,
                 config.gpuSha256Mode.ordinal,
+                gpuCompressStyle,
             )
             var pendingChunkStart: Long? = null
             var pendingChunkEnd: Long? = null
@@ -561,6 +564,7 @@ class NativeMiningEngine(
                         localSizeX,
                         hashesPerThread,
                         config.gpuSha256Mode.ordinal,
+                        gpuCompressStyle,
                         jniOut,
                     )
                     val scan = GpuNonceScanResult.fromJniOut(jniOut)
@@ -569,7 +573,7 @@ class NativeMiningEngine(
                     gpuWorkMsCount.incrementAndGet()
                     if (workMs >= 500L || scan.status != GpuNonceScanResult.MISS) {
                         AppLog.d(LOG_TAG) {
-                            "GPU scan jobId=${job.jobId} submit=${String.format(Locale.US, "%08x", start.toInt())}-${String.format(Locale.US, "%08x", nonceEnd)} result=${pendingChunkStart?.let { String.format(Locale.US, "%08x", it.toInt()) } ?: "none"} mode=${gpuMode.name} localSize=$localSizeX hashesPerThread=$hashesPerThread status=${scan.status} nonce=${String.format(Locale.US, "%08x", (scan.nonceU32 and 0xFFFFFFFFL).toInt())} workMs=$workMs"
+                            "GPU scan jobId=${job.jobId} submit=${String.format(Locale.US, "%08x", start.toInt())}-${String.format(Locale.US, "%08x", nonceEnd)} result=${pendingChunkStart?.let { String.format(Locale.US, "%08x", it.toInt()) } ?: "none"} mode=${gpuMode.name} compress=${config.gpuCompressStyle.name} localSize=$localSizeX hashesPerThread=$hashesPerThread status=${scan.status} nonce=${String.format(Locale.US, "%08x", (scan.nonceU32 and 0xFFFFFFFFL).toInt())} workMs=$workMs"
                         }
                         AppLog.d(LOG_TAG) { DeviceTelemetryReader.formatScanLine(workMs) }
                     }
@@ -708,7 +712,7 @@ class NativeMiningEngine(
         val gpuLocalSizeX = config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
         val gpuHashesPerThread = MiningConfig.clampGpuHashesPerThread(config.gpuHashesPerThread)
         var gpuEnabled = config.gpuEnabled && GpuCapabilities.isVulkanAvailable() && !gpuUnavailable.get()
-        if (gpuEnabled && !GpuCapabilities.pipelineReady(gpuLocalSizeX, gpuHashesPerThread, config.gpuSha256Mode.ordinal)) {
+        if (gpuEnabled && !GpuCapabilities.pipelineReady(gpuLocalSizeX, gpuHashesPerThread, config.gpuSha256Mode.ordinal, config.gpuCompressStyle.ordinal)) {
             if (!gpuUnavailable.getAndSet(true)) {
                 AppLog.d(LOG_TAG) { "GPU init failed at startup" }
                 onGpuUnavailable?.invoke()
@@ -944,7 +948,7 @@ class NativeMiningEngine(
                     retryCount++
                     AppLog.d(LOG_TAG) { "GPU retry attempt #$retryCount starting" }
                     val available = GpuCapabilities.isVulkanAvailable() &&
-                        GpuCapabilities.pipelineReady(gpuLocalSizeX, gpuHashesPerThread, config.gpuSha256Mode.ordinal)
+                        GpuCapabilities.pipelineReady(gpuLocalSizeX, gpuHashesPerThread, config.gpuSha256Mode.ordinal, config.gpuCompressStyle.ordinal)
                     if (available) {
                         gpuUnavailable.set(false)
                         AppLog.d(LOG_TAG) { "GPU init succeeded; resuming GPU mining" }

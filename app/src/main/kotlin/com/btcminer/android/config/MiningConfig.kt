@@ -35,6 +35,8 @@ data class MiningConfig(
     val alarmWakeIntervalSec: Int = 60,
     val cpuSha256Flavor: CpuSha256Flavor = CpuSha256Flavor.SCALAR,
     val gpuSha256Mode: GpuSha256Mode = GpuSha256Mode.GPU_FULL,
+    /** Compressor style for uvec2/uvec4 GPU shaders; ignored for scalar GPU modes. */
+    val gpuCompressStyle: GpuCompressStyle = GpuCompressStyle.FULL_UNROLL,
 ) {
     fun isValidForMining(): Boolean =
         stratumUrl.isNotBlank() && stratumUser.isNotBlank()

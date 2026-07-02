@@ -144,6 +144,44 @@ def emit_compress_body(slots: List[WSlot], cfg: WidthConfig, round_end: int = 64
     return lines
 
 
+def emit_compress_loop_body(
+    cfg: WidthConfig,
+    round_end: int = 64,
+    round_start: int = 0,
+    checkpoints_after: dict | None = None,
+) -> List[str]:
+    """Unroll rounds 0-15, then loop 16..round_end-1 with #pragma unroll 8."""
+    lines: List[str] = []
+    checkpoints_after = checkpoints_after or {}
+    for i in range(round_start, min(16, round_end)):
+        lines.append(
+            f"    {cfg.round_macro}(a, b, c, d, e, f, g, h, w[{i}], K[{i}]);"
+        )
+    if round_end <= 16:
+        return lines
+    lines.extend([
+        "    #pragma unroll 8",
+        f"    for (int i = 16; i < {round_end}; i++) {{",
+        "        int idx = i & 15;",
+        "        int i16 = (i - 16) & 15;",
+        "        int i15 = (i - 15) & 15;",
+        "        int i7 = (i - 7) & 15;",
+        "        int i2 = (i - 2) & 15;",
+        "        w[idx] = w[i16] + SIG0(w[i15]) + w[i7] + SIG1(w[i2]);",
+        f"        {cfg.round_macro}(a, b, c, d, e, f, g, h, w[idx], K[i]);",
+    ])
+    for round_num in sorted(checkpoints_after.keys()):
+        if round_num >= 16:
+            lines.append(f"        if (i == {round_num}) {{")
+            for cp_line in checkpoints_after[round_num]:
+                stripped = cp_line.strip()
+                if stripped:
+                    lines.append(f"            {stripped}")
+            lines.append("        }")
+    lines.append("    }")
+    return lines
+
+
 def header_comment(generator: str, description: str, cfg: WidthConfig) -> str:
     if cfg.width == 1:
         requires = f"{cfg.round_macro}, SIG0, SIG1, and K[] from {cfg.miner_comp}."
@@ -302,6 +340,47 @@ def emit_target_checkpoint_h7_h6_glsl(cfg: WidthConfig) -> List[str]:
         f"    {cfg.glsl_type} h7_tied = {z};",
         f"    if (all(greaterThan(d7, t0))) return {cfg.glsl_type}(0u);",
         f"    h7_tied = {cfg.glsl_type}(equal(d7, t0));",
+    ]
+
+
+def emit_target_checkpoint_h7_h6_glsl_loop(cfg: WidthConfig) -> List[str]:
+    """Checkpoint at round 60 inside compress loop; h7_tied must be declared before the loop."""
+    iv7 = glsl_const(0x5BE0CD19, cfg)
+    if cfg.width == 1:
+        return [
+            f"            uint d7 = bswap32(e + {iv7});",
+            "            uint t0 = bswap32(target_0_3);",
+            "            if (d7 > t0) return false;",
+            "            if (d7 == t0) h7_tied = 1u;",
+        ]
+    bswap_fn = f"bswap32_{cfg.file_suffix}"
+    return [
+        f"            {cfg.glsl_type} d7 = {bswap_fn}(e + {iv7});",
+        f"            {cfg.glsl_type} t0 = {cfg.glsl_type}(bswap32(target_0_3));",
+        f"            if (all(greaterThan(d7, t0))) return {cfg.glsl_type}(0u);",
+        f"            h7_tied = {cfg.glsl_type}(equal(d7, t0));",
+    ]
+
+
+def emit_target_checkpoint_h6_close_glsl_loop(cfg: WidthConfig) -> List[str]:
+    iv6 = glsl_const(0x1F83D9AB, cfg)
+    z = glsl_zero(cfg)
+    if cfg.width == 1:
+        return [
+            "            if (h7_tied != 0u) {",
+            f"                uint d6 = bswap32(e + {iv6});",
+            "                uint t1 = bswap32(target_4_7);",
+            "                if (d6 > t1) return false;",
+            "            }",
+        ]
+    bswap_fn = f"bswap32_{cfg.file_suffix}"
+    return [
+        f"            if (any(notEqual(h7_tied, {z}))) {{",
+        f"                {cfg.glsl_type} d6 = {bswap_fn}(e + {iv6});",
+        f"                {cfg.glsl_type} t1 = {cfg.glsl_type}(bswap32(target_4_7));",
+        f"                {cfg.glsl_type} fail6 = h7_tied & {cfg.glsl_type}(greaterThan(d6, t1));",
+        f"                if (all(notEqual(h7_tied, {z})) && all(notEqual(fail6, {z}))) return {cfg.glsl_type}(0u);",
+        "            }",
     ]
 
 

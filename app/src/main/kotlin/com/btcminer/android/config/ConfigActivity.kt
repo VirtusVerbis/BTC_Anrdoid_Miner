@@ -68,6 +68,9 @@ class ConfigActivity : AppCompatActivity() {
         binding.configGpuEnabled.setOnCheckedChangeListener { _, _ ->
             updateGpuControls()
         }
+        binding.configRadioGroupGpuSha.setOnCheckedChangeListener { _, _ ->
+            updateGpuControls()
+        }
         binding.configSliderGpuUtilization.addOnChangeListener(Slider.OnChangeListener { _, value, _ ->
             binding.configGpuUtilizationValue.text = formatIntensityLabel(value.toInt())
         })
@@ -129,6 +132,11 @@ class ConfigActivity : AppCompatActivity() {
         binding.configGpuLocalSizeXValue.isEnabled = vulkanAvailable && gpuOn
         binding.configSliderGpuHashesPerThread.isEnabled = vulkanAvailable && gpuOn
         binding.configGpuHashesPerThreadValue.isEnabled = vulkanAvailable && gpuOn
+        val compressStyleEnabled = vulkanAvailable && gpuOn && isUvecGpuMode(gpuSha256ModeForCheckedRadio())
+        binding.configRadioGroupGpuCompressStyle.isEnabled = compressStyleEnabled
+        binding.configRadioGpuCompressFull.isEnabled = compressStyleEnabled
+        binding.configRadioGpuCompressLoop.isEnabled = compressStyleEnabled
+        binding.configGpuCompressStyleSummary.isEnabled = compressStyleEnabled
         binding.configGpuVulkanUnavailable.visibility = if (vulkanAvailable) View.GONE else View.VISIBLE
 
         val maxLs = deviceMaxGpuLocalSizeX()
@@ -294,7 +302,21 @@ class ConfigActivity : AppCompatActivity() {
         applyCpuShaFlavorRadios()
         binding.configRadioGroupCpuSha.check(radioIdForFlavor(c.cpuSha256Flavor))
         binding.configRadioGroupGpuSha.check(radioIdForGpuSha256Mode(c.gpuSha256Mode))
+        binding.configRadioGroupGpuCompressStyle.check(radioIdForGpuCompressStyle(c.gpuCompressStyle))
         loadedConfig = c
+    }
+
+    private fun isUvecGpuMode(mode: GpuSha256Mode): Boolean =
+        mode == GpuSha256Mode.GPU_UVEC2_MIDSTATE || mode == GpuSha256Mode.GPU_UVEC4_MIDSTATE
+
+    private fun radioIdForGpuCompressStyle(style: GpuCompressStyle): Int = when (style) {
+        GpuCompressStyle.COMPACT_LOOP -> R.id.config_radio_gpu_compress_loop
+        GpuCompressStyle.FULL_UNROLL -> R.id.config_radio_gpu_compress_full
+    }
+
+    private fun gpuCompressStyleForCheckedRadio(): GpuCompressStyle = when (binding.configRadioGroupGpuCompressStyle.checkedRadioButtonId) {
+        R.id.config_radio_gpu_compress_loop -> GpuCompressStyle.COMPACT_LOOP
+        else -> GpuCompressStyle.FULL_UNROLL
     }
 
     private fun radioIdForFlavor(f: CpuSha256Flavor): Int = when (f) {
@@ -362,6 +384,7 @@ class ConfigActivity : AppCompatActivity() {
             else CpuShaCapabilities.coerceToSupported(requestedFlavor)
 
         val gpuSha256Mode = gpuSha256ModeForCheckedRadio()
+        val gpuCompressStyle = if (isUvecGpuMode(gpuSha256Mode)) gpuCompressStyleForCheckedRadio() else GpuCompressStyle.FULL_UNROLL
 
         val config = MiningConfig(
             stratumUrl = MiningConfig.sanitize(stratumUrlRaw, MiningConfig.MAX_STRATUM_URL_LEN),
@@ -414,6 +437,7 @@ class ConfigActivity : AppCompatActivity() {
             ),
             cpuSha256Flavor = cpuShaFlavor,
             gpuSha256Mode = gpuSha256Mode,
+            gpuCompressStyle = gpuCompressStyle,
         )
 
         if (config.bitcoinAddress.isNotBlank() && !BitcoinAddressValidator.isValidAddress(config.bitcoinAddress)) {

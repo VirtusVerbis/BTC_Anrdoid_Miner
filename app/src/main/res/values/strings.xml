@@ -148,6 +148,10 @@
     <string name="config_gpu_sha_midstate">GPU + Midstate</string>
     <string name="config_gpu_sha_uvec2_midstate">GPU + Midstate (uvec2)</string>
     <string name="config_gpu_sha_uvec4_midstate">GPU + Midstate (uvec4)</string>
+    <string name="config_gpu_compress_style_section">GPU compress style (uvec2/uvec4)</string>
+    <string name="config_gpu_compress_style_summary">Full unroll vs compact loop for occupancy tuning on SIMD GPU modes.</string>
+    <string name="config_gpu_compress_full_unroll">Full unroll (default)</string>
+    <string name="config_gpu_compress_compact_loop">Compact loop + spirv-opt</string>
 
     <!-- Mining service -->
     <string name="mining_notification_channel_name">Mining</string>

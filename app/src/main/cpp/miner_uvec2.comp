@@ -96,8 +96,16 @@ uvec2 bswap32_uvec2(uvec2 x) {
 
 #extension GL_GOOGLE_include_directive : require
 #include "sha256_compress_uvec2.inc"
+#ifndef GPU_COMPRESS_STYLE
+#define GPU_COMPRESS_STYLE 0
+#endif
+#if GPU_COMPRESS_STYLE == 0
 #include "sha256_compress_first_mid_uvec2.inc"
 #include "sha256_compress_second_uvec2.inc"
+#else
+#include "sha256_compress_first_mid_uvec2_loop.inc"
+#include "sha256_compress_second_uvec2_loop.inc"
+#endif
 
 void sha256_first_mid_2way(uint m0, uint m1, uint m2, uint m3, uint m4, uint m5, uint m6, uint m7,
     uint header64_67, uint header68_71, uint header72_75, uvec2 nonceW_sha_be,

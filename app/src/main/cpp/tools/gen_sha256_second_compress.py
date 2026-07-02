@@ -15,14 +15,19 @@ from sha256_compress_codegen import (
     MASK32,
     WSlot,
     WidthConfig,
+    WIDTH_UVEC2,
+    WIDTH_UVEC4,
     c_const,
     c_zero,
     emit_compress_body,
     emit_compress_body_c,
+    emit_compress_loop_body,
     emit_target_checkpoint_h6_close_c,
     emit_target_checkpoint_h6_close_glsl,
     emit_target_checkpoint_h7_h6_c,
     emit_target_checkpoint_h7_h6_glsl,
+    emit_target_checkpoint_h7_h6_glsl_loop,
+    emit_target_checkpoint_h6_close_glsl_loop,
     emit_target_final_compare_c,
     emit_target_final_compare_glsl,
     glsl_const,
@@ -137,14 +142,19 @@ def simulate_slots(h_words: List[int]) -> List[int]:
     return [(SHA256_IV[i] + x) & MASK32 for i, x in enumerate([a, b, c_, d, e, f, g, h])]
 
 
-def generate_inc_target(cfg: WidthConfig) -> str:
+def generate_inc_target(cfg: WidthConfig, *, use_loop: bool = False) -> str:
     t = cfg.glsl_type
     z = glsl_zero(cfg)
     ret_type = "bool" if cfg.width == 1 else cfg.glsl_type
+    desc = (
+        "Bitcoin double-SHA256 outer step with progressive pool-target rejection (compact loop)."
+        if use_loop
+        else "Bitcoin double-SHA256 outer step with progressive pool-target rejection."
+    )
     lines: List[str] = [
         header_comment(
             "gen_sha256_second_compress.py",
-            "Bitcoin double-SHA256 outer step with progressive pool-target rejection.",
+            desc,
             cfg,
         ),
         "",
@@ -157,16 +167,28 @@ def generate_inc_target(cfg: WidthConfig) -> str:
         f"    w[12] = {z}; w[13] = {z}; w[14] = {z}; w[15] = {glsl_const(0x00000100, cfg)};",
         f"    {t} a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];",
     ]
-    lines.extend(
-        emit_compress_body(
-            initial_slots(),
-            cfg,
-            checkpoints_after={
-                60: emit_target_checkpoint_h7_h6_glsl(cfg),
-                61: emit_target_checkpoint_h6_close_glsl(cfg),
-            },
+    checkpoints = {
+        60: emit_target_checkpoint_h7_h6_glsl(cfg),
+        61: emit_target_checkpoint_h6_close_glsl(cfg),
+    }
+    loop_checkpoints = {
+        60: emit_target_checkpoint_h7_h6_glsl_loop(cfg),
+        61: emit_target_checkpoint_h6_close_glsl_loop(cfg),
+    }
+    if use_loop:
+        if cfg.width == 1:
+            lines.append("    uint h7_tied = 0u;")
+        else:
+            lines.append(f"    {t} h7_tied = {z};")
+        lines.extend(emit_compress_loop_body(cfg, checkpoints_after=loop_checkpoints))
+    else:
+        lines.extend(
+            emit_compress_body(
+                initial_slots(),
+                cfg,
+                checkpoints_after=checkpoints,
+            )
         )
-    )
     lines.extend([
         "    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;",
     ])
@@ -210,13 +232,18 @@ def generate_cpu_inc_target() -> str:
     return "\n".join(lines)
 
 
-def generate_inc(cfg: WidthConfig) -> str:
+def generate_inc(cfg: WidthConfig, *, use_loop: bool = False) -> str:
     t = cfg.glsl_type
     z = glsl_zero(cfg)
+    desc = (
+        "Bitcoin double-SHA256 outer step: single block, fixed padding (256-bit length, compact loop)."
+        if use_loop
+        else "Bitcoin double-SHA256 outer step: single block, fixed padding (256-bit length)."
+    )
     lines: List[str] = [
         header_comment(
             "gen_sha256_second_compress.py",
-            "Bitcoin double-SHA256 outer step: single block, fixed padding (256-bit length).",
+            desc,
             cfg,
         ),
         "",
@@ -229,7 +256,10 @@ def generate_inc(cfg: WidthConfig) -> str:
         f"    w[12] = {z}; w[13] = {z}; w[14] = {z}; w[15] = {glsl_const(0x00000100, cfg)};",
         f"    {t} a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];",
     ]
-    lines.extend(emit_compress_body(initial_slots(), cfg))
+    if use_loop:
+        lines.extend(emit_compress_loop_body(cfg))
+    else:
+        lines.extend(emit_compress_body(initial_slots(), cfg))
     lines.extend([
         "    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;",
         "}",
@@ -238,8 +268,12 @@ def generate_inc(cfg: WidthConfig) -> str:
     return "\n".join(lines)
 
 
-def out_path(cfg: WidthConfig) -> Path:
-    return OUT_DIR / f"sha256_compress_second_{cfg.file_suffix}.inc"
+def out_path(cfg: WidthConfig, *, loop: bool = False) -> Path:
+    suffix = f"{cfg.file_suffix}_loop" if loop else cfg.file_suffix
+    return OUT_DIR / f"sha256_compress_second_{suffix}.inc"
+
+
+LOOP_WIDTHS = (WIDTH_UVEC2, WIDTH_UVEC4)
 
 
 def cpu_out_path() -> Path:
@@ -327,6 +361,11 @@ def main() -> int:
     for cfg in ALL_WIDTHS:
         content = generate_inc(cfg) + "\n" + generate_inc_target(cfg)
         path = out_path(cfg)
+        path.write_text(content, encoding="utf-8", newline="\n")
+        print(f"Wrote {path} ({len(content)} bytes)")
+    for cfg in LOOP_WIDTHS:
+        content = generate_inc(cfg, use_loop=True) + "\n" + generate_inc_target(cfg, use_loop=True)
+        path = out_path(cfg, loop=True)
         path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Wrote {path} ({len(content)} bytes)")
     cpu_content = generate_cpu_inc() + "\n" + generate_cpu_inc_target()

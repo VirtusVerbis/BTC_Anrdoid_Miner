@@ -74,6 +74,9 @@ class MiningConfigRepository(context: Context) {
             gpuSha256Mode = GpuSha256Mode.fromOrdinal(
                 storage.getInt(SecureConfigStorage.KEY_GPU_SHA256_MODE, GpuSha256Mode.GPU_FULL.ordinal)
             ),
+            gpuCompressStyle = GpuCompressStyle.fromOrdinal(
+                storage.getInt(SecureConfigStorage.KEY_GPU_COMPRESS_STYLE, GpuCompressStyle.FULL_UNROLL.ordinal)
+            ),
         )
     }
 
@@ -185,6 +188,7 @@ class MiningConfigRepository(context: Context) {
                 config.cpuSha256Flavor.ordinal
             )
             edit.putInt(SecureConfigStorage.KEY_GPU_SHA256_MODE, config.gpuSha256Mode.ordinal)
+            edit.putInt(SecureConfigStorage.KEY_GPU_COMPRESS_STYLE, config.gpuCompressStyle.ordinal)
         }
     }
 }
