@@ -117,10 +117,11 @@ def sig1_glsl(slot: WSlot, idx: int, cfg: WidthConfig) -> str:
     return f"SIG1(w[{idx}])"
 
 
-def emit_compress_body(slots: List[WSlot], cfg: WidthConfig) -> List[str]:
+def emit_compress_body(slots: List[WSlot], cfg: WidthConfig, round_end: int = 64, round_start: int = 0, checkpoints_after: dict | None = None) -> List[str]:
     lines: List[str] = []
     working = list(slots)
-    for i in range(64):
+    checkpoints_after = checkpoints_after or {}
+    for i in range(round_start, round_end):
         if i < 16:
             lines.append(
                 f"    {cfg.round_macro}(a, b, c, d, e, f, g, h, w[{i}], K[{i}]);"
@@ -138,6 +139,8 @@ def emit_compress_body(slots: List[WSlot], cfg: WidthConfig) -> List[str]:
                 f"    {cfg.round_macro}(a, b, c, d, e, f, g, h, w[{idx}], K[{i}]);"
             )
             working[idx] = WSlot.var()
+        if i in checkpoints_after:
+            lines.extend(checkpoints_after[i])
     return lines
 
 
@@ -181,10 +184,11 @@ def sig1_c(slot: WSlot, idx: int) -> str:
     return f"SIG1(w[{idx}])"
 
 
-def emit_compress_body_c(slots: List[WSlot]) -> List[str]:
+def emit_compress_body_c(slots: List[WSlot], round_end: int = 64, round_start: int = 0, checkpoints_after: dict | None = None) -> List[str]:
     lines: List[str] = []
     working = list(slots)
-    for i in range(64):
+    checkpoints_after = checkpoints_after or {}
+    for i in range(round_start, round_end):
         if i < 16:
             lines.append(f"    SHA256_ROUND(a, b, c, d, e, f, g, h, w[{i}], K[{i}]);")
         else:
@@ -198,6 +202,8 @@ def emit_compress_body_c(slots: List[WSlot]) -> List[str]:
             lines.append(f"    {update}")
             lines.append(f"    SHA256_ROUND(a, b, c, d, e, f, g, h, w[{idx}], K[{i}]);")
             working[idx] = WSlot.var()
+        if i in checkpoints_after:
+            lines.extend(checkpoints_after[i])
     return lines
 
 
@@ -207,3 +213,154 @@ def header_comment_c(generator: str, description: str) -> str:
         f"// {description}\n"
         f"// Requires SHA256_ROUND, SIG0, SIG1, and K[] from sha256_btc_fast.c."
     )
+
+
+def _bswap32_c(expr: str) -> str:
+    e = f"({expr})"
+    return (
+        f"(({e} >> 24) | (({e} >> 8) & 0xffu) << 16 | "
+        f"(({e} >> 16) & 0xffu) << 8 | ({e} & 0xffu) << 24)"
+    )
+
+
+def _target_be_word_c(byte_off: int) -> str:
+    b0, b1, b2, b3 = byte_off, byte_off + 1, byte_off + 2, byte_off + 3
+    return (
+        f"(((uint32_t)target[{b0}] << 24) | ((uint32_t)target[{b1}] << 16) | "
+        f"((uint32_t)target[{b2}] << 8) | (uint32_t)target[{b3}])"
+    )
+
+
+def emit_target_checkpoint_h7_h6_c() -> List[str]:
+    return [
+        f"    uint32_t d7 = {_bswap32_c('e + 0x5be0cd19u')};",
+        f"    uint32_t t0 = {_target_be_word_c(0)};",
+        "    int h7_tied = 0;",
+        "    if (d7 > t0) return 0;",
+        "    if (d7 == t0) h7_tied = 1;",
+    ]
+
+
+def emit_target_checkpoint_h6_close_c() -> List[str]:
+    return [
+        "    if (h7_tied) {",
+        f"        uint32_t d6 = {_bswap32_c('e + 0x1f83d9abu')};",
+        f"        uint32_t t1 = {_target_be_word_c(4)};",
+        "        if (d6 > t1) return 0;",
+        "    }",
+    ]
+
+
+def emit_target_final_compare_c() -> List[str]:
+    lines = [
+        "    {",
+        "        uint32_t o0 = s[0], o1 = s[1], o2 = s[2], o3 = s[3],",
+        "                 o4 = s[4], o5 = s[5], o6 = s[6], o7 = s[7];",
+    ]
+    for i in range(8):
+        d = _bswap32_c(f"o{7 - i}")
+        t = _target_be_word_c(i * 4)
+        if i < 7:
+            lines.extend([
+                f"        {{ uint32_t d = {d}; uint32_t t = {t}; if (d != t) return d < t; }}",
+            ])
+        else:
+            lines.extend([
+                f"        {{ uint32_t d = {d}; uint32_t t = {t}; return d <= t; }}",
+            ])
+    lines.append("    }")
+    return lines
+
+
+def _bswap32_glsl(expr: str, cfg: WidthConfig) -> str:
+    if cfg.width == 1:
+        return f"bswap32({expr})"
+    return f"bswap32_{cfg.file_suffix}({expr})"
+
+
+def _target_ubo_word_glsl(idx: int) -> str:
+    names = ["target_0_3", "target_4_7", "target_8_11", "target_12_15",
+             "target_16_19", "target_20_23", "target_24_27", "target_28_31"]
+    return names[idx]
+
+
+def emit_target_checkpoint_h7_h6_glsl(cfg: WidthConfig) -> List[str]:
+    iv7 = glsl_const(0x5BE0CD19, cfg)
+    if cfg.width == 1:
+        return [
+            f"    uint d7 = bswap32(e + {iv7});",
+            "    uint t0 = bswap32(target_0_3);",
+            "    uint h7_tied = 0u;",
+            "    if (d7 > t0) return false;",
+            "    if (d7 == t0) h7_tied = 1u;",
+        ]
+    bswap_fn = f"bswap32_{cfg.file_suffix}"
+    z = glsl_zero(cfg)
+    return [
+        f"    {cfg.glsl_type} d7 = {bswap_fn}(e + {iv7});",
+        f"    {cfg.glsl_type} t0 = {cfg.glsl_type}(bswap32(target_0_3));",
+        f"    {cfg.glsl_type} h7_tied = {z};",
+        f"    if (all(greaterThan(d7, t0))) return {cfg.glsl_type}(0u);",
+        f"    h7_tied = {cfg.glsl_type}(equal(d7, t0));",
+    ]
+
+
+def emit_target_checkpoint_h6_close_glsl(cfg: WidthConfig) -> List[str]:
+    iv6 = glsl_const(0x1F83D9AB, cfg)
+    z = glsl_zero(cfg)
+    if cfg.width == 1:
+        return [
+            "    if (h7_tied != 0u) {",
+            f"        uint d6 = bswap32(e + {iv6});",
+            "        uint t1 = bswap32(target_4_7);",
+            "        if (d6 > t1) return false;",
+            "    }",
+        ]
+    bswap_fn = f"bswap32_{cfg.file_suffix}"
+    return [
+        f"    if (any(notEqual(h7_tied, {z}))) {{",
+        f"        {cfg.glsl_type} d6 = {bswap_fn}(e + {iv6});",
+        f"        {cfg.glsl_type} t1 = {cfg.glsl_type}(bswap32(target_4_7));",
+        f"        {cfg.glsl_type} fail6 = h7_tied & {cfg.glsl_type}(greaterThan(d6, t1));",
+        f"        if (all(notEqual(h7_tied, {z})) && all(notEqual(fail6, {z}))) return {cfg.glsl_type}(0u);",
+        "    }",
+    ]
+
+
+def emit_target_final_compare_glsl(cfg: WidthConfig) -> List[str]:
+    if cfg.width == 1:
+        lines = []
+        for i in range(8):
+            d = f"bswap32(s[{7 - i}])"
+            targ = f"bswap32({_target_ubo_word_glsl(i)})"
+            if i < 7:
+                lines.append(f"    {{ uint d = {d}; uint tg = {targ}; if (d != tg) return d < tg; }}")
+            else:
+                lines.append(f"    {{ uint d = {d}; uint tg = {targ}; return d <= tg; }}")
+        return lines
+    bswap_fn = f"bswap32_{cfg.file_suffix}"
+    t = cfg.glsl_type
+    w = cfg.width
+    lines = [
+        f"    {t} lane_ok = {t}(1u);",
+        f"    {t} lane_done = {t}(0u);",
+    ]
+    for i in range(8):
+        d = f"{bswap_fn}(s[{7 - i}])"
+        targ = f"{t}(bswap32({_target_ubo_word_glsl(i)}))"
+        if i < 7:
+            lines.append(
+                f"    {{ {t} d = {d}; {t} tg = {targ}; "
+                f"{t} lane_active = {t}(equal(lane_done, {t}(0u))) & {t}(notEqual(lane_ok, {t}(0u))); "
+                f"bvec{w} lt = lessThan(d, tg); "
+                f"bvec{w} gt = greaterThan(d, tg); "
+                f"lane_done = lane_done | ({t}(lt) & lane_active); "
+                f"lane_ok = lane_ok & ({t}(not(gt)) | lane_done); "
+                f"if (all(equal(lane_ok, {t}(0u)))) return lane_ok; }}"
+            )
+        else:
+            lines.append(
+                f"    {{ {t} d = {d}; {t} tg = {targ}; "
+                f"lane_ok = lane_ok & ({t}(lessThanEqual(d, tg)) | lane_done); return lane_ok; }}"
+            )
+    return lines

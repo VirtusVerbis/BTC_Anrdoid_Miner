@@ -74,6 +74,18 @@ void sha256_btc_second_from_digest(const uint8_t d32[32], uint8_t out32[32]) {
     state_to_be_bytes(s, out32);
 }
 
+int sha256_btc_second_from_digest_target(const uint8_t d32[32], const uint8_t *target, uint8_t out32[32]) {
+    uint32_t h[8];
+    for (int i = 0; i < 8; i++)
+        h[i] = be_word(d32 + i * 4);
+    uint32_t s[8];
+    sha256_initial_state(s);
+    int hit = sha256_compress_second_16w_cpu_target(
+        h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], s, target);
+    state_to_be_bytes(s, out32);
+    return hit;
+}
+
 #if defined(SHA256_BTC_FAST_TEST)
 void sha256_btc_test_second(const uint32_t h[8], uint32_t out[8]) {
     sha256_initial_state(out);

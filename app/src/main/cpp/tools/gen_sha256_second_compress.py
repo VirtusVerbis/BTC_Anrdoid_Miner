@@ -19,6 +19,12 @@ from sha256_compress_codegen import (
     c_zero,
     emit_compress_body,
     emit_compress_body_c,
+    emit_target_checkpoint_h6_close_c,
+    emit_target_checkpoint_h6_close_glsl,
+    emit_target_checkpoint_h7_h6_c,
+    emit_target_checkpoint_h7_h6_glsl,
+    emit_target_final_compare_c,
+    emit_target_final_compare_glsl,
     glsl_const,
     glsl_zero,
     header_comment,
@@ -131,6 +137,79 @@ def simulate_slots(h_words: List[int]) -> List[int]:
     return [(SHA256_IV[i] + x) & MASK32 for i, x in enumerate([a, b, c_, d, e, f, g, h])]
 
 
+def generate_inc_target(cfg: WidthConfig) -> str:
+    t = cfg.glsl_type
+    z = glsl_zero(cfg)
+    ret_type = "bool" if cfg.width == 1 else cfg.glsl_type
+    lines: List[str] = [
+        header_comment(
+            "gen_sha256_second_compress.py",
+            "Bitcoin double-SHA256 outer step with progressive pool-target rejection.",
+            cfg,
+        ),
+        "",
+        f"{ret_type} sha256_compress_second_16w{cfg.fn_suffix}_target(",
+        f"    {t} h0, {t} h1, {t} h2, {t} h3, {t} h4, {t} h5, {t} h6, {t} h7,",
+        f"    inout {t} s[8]) {{",
+        f"    {t} w[16];",
+        "    w[0] = h0; w[1] = h1; w[2] = h2; w[3] = h3; w[4] = h4; w[5] = h5; w[6] = h6; w[7] = h7;",
+        f"    w[8] = {glsl_const(0x80000000, cfg)}; w[9] = {z}; w[10] = {z}; w[11] = {z};",
+        f"    w[12] = {z}; w[13] = {z}; w[14] = {z}; w[15] = {glsl_const(0x00000100, cfg)};",
+        f"    {t} a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];",
+    ]
+    lines.extend(
+        emit_compress_body(
+            initial_slots(),
+            cfg,
+            checkpoints_after={
+                60: emit_target_checkpoint_h7_h6_glsl(cfg),
+                61: emit_target_checkpoint_h6_close_glsl(cfg),
+            },
+        )
+    )
+    lines.extend([
+        "    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;",
+    ])
+    lines.extend(emit_target_final_compare_glsl(cfg))
+    lines.extend(["}", ""])
+    return "\n".join(lines)
+
+
+def generate_cpu_inc_target() -> str:
+    z = c_zero()
+    lines: List[str] = [
+        header_comment_c(
+            "gen_sha256_second_compress.py",
+            "Bitcoin double-SHA256 outer step with progressive pool-target rejection.",
+        ),
+        "",
+        "static int sha256_compress_second_16w_cpu_target(",
+        "    uint32_t h0, uint32_t h1, uint32_t h2, uint32_t h3,",
+        "    uint32_t h4, uint32_t h5, uint32_t h6, uint32_t h7,",
+        "    uint32_t s[8], const uint8_t *target) {",
+        "    uint32_t w[16];",
+        "    w[0] = h0; w[1] = h1; w[2] = h2; w[3] = h3; w[4] = h4; w[5] = h5; w[6] = h6; w[7] = h7;",
+        f"    w[8] = {c_const(0x80000000)}; w[9] = {z}; w[10] = {z}; w[11] = {z};",
+        f"    w[12] = {z}; w[13] = {z}; w[14] = {z}; w[15] = {c_const(0x00000100)};",
+        "    uint32_t a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];",
+    ]
+    lines.extend(
+        emit_compress_body_c(
+            initial_slots(),
+            checkpoints_after={
+                60: emit_target_checkpoint_h7_h6_c(),
+                61: emit_target_checkpoint_h6_close_c(),
+            },
+        )
+    )
+    lines.extend([
+        "    s[0] += a; s[1] += b; s[2] += c; s[3] += d; s[4] += e; s[5] += f; s[6] += g; s[7] += h;",
+    ])
+    lines.extend(emit_target_final_compare_c())
+    lines.extend(["}", ""])
+    return "\n".join(lines)
+
+
 def generate_inc(cfg: WidthConfig) -> str:
     t = cfg.glsl_type
     z = glsl_zero(cfg)
@@ -238,15 +317,29 @@ def run_selftests() -> None:
 
 def main() -> int:
     run_selftests()
+    try:
+        import sha256_target_checkpoints  # noqa: WPS433
+
+        if sha256_target_checkpoints.main() != 0:
+            return 1
+    except ImportError:
+        pass
     for cfg in ALL_WIDTHS:
-        content = generate_inc(cfg)
+        content = generate_inc(cfg) + "\n" + generate_inc_target(cfg)
         path = out_path(cfg)
         path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Wrote {path} ({len(content)} bytes)")
-    cpu_content = generate_cpu_inc()
+    cpu_content = generate_cpu_inc() + "\n" + generate_cpu_inc_target()
     cpu_path = cpu_out_path()
     cpu_path.write_text(cpu_content, encoding="utf-8", newline="\n")
     print(f"Wrote {cpu_path} ({len(cpu_content)} bytes)")
+    try:
+        import test_target_rejection  # noqa: WPS433
+
+        if test_target_rejection.main() != 0:
+            return 1
+    except ImportError:
+        pass
     try:
         import test_cpu_compress  # noqa: WPS433
 

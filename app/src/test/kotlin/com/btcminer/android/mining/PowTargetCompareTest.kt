@@ -141,4 +141,19 @@ class PowTargetCompareTest {
             assertBothAgree(hash, target)
         }
     }
+
+    /** Progressive CPU/GPU second-compress rejection is validated in native Python tests (test_target_rejection.py). */
+    @Test
+    fun diff1TargetWordOrderMatchesReference() {
+        val target = ByteArray(32)
+        target[0] = 0
+        target[1] = 0
+        target[2] = 0
+        target[3] = 0
+        target[4] = 0xFF.toByte()
+        target[5] = 0xFF.toByte()
+        val hash = ByteArray(32) { 0xFF.toByte() }
+        assertFalse(referenceMeetsTarget(hash, target))
+        assertBothAgree(hash, target)
+    }
 }

@@ -126,8 +126,7 @@ static int scan_scalar_mid(const uint8_t *header76, uint32_t start, uint32_t end
             return -3;
         }
         sha256_btc_first_mid_from_header(mid, header76, nonce, d32);
-        sha256_btc_second_from_digest(d32, hash);
-        if (hash_meets_target(hash, target)) return (int)nonce;
+        if (sha256_btc_second_from_digest_target(d32, target, hash)) return (int)nonce;
     }
     return -1;
 }
@@ -173,8 +172,7 @@ static int scan_arm_mid(const uint8_t *header76, uint32_t start, uint32_t end, c
             return -3;
         }
         first_hash_mid(mid, header76, nonce, d32, arm_compress_fn);
-        sha256_btc_second_from_digest(d32, hash);
-        if (hash_meets_target(hash, target)) return (int)nonce;
+        if (sha256_btc_second_from_digest_target(d32, target, hash)) return (int)nonce;
     }
     return -1;
 }
@@ -225,8 +223,7 @@ static int scan_neon4_mid(const uint8_t *header76, uint32_t start, uint32_t end,
             n += 4;
         } else {
             sha256_btc_first_mid_from_header(mid, header76, n, d32);
-            sha256_btc_second_from_digest(d32, hash);
-            if (hash_meets_target(hash, target)) return (int)n;
+            if (sha256_btc_second_from_digest_target(d32, target, hash)) return (int)n;
             n++;
         }
     }
