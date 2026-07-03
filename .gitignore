@@ -16,6 +16,10 @@ gen/
 out/
 release/
 
+# Python
+__pycache__/
+*.pyc
+
 # Gradle
 .gradle/
 build/
