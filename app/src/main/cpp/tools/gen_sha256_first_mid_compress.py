@@ -318,6 +318,13 @@ def main() -> int:
             return 1
     except ImportError:
         pass
+    try:
+        import test_nonce_word_increment  # noqa: WPS433
+
+        if test_nonce_word_increment.main() != 0:
+            return 1
+    except ImportError:
+        pass
     return 0
 
 

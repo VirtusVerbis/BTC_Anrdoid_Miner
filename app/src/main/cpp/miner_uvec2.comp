@@ -95,6 +95,7 @@ uvec2 bswap32_uvec2(uvec2 x) {
 }
 
 #extension GL_GOOGLE_include_directive : require
+#include "mining_nonce.inc"
 #include "sha256_compress_uvec2.inc"
 #include "sha256_compress_first_mid_uvec2.inc"
 #include "sha256_compress_second_uvec2.inc"
@@ -138,10 +139,6 @@ uvec2 sha256_32bytes_2way_target(uvec2 h0, uvec2 h1, uvec2 h2, uvec2 h3, uvec2 h
     return hit;
 }
 
-uint nonce_sha_word(uint nonce) {
-    return ((nonce & 0xffu) << 24) | (((nonce >> 8) & 0xffu) << 16) | (((nonce >> 16) & 0xffu) << 8) | ((nonce >> 24) & 0xffu);
-}
-
 bool hash_meets_target(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uint h6, uint h7) {
     uint d7 = bswap32(h7);
     uint t0 = bswap32(target_0_3);
@@ -169,28 +166,22 @@ bool hash_meets_target(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uin
     return d0 <= t7;
 }
 
-uvec2 nonce_words_uvec2(uint n0, uint n1) {
-    return uvec2(nonce_sha_word(n0), nonce_sha_word(n1));
-}
-
-void hash_batch_2way_digest(uint n0, uint n1,
+void hash_batch_2way_digest(uvec2 nword,
     out uvec2 o0, out uvec2 o1, out uvec2 o2, out uvec2 o3,
     out uvec2 o4, out uvec2 o5, out uvec2 o6, out uvec2 o7,
     out uvec2 f0, out uvec2 f1, out uvec2 f2, out uvec2 f3,
     out uvec2 f4, out uvec2 f5, out uvec2 f6, out uvec2 f7) {
-    uvec2 nword = nonce_words_uvec2(n0, n1);
     sha256_first_mid_2way(mid_0_3, mid_4_7, mid_8_11, mid_12_15, mid_16_19, mid_20_23, mid_24_27, mid_28_31,
         header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
     sha256_32bytes_2way(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
 }
 
-void hash_batch_2way(uint n0, uint n1,
+void hash_batch_2way(uvec2 nword,
     out uvec2 o0, out uvec2 o1, out uvec2 o2, out uvec2 o3,
     out uvec2 o4, out uvec2 o5, out uvec2 o6, out uvec2 o7,
     out uvec2 f0, out uvec2 f1, out uvec2 f2, out uvec2 f3,
     out uvec2 f4, out uvec2 f5, out uvec2 f6, out uvec2 f7,
     out uvec2 laneHit) {
-    uvec2 nword = nonce_words_uvec2(n0, n1);
     sha256_first_mid_2way(mid_0_3, mid_4_7, mid_8_11, mid_12_15, mid_16_19, mid_20_23, mid_24_27, mid_28_31,
         header_64_67, header_68_71, header_72_75, nword, o0, o1, o2, o3, o4, o5, o6, o7);
     laneHit = sha256_32bytes_2way_target(o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
@@ -210,9 +201,10 @@ void main() {
         if (gl_GlobalInvocationID.x != 0u)
             return;
         uint nonce = nonceStart;
+        uvec2 nword = nonce_words_uvec2_from_base(nonce_sha_word(nonce));
         uvec2 o0, o1, o2, o3, o4, o5, o6, o7;
         uvec2 f0, f1, f2, f3, f4, f5, f6, f7;
-        hash_batch_2way_digest(nonce, nonce + 1u,
+        hash_batch_2way_digest(nword,
             o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7);
         resultFound = 2u;
         winningNonce = 0xFFFFFFFFu;
@@ -228,17 +220,24 @@ void main() {
     if (laneBase > nonceEnd)
         return;
 
+    uint n0 = laneBase;
+    uint nword0 = nonce_sha_word(n0);
     for (uint i = 0u; i < hashesPerThread; i++) {
-        uint n0 = laneBase + i * 2u;
         if (n0 > nonceEnd)
-            continue;
+            break;
         uint n1 = n0 + 1u;
+        uvec2 nword = nonce_words_uvec2_from_base(nword0);
 
         uvec2 o0, o1, o2, o3, o4, o5, o6, o7;
         uvec2 f0, f1, f2, f3, f4, f5, f6, f7, laneHit;
-        hash_batch_2way(n0, n1, o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7, laneHit);
+        hash_batch_2way(nword, o0, o1, o2, o3, o4, o5, o6, o7, f0, f1, f2, f3, f4, f5, f6, f7, laneHit);
 
         check_lane_hit(n0, laneHit, 0u);
         check_lane_hit(n1, laneHit, 1u);
+
+        n0 += 2u;
+        if (i + 1u < hashesPerThread && n0 <= nonceEnd) {
+            nword0 = increment_nonce_sha_word(increment_nonce_sha_word(nword0));
+        }
     }
 }

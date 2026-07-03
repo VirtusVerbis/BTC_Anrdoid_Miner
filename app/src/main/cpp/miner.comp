@@ -84,6 +84,7 @@ const uint K[64] = uint[64](
 #define EP1(x)  (ROR6(x) ^ ROR11(x) ^ ROR25(x))
 
 #extension GL_GOOGLE_include_directive : require
+#include "mining_nonce.inc"
 #include "sha256_compress_scalar.inc"
 #include "sha256_compress_first_mid_scalar.inc"
 
@@ -159,12 +160,6 @@ bool sha256_32bytes_target(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5,
     return hit;
 }
 
-/* Last 32-bit word of the 80-byte Bitcoin header: bytes 76-79 are little-endian nonce on the wire;
- * SHA-256 schedules big-endian words, so word = bswap32(nonce) (e.g. nonce 1 -> 0x01000000). */
-uint nonce_sha_word(uint nonce) {
-    return ((nonce & 0xffu) << 24) | (((nonce >> 8) & 0xffu) << 16) | (((nonce >> 16) & 0xffu) << 8) | ((nonce >> 24) & 0xffu);
-}
-
 /* memcmp(reverse(digest_bytes), target_bytes) <= 0; digest words are SHA big-endian per word; target words from UBO are LE per word (memcpy). */
 bool hash_meets_target(uint h0, uint h1, uint h2, uint h3, uint h4, uint h5, uint h6, uint h7) {
     uint d7 = bswap32(h7);
@@ -226,12 +221,11 @@ void main() {
     if (base > nonceEnd)
         return;
 
+    uint nonce = base;
+    uint nword = nonce_sha_word(nonce);
     for (uint i = 0u; i < hashesPerThread; i++) {
-        uint nonce = base + i;
         if (nonce > nonceEnd)
-            continue;
-
-        uint nword = nonce_sha_word(nonce);
+            break;
 
         uint o0, o1, o2, o3, o4, o5, o6, o7;
         if (gpu_use_midstate != 0u) {
@@ -250,5 +244,9 @@ void main() {
             atomicMax(resultFound, 1u);
             atomicMin(winningNonce, nonce);
         }
+
+        nonce++;
+        if (i + 1u < hashesPerThread && nonce <= nonceEnd)
+            nword = increment_nonce_sha_word(nword);
     }
 }
