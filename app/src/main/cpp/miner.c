@@ -104,6 +104,31 @@ Java_com_btcminer_android_mining_NativeMiner_nativeSelfTestCpuSha256Flavor(JNIEn
     return cpu_sha_selftest_flavor((int)flavor) ? JNI_TRUE : JNI_FALSE;
 }
 
+/* Parameter order must match Kotlin [NativeMiner.cpuJobSessionBegin]. */
+JNIEXPORT void JNICALL
+Java_com_btcminer_android_mining_NativeMiner_cpuJobSessionBegin(JNIEnv *env, jclass clazz, jbyteArray header76Java,
+                                                                jbyteArray targetJava, jint flavor) {
+    (void)clazz;
+    if (!header76Java || !targetJava ||
+        (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
+        (*env)->GetArrayLength(env, targetJava) != HASH_SIZE ||
+        flavor < 0 || flavor > 5) {
+        return;
+    }
+    uint8_t header76[HEADER_PREFIX_SIZE];
+    uint8_t target[HASH_SIZE];
+    (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
+    (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
+    cpu_job_session_begin(header76, target, (int)flavor);
+}
+
+JNIEXPORT void JNICALL
+Java_com_btcminer_android_mining_NativeMiner_cpuJobSessionEnd(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    cpu_job_session_end();
+}
+
 /* Parameter order must match Kotlin [NativeMiner.nativeScanNoncesInto] (out is last). */
 JNIEXPORT void JNICALL
 Java_com_btcminer_android_mining_NativeMiner_nativeScanNoncesInto(JNIEnv *env, jclass clazz, jbyteArray header76Java,
@@ -116,13 +141,29 @@ Java_com_btcminer_android_mining_NativeMiner_nativeScanNoncesInto(JNIEnv *env, j
     jlong *out = (*env)->GetLongArrayElements(env, outJava, NULL);
     if (!out)
         return;
-    if (!header76Java || !targetJava ||
-        (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
-        (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
-        out[0] = (jlong)CPU_JNI_STATUS_JNI_ARG_ERROR;
-        out[1] = 0;
-        (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
-        return;
+    const int sessionActive = cpu_job_session_active();
+    if (!sessionActive) {
+        if (!header76Java || !targetJava ||
+            (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
+            (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
+            out[0] = (jlong)CPU_JNI_STATUS_JNI_ARG_ERROR;
+            out[1] = 0;
+            (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+            return;
+        }
+    } else {
+        if (header76Java && (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE) {
+            out[0] = (jlong)CPU_JNI_STATUS_JNI_ARG_ERROR;
+            out[1] = 0;
+            (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+            return;
+        }
+        if (targetJava && (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
+            out[0] = (jlong)CPU_JNI_STATUS_JNI_ARG_ERROR;
+            out[1] = 0;
+            (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+            return;
+        }
     }
     if (flavor < 0 || flavor > 5) {
         out[0] = (jlong)CPU_JNI_STATUS_FLAVOR_ERROR;
@@ -130,15 +171,29 @@ Java_com_btcminer_android_mining_NativeMiner_nativeScanNoncesInto(JNIEnv *env, j
         (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
         return;
     }
+    if (sessionActive && flavor != cpu_job_session_flavor()) {
+        out[0] = (jlong)CPU_JNI_STATUS_FLAVOR_ERROR;
+        out[1] = 0;
+        (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+        return;
+    }
+
     uint8_t header76[HEADER_PREFIX_SIZE];
     uint8_t target[HASH_SIZE];
-    (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
-    (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
+    if (!sessionActive) {
+        (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
+        (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
+    }
 
     uint32_t start = (uint32_t)nonceStart;
     uint32_t end = (uint32_t)nonceEnd;
     atomic_store_explicit(&g_cpu_interrupt_requested, 0, memory_order_relaxed);
-    int ret = scan_nonces_dispatch((int)flavor, header76, start, end, target);
+    int ret;
+    if (sessionActive) {
+        ret = scan_nonces_dispatch_session(start, end);
+    } else {
+        ret = scan_nonces_dispatch((int)flavor, header76, start, end, target);
+    }
     if (ret >= 0) {
         out[0] = (jlong)CPU_JNI_STATUS_HIT;
         out[1] = (jlong)(uint32_t)ret;

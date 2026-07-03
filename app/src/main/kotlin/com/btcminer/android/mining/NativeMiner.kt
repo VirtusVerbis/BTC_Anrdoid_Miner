@@ -76,8 +76,23 @@ object NativeMiner {
     external fun gpuShaVulkanSelftest(gpuSha256Mode: Int): Boolean
 
     /**
+     * Begin a CPU job session for one mining round. Caches header/target/midstate in native.
+     * While active, [nativeScanNoncesInto] skips header/target JNI copies and reuses cached midstate.
+     * End with [cpuJobSessionEnd] when the round completes.
+     */
+    external fun cpuJobSessionBegin(
+        header76: ByteArray,
+        target: ByteArray,
+        flavor: Int,
+    )
+
+    /** Abort CPU job session and clear cached context. */
+    external fun cpuJobSessionEnd()
+
+    /**
      * CPU nonce scan: writes [CpuNonceScanResult] wire format into [out] — `out[0]` = status, `out[1]` = winning
      * nonce as [Long] in `0..0xFFFFFFFFL` when status is [CpuNonceScanResult.HIT].
+     * When a [cpuJobSessionBegin] session is active, header/target arrays are not read from JNI (compat placeholders OK).
      * @param flavor [com.btcminer.android.config.CpuSha256Flavor.ordinal], 0..5.
      */
     external fun nativeScanNoncesInto(
@@ -99,8 +114,9 @@ object NativeMiner {
     external fun gpuRequestInterrupt(): Unit
 
     /**
-     * Begin a double-buffered GPU pipe session for one mining round. Caches header/target/midstate in native.
-     * While active, [gpuScanNoncesInto] uses deferred results: call N returns the scan result for chunk N−1
+     * Begin a double-buffered GPU pipe session for one mining round. Caches header/target/midstate in native
+     * and writes the static UBO (header words, midstate, target, flags) to both pipe slots once.
+     * While active, [gpuScanNoncesInto] uses deferred results and only patches nonceStart/nonceEnd per chunk
      * (first call returns [GpuNonceScanResult.MISS]). End with [gpuPipelineFlush] + [gpuPipelineSessionEnd].
      */
     external fun gpuPipelineSessionBegin(
@@ -166,7 +182,7 @@ object NativeMiner {
      * nonce as [Long] in `0..0xFFFFFFFFL` when status is [GpuNonceScanResult.HIT] (including `0xFFFFFFFFL` as a valid hit).
      *
      * When a [gpuPipelineSessionBegin] session is active, each call returns the result for the **previous** chunk
-     * (deferred one call); the first call in a round returns [GpuNonceScanResult.MISS]. Credit nonces using the
+     * (deferred one call); header/target arrays are not read from JNI (compat placeholders OK). Credit nonces using the
      * chunk start from the prior iteration, then call [gpuPipelineFlush] + [gpuPipelineSessionEnd] at round end.
      *
      * @param localSizeX threads per workgroup (local_size_x), multiple of 32.

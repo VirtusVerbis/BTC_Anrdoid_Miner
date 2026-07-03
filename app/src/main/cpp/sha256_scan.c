@@ -115,9 +115,14 @@ static int scan_scalar_full(const uint8_t *header76, uint32_t start, uint32_t en
     return -1;
 }
 
-static int scan_scalar_mid(const uint8_t *header76, uint32_t start, uint32_t end, const uint8_t *target) {
+static int scan_scalar_mid(const uint8_t *header76, uint32_t start, uint32_t end, const uint8_t *target,
+                           const uint32_t *midIn) {
     uint32_t mid[8];
-    midstate_after_block0(header76, mid, scalar_compress_fn);
+    if (midIn) {
+        memcpy(mid, midIn, sizeof(mid));
+    } else {
+        midstate_after_block0(header76, mid, scalar_compress_fn);
+    }
     uint8_t d32[32];
     uint8_t hash[HASH_SIZE];
     for (uint32_t nonce = start; nonce <= end; nonce++) {
@@ -161,9 +166,14 @@ static int scan_arm_full(const uint8_t *header76, uint32_t start, uint32_t end, 
     return -1;
 }
 
-static int scan_arm_mid(const uint8_t *header76, uint32_t start, uint32_t end, const uint8_t *target) {
+static int scan_arm_mid(const uint8_t *header76, uint32_t start, uint32_t end, const uint8_t *target,
+                        const uint32_t *midIn) {
     uint32_t mid[8];
-    midstate_after_block0(header76, mid, arm_compress_fn);
+    if (midIn) {
+        memcpy(mid, midIn, sizeof(mid));
+    } else {
+        midstate_after_block0(header76, mid, arm_compress_fn);
+    }
     uint8_t d32[32];
     uint8_t hash[HASH_SIZE];
     for (uint32_t nonce = start; nonce <= end; nonce++) {
@@ -203,9 +213,14 @@ static int scan_neon4_full(const uint8_t *header76, uint32_t start, uint32_t end
     return -1;
 }
 
-static int scan_neon4_mid(const uint8_t *header76, uint32_t start, uint32_t end, const uint8_t *target) {
+static int scan_neon4_mid(const uint8_t *header76, uint32_t start, uint32_t end, const uint8_t *target,
+                          const uint32_t *midIn) {
     uint32_t mid[8];
-    midstate_after_block0(header76, mid, scalar_compress_fn);
+    if (midIn) {
+        memcpy(mid, midIn, sizeof(mid));
+    } else {
+        midstate_after_block0(header76, mid, scalar_compress_fn);
+    }
     uint32_t n = start;
     uint8_t dig[4][32];
     uint8_t d32[32];
@@ -239,11 +254,12 @@ static int scan_arm_full(const uint8_t *h, uint32_t a, uint32_t b, const uint8_t
     (void)t;
     return CPU_SHA_FLAVOR_ERROR;
 }
-static int scan_arm_mid(const uint8_t *h, uint32_t a, uint32_t b, const uint8_t *t) {
+static int scan_arm_mid(const uint8_t *h, uint32_t a, uint32_t b, const uint8_t *t, const uint32_t *midIn) {
     (void)h;
     (void)a;
     (void)b;
     (void)t;
+    (void)midIn;
     return CPU_SHA_FLAVOR_ERROR;
 }
 static int scan_neon4_full(const uint8_t *h, uint32_t a, uint32_t b, const uint8_t *t) {
@@ -253,33 +269,101 @@ static int scan_neon4_full(const uint8_t *h, uint32_t a, uint32_t b, const uint8
     (void)t;
     return CPU_SHA_FLAVOR_ERROR;
 }
-static int scan_neon4_mid(const uint8_t *h, uint32_t a, uint32_t b, const uint8_t *t) {
+static int scan_neon4_mid(const uint8_t *h, uint32_t a, uint32_t b, const uint8_t *t, const uint32_t *midIn) {
     (void)h;
     (void)a;
     (void)b;
     (void)t;
+    (void)midIn;
     return CPU_SHA_FLAVOR_ERROR;
 }
 
 #endif
 
-int scan_nonces_dispatch(int flavor, const uint8_t *header76, uint32_t start, uint32_t end, const uint8_t *target) {
+typedef struct {
+    int active;
+    int flavor;
+    int useMidstate;
+    uint8_t header76[HEADER_PREFIX_SIZE];
+    uint8_t target[HASH_SIZE];
+    uint32_t mid[8];
+} CpuJobSession;
+
+static CpuJobSession g_cpuJobSession;
+
+void cpu_job_session_end(void);
+
+static int flavor_uses_midstate(int flavor) {
+    return flavor == 0 || flavor == 2 || flavor == 4;
+}
+
+static void midstate_for_flavor(int flavor, const uint8_t *header76, uint32_t mid[8]) {
     switch (flavor) {
         case 0:
-            return scan_arm_mid(header76, start, end, target);
+            midstate_after_block0(header76, mid, arm_compress_fn);
+            break;
+        case 2:
+        case 4:
+            midstate_after_block0(header76, mid, scalar_compress_fn);
+            break;
+        default:
+            break;
+    }
+}
+
+void cpu_job_session_begin(const uint8_t *header76, const uint8_t *target, int flavor) {
+    cpu_job_session_end();
+    g_cpuJobSession.flavor = flavor;
+    g_cpuJobSession.useMidstate = flavor_uses_midstate(flavor);
+    memcpy(g_cpuJobSession.header76, header76, HEADER_PREFIX_SIZE);
+    memcpy(g_cpuJobSession.target, target, HASH_SIZE);
+    if (g_cpuJobSession.useMidstate)
+        midstate_for_flavor(flavor, header76, g_cpuJobSession.mid);
+    g_cpuJobSession.active = 1;
+}
+
+void cpu_job_session_end(void) {
+    memset(&g_cpuJobSession, 0, sizeof(g_cpuJobSession));
+}
+
+int cpu_job_session_active(void) {
+    return g_cpuJobSession.active;
+}
+
+int cpu_job_session_flavor(void) {
+    return g_cpuJobSession.flavor;
+}
+
+static int scan_nonces_dispatch_internal(int flavor, const uint8_t *header76, uint32_t start, uint32_t end,
+                                         const uint8_t *target, const uint32_t *midIn) {
+    switch (flavor) {
+        case 0:
+            return scan_arm_mid(header76, start, end, target, midIn);
         case 1:
             return scan_arm_full(header76, start, end, target);
         case 2:
-            return scan_neon4_mid(header76, start, end, target);
+            return scan_neon4_mid(header76, start, end, target, midIn);
         case 3:
             return scan_neon4_full(header76, start, end, target);
         case 4:
-            return scan_scalar_mid(header76, start, end, target);
+            return scan_scalar_mid(header76, start, end, target, midIn);
         case 5:
             return scan_scalar_full(header76, start, end, target);
         default:
             return CPU_SHA_FLAVOR_ERROR;
     }
+}
+
+int scan_nonces_dispatch(int flavor, const uint8_t *header76, uint32_t start, uint32_t end, const uint8_t *target) {
+    return scan_nonces_dispatch_internal(flavor, header76, start, end, target, NULL);
+}
+
+int scan_nonces_dispatch_session(uint32_t start, uint32_t end) {
+    if (!g_cpuJobSession.active)
+        return CPU_SHA_FLAVOR_ERROR;
+    const uint32_t *mid = g_cpuJobSession.useMidstate ? g_cpuJobSession.mid : NULL;
+    return scan_nonces_dispatch_internal(g_cpuJobSession.flavor, g_cpuJobSession.header76, start, end,
+        g_cpuJobSession.target, mid);
 }
 
 void cpu_sha256_double_flavor(int flavor, const uint8_t *header76, uint32_t nonce, uint8_t out[32]) {

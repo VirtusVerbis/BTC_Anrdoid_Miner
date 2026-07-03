@@ -421,6 +421,8 @@ class NativeMiningEngine(
         val nextChunkStart = AtomicLong(range.start)
         val roundStartTimeMs = System.currentTimeMillis()
 
+        NativeMiner.cpuJobSessionBegin(ctx.header76, ctx.target, config.cpuSha256Flavor.ordinal)
+        try {
         val cpuWorkers = (0 until threadCount).map {
             val workerJobId = job.jobId
             Thread {
@@ -510,6 +512,9 @@ class NativeMiningEngine(
                 cpuWorkers.forEach { it.interrupt() }
                 activeJobId.set(null)
             }
+        }
+        } finally {
+            NativeMiner.cpuJobSessionEnd()
         }
     }
 

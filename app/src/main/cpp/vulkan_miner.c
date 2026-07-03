@@ -129,6 +129,7 @@ typedef struct {
 
 typedef struct {
     int active;
+    int staticUboReady;
     int writeIndex;
     int inFlightIndex;
     int syncPending;
@@ -190,6 +191,18 @@ static void host_flush_before_gpu_read(VkDeviceMemory mem) {
         .memory = mem,
         .offset = 0,
         .size = VK_WHOLE_SIZE,
+    };
+    vkFlushMappedMemoryRanges(g_device, 1, &range);
+}
+
+static void host_flush_range(VkDeviceMemory mem, VkDeviceSize offset, VkDeviceSize size) {
+    if (g_host_mem_coherent || mem == VK_NULL_HANDLE)
+        return;
+    VkMappedMemoryRange range = {
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+        .memory = mem,
+        .offset = offset,
+        .size = size,
     };
     vkFlushMappedMemoryRanges(g_device, 1, &range);
 }
@@ -1084,8 +1097,8 @@ static void write_le32(uint8_t *dst, uint32_t val) {
     dst[3] = (uint8_t)(val >> 24);
 }
 
-static void fill_ubo_mining(uint8_t *ubo, const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
-                            const uint8_t *target, int useMidstate, int selftestWriteDigest, const uint32_t mid[8]) {
+static void fill_ubo_static(uint8_t *ubo, const uint8_t *header76, const uint8_t *target, int useMidstate,
+                            int selftestWriteDigest, const uint32_t mid[8]) {
     memset(ubo, 0, UBO_SIZE);
     for (int i = 0; i < UBO_HEADER_WORDS; i++) {
         uint32_t w = (uint32_t)header76[i * 4] << 24 | (uint32_t)header76[i * 4 + 1] << 16 |
@@ -1096,11 +1109,36 @@ static void fill_ubo_mining(uint8_t *ubo, const uint8_t *header76, uint32_t nonc
         for (int i = 0; i < 8; i++)
             write_le32(ubo + UBO_OFFSET_MIDSTATE + i * 4, mid[i]);
     }
-    write_le32(ubo + UBO_OFFSET_NONCE_START, nonceStart);
-    write_le32(ubo + UBO_OFFSET_NONCE_END, nonceEnd);
     memcpy(ubo + UBO_OFFSET_TARGET, target, HASH_SIZE);
     write_le32(ubo + UBO_OFFSET_GPU_USE_MIDSTATE, useMidstate ? 1u : 0u);
     write_le32(ubo + UBO_OFFSET_GPU_SELFTEST, selftestWriteDigest ? 1u : 0u);
+}
+
+static void patch_ubo_nonce_range(uint8_t *ubo, uint32_t nonceStart, uint32_t nonceEnd) {
+    write_le32(ubo + UBO_OFFSET_NONCE_START, nonceStart);
+    write_le32(ubo + UBO_OFFSET_NONCE_END, nonceEnd);
+}
+
+static void fill_ubo_mining(uint8_t *ubo, const uint8_t *header76, uint32_t nonceStart, uint32_t nonceEnd,
+                            const uint8_t *target, int useMidstate, int selftestWriteDigest, const uint32_t mid[8]) {
+    fill_ubo_static(ubo, header76, target, useMidstate, selftestWriteDigest, mid);
+    patch_ubo_nonce_range(ubo, nonceStart, nonceEnd);
+}
+
+static int pipe_init_static_ubo_slots(const uint8_t *header76, const uint8_t *target, const uint32_t mid[8],
+                                      int useMidstate) {
+    if (!map_host_buffers())
+        return 0;
+    uint8_t ubo[UBO_SIZE];
+    fill_ubo_static(ubo, header76, target, useMidstate, 0, mid);
+    for (uint32_t i = 0; i < GPU_PIPE_SLOT_COUNT; i++) {
+        GpuPipeSlot *slot = &g_pipeSlots[i];
+        if (slot->uboMapped == NULL)
+            return 0;
+        memcpy(slot->uboMapped, ubo, UBO_SIZE);
+        host_flush_before_gpu_read(slot->uboMemory);
+    }
+    return 1;
 }
 
 static void sha256_words_to_digest_be(const uint32_t w[8], uint8_t out[32]) {
@@ -1127,12 +1165,11 @@ typedef struct {
     uint32_t groupCountX;
 } GpuScanPass;
 
-static void slot_prepare_chunk(GpuPipeSlot *slot, const uint8_t *header76, const uint8_t *target,
-                               uint32_t nonceStart, uint32_t nonceEnd, const uint32_t mid[8], int useMidstate) {
-    uint8_t ubo[UBO_SIZE];
-    fill_ubo_mining(ubo, header76, nonceStart, nonceEnd, target, useMidstate, 0, mid);
-    memcpy(slot->uboMapped, ubo, UBO_SIZE);
-    host_flush_before_gpu_read(slot->uboMemory);
+static void slot_prepare_chunk_nonces(GpuPipeSlot *slot, uint32_t nonceStart, uint32_t nonceEnd) {
+    if (slot->uboMapped == NULL)
+        return;
+    patch_ubo_nonce_range((uint8_t *)slot->uboMapped, nonceStart, nonceEnd);
+    host_flush_range(slot->uboMemory, UBO_OFFSET_NONCE_START, 8u);
     mining_result_buffer_reset(slot->resultMapped);
     host_flush_before_gpu_read(slot->resultMemory);
     slot->nonceStart = nonceStart;
@@ -1400,7 +1437,11 @@ static int gpu_pipeline_session_begin_inner(const uint8_t *header76, const uint8
     g_pipeSession.noncesPerThread = vectorWidth * hpt;
     g_pipeSession.writeIndex = 0;
     g_pipeSession.inFlightIndex = -1;
+    g_pipeSession.staticUboReady = 0;
     g_pipeSession.active = 1;
+    if (!pipe_init_static_ubo_slots(header76, target, g_pipeSession.mid, useMidstate))
+        return GPU_UNAVAILABLE;
+    g_pipeSession.staticUboReady = 1;
     atomic_store_explicit(&g_interrupt_requested, 0, memory_order_relaxed);
     if (!g_workgroup_size_logged) {
         __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "GPU local_size_x=%u hashesPerThread=%u vectorWidth=%u",
@@ -1504,8 +1545,10 @@ static int run_gpu_scan_pipelined(uint32_t nonceStart, uint32_t nonceEnd, int *h
         s_gpu_multipass_notice = 1;
     }
 
+    if (!sess->staticUboReady)
+        return GPU_UNAVAILABLE;
     GpuPipeSlot *slot = &g_pipeSlots[sess->writeIndex];
-    slot_prepare_chunk(slot, sess->header76, sess->target, nonceStart, nonceEnd, sess->mid, sess->useMidstate);
+    slot_prepare_chunk_nonces(slot, nonceStart, nonceEnd);
     if (!slot_record_multipass(slot, sess->miningPipe, passes, passCount))
         return GPU_UNAVAILABLE;
     if (!slot_submit(slot))
@@ -2217,31 +2260,49 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
     jlong *out = (*env)->GetLongArrayElements(env, outJava, NULL);
     if (!out)
         return;
-    if (!header76Java || !targetJava ||
-        (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
-        (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
-        out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
-        out[1] = 0;
-        (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
-        return;
+#ifdef __ANDROID__
+    const int sessionActive = (g_pipeSession.active && GPU_PIPE_ENABLED);
+    if (!sessionActive) {
+        if (!header76Java || !targetJava ||
+            (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE ||
+            (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
+            out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
+            out[1] = 0;
+            (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+            return;
+        }
+    } else {
+        if (header76Java && (*env)->GetArrayLength(env, header76Java) != HEADER_PREFIX_SIZE) {
+            out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
+            out[1] = 0;
+            (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+            return;
+        }
+        if (targetJava && (*env)->GetArrayLength(env, targetJava) != HASH_SIZE) {
+            out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
+            out[1] = 0;
+            (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
+            return;
+        }
     }
 
     uint8_t header76[HEADER_PREFIX_SIZE];
     uint8_t target[HASH_SIZE];
 
-#ifdef __ANDROID__
     if (!try_init_vulkan()) {
         out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
         out[1] = 0;
         (*env)->ReleaseLongArrayElements(env, outJava, out, 0);
         return;
     }
-    (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
-    (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
+    if (!sessionActive) {
+        (*env)->GetByteArrayRegion(env, header76Java, 0, HEADER_PREFIX_SIZE, (jbyte *)header76);
+        (*env)->GetByteArrayRegion(env, targetJava, 0, HASH_SIZE, (jbyte *)target);
+    }
     int hit = 0;
     uint32_t winNonce = 0u;
     int rr;
-    if (g_pipeSession.active && GPU_PIPE_ENABLED) {
+    if (sessionActive) {
         rr = run_gpu_scan_pipelined((uint32_t)nonceStart, (uint32_t)nonceEnd, &hit, &winNonce);
     } else {
         rr = run_gpu_scan(header76, (uint32_t)nonceStart, (uint32_t)nonceEnd, target, (int)localSizeX,
@@ -2263,6 +2324,8 @@ Java_com_btcminer_android_mining_NativeMiner_gpuScanNoncesInto(JNIEnv *env, jcla
     (void)localSizeX;
     (void)hashesPerThread;
     (void)gpuSha256Mode;
+    (void)header76Java;
+    (void)targetJava;
     out[0] = (jlong)GPU_JNI_STATUS_UNAVAILABLE;
     out[1] = 0;
 #endif
