@@ -50,9 +50,6 @@ class NativeMiningEngine(
         /** CPU cores = 0 and GPU not usable (pipeline/init failed). */
         const val NO_HASHING_BACKEND_LAST_ERROR = "NO_HASHING_BACKEND"
         private const val CHUNK_SIZE = 2L * 1024 * 1024
-        private const val MAX_NONCE = 0xFFFFFFFFL
-        /** CPU nonce range end; GPU uses CPU_NONCE_END to MAX_NONCE. */
-        private const val CPU_NONCE_END = MAX_NONCE / 2
         /** Minimum elapsed time (seconds) used as divisor for hashrate. Avoids a huge spike when "Start Mining" is clicked: dividing by a tiny elapsed time would show an inflated rate until the denominator grows. */
         private const val MIN_ELAPSED_SEC_FOR_HASHRATE = 1.0
         /** Rolling window (seconds) for hashrate display; configurable constant. */
@@ -416,11 +413,12 @@ class NativeMiningEngine(
         config: MiningConfig,
         ctx: RoundContext,
         threadCount: Int,
+        range: NonceRange,
         statusUpdateIntervalMs: Int,
     ) {
         val job = ctx.job
         activeJobId.set(job.jobId)
-        val nextChunkStart = AtomicLong(0)
+        val nextChunkStart = AtomicLong(range.start)
         val roundStartTimeMs = System.currentTimeMillis()
 
         val cpuWorkers = (0 until threadCount).map {
@@ -432,8 +430,8 @@ class NativeMiningEngine(
                     if (client.isConnected() && client.hasCleanJobsInvalidation()) break
                     val throttle = throttleStateRef?.get()
                     val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
-                    if (start > CPU_NONCE_END) break
-                    val nonceEndL = minOf(start + CHUNK_SIZE - 1, CPU_NONCE_END)
+                    if (start > range.endInclusive) break
+                    val nonceEndL = minOf(start + CHUNK_SIZE - 1, range.endInclusive)
                     val nonceEnd = nonceEndL.toInt()
                     val jniOut = LongArray(2)
                     NativeMiner.nativeScanNoncesInto(
@@ -519,11 +517,12 @@ class NativeMiningEngine(
         client: StratumClient,
         config: MiningConfig,
         ctx: RoundContext,
+        range: NonceRange,
         statusUpdateIntervalMs: Int,
     ) {
         val job = ctx.job
         activeJobId.set(job.jobId)
-        val nextChunkStart = AtomicLong(CPU_NONCE_END)
+        val nextChunkStart = AtomicLong(range.start)
         val roundStartTimeMs = System.currentTimeMillis()
         val roundStartGpuNonces = gpuNoncesScanned.get()
         val localSizeX = config.clampedGpuLocalSizeX(GpuCapabilities.maxLocalSizeX())
@@ -547,8 +546,8 @@ class NativeMiningEngine(
                     if (throttleStateRef?.get()?.stopDueToOverheat == true) break
                     val throttle = throttleStateRef?.get()
                     val start = nextChunkStart.getAndAdd(CHUNK_SIZE)
-                    if (start > MAX_NONCE) break
-                    val nonceEndL = minOf(start + CHUNK_SIZE - 1, MAX_NONCE)
+                    if (start > range.endInclusive) break
+                    val nonceEndL = minOf(start + CHUNK_SIZE - 1, range.endInclusive)
                     val nonceEnd = nonceEndL.toInt()
                     val t0 = System.currentTimeMillis()
                     val jniOut = LongArray(2)
@@ -731,6 +730,9 @@ class NativeMiningEngine(
             return
         }
         AppLog.d(LOG_TAG) { "Using $threadCount CPU worker(s), GPU=$gpuEnabled" }
+        val cpuRange = NonceRangePolicy.cpuRange(threadCount, gpuEnabled)
+        val gpuRange = NonceRangePolicy.gpuRange(threadCount, gpuEnabled)
+        AppLog.d(LOG_TAG) { NonceRangePolicy.formatRangeLog(cpuRange, gpuRange) }
 
         var lastReconnectAttemptMs = 0L
 
@@ -762,7 +764,7 @@ class NativeMiningEngine(
                 val en1 = client.getExtranonce1Hex() ?: continue
                 val en2 = client.getExtranonce2Size().coerceAtLeast(4)
                 val ctx = buildRoundContext(cpuJob, diff, en1, en2, !client.isConnected())
-                runCpuRound(client, config, ctx, threadCount, statusUpdateIntervalMs)
+                runCpuRound(client, config, ctx, threadCount, cpuRange!!, statusUpdateIntervalMs)
             }
         }
 
@@ -784,7 +786,7 @@ class NativeMiningEngine(
                 val en1 = client.getExtranonce1Hex() ?: continue
                 val en2 = client.getExtranonce2Size().coerceAtLeast(4)
                 val ctx = buildRoundContext(gpuJob, diff, en1, en2, !client.isConnected())
-                runGpuRound(client, config, ctx, statusUpdateIntervalMs)
+                runGpuRound(client, config, ctx, gpuRange!!, statusUpdateIntervalMs)
             }
         }
 

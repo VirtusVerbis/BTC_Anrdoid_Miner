@@ -134,7 +134,7 @@ class PowTargetCompareTest {
 
     @Test
     fun randomPairsMatchReference() {
-        val rng = Random(0xB1TC0DE)
+        val rng = Random(0xB17C0DE)
         repeat(1000) {
             val hash = ByteArray(32) { rng.nextInt(256).toByte() }
             val target = ByteArray(32) { rng.nextInt(256).toByte() }
