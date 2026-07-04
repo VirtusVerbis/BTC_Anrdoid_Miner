@@ -132,6 +132,8 @@ class MainActivity : AppCompatActivity() {
         private const val SATOSHI_LIGHTNING_PORTRAIT_MS = 300L //1_000L
         /** Rolling window size for the short hash rate chart (matches prior ~2 min at 1 Hz). */
         private const val HASHRATE_CHART_TWO_MIN_SAMPLES = 120
+        /** Rolling window size for the 10 min hash rate chart (10 min at 1 Hz). */
+        private const val HASHRATE_CHART_TEN_MIN_SAMPLES = 600
         private const val STATE_HASH_CHART_MODE = "hashChartMode"
         private const val STATE_BEST_DIFF_CHART_X_MODE = "bestDiffChartXMode"
 
@@ -144,11 +146,13 @@ class MainActivity : AppCompatActivity() {
 
     private enum class HashChartMode {
         TwoMinute,
+        TenMinute,
         Session,
         ;
 
         fun toggle(): HashChartMode = when (this) {
-            TwoMinute -> Session
+            TwoMinute -> TenMinute
+            TenMinute -> Session
             Session -> TwoMinute
         }
     }
@@ -1921,6 +1925,7 @@ class MainActivity : AppCompatActivity() {
 
         val from = when (hashChartMode) {
             HashChartMode.TwoMinute -> maxOf(0, nAll - HASHRATE_CHART_TWO_MIN_SAMPLES)
+            HashChartMode.TenMinute -> maxOf(0, nAll - HASHRATE_CHART_TEN_MIN_SAMPLES)
             HashChartMode.Session -> 0
         }
         val cpuSlice = historyCpu.subList(from, nAll)
@@ -1928,10 +1933,10 @@ class MainActivity : AppCompatActivity() {
         val battSliceC = batteryTempHistoryCelsius.subList(from, nAll)
 
         val sessionDurationSec = historyElapsedSec[nAll - 1]
-        val twoMinAxisOriginSec = historyElapsedSec[from]
+        val windowAxisOriginSec = historyElapsedSec[from]
 
         chart.xAxis.valueFormatter = when (hashChartMode) {
-            HashChartMode.TwoMinute -> object : ValueFormatter() {
+            HashChartMode.TwoMinute, HashChartMode.TenMinute -> object : ValueFormatter() {
                 override fun getFormattedValue(value: Float): String =
                     formatAxisMmSs(value.toLong().coerceAtLeast(0))
             }
@@ -1953,8 +1958,8 @@ class MainActivity : AppCompatActivity() {
         val magenta = Color.MAGENTA
 
         fun xForIndex(i: Int): Float = when (hashChartMode) {
-            HashChartMode.TwoMinute ->
-                (historyElapsedSec[from + i] - twoMinAxisOriginSec).coerceAtLeast(0f)
+            HashChartMode.TwoMinute, HashChartMode.TenMinute ->
+                (historyElapsedSec[from + i] - windowAxisOriginSec).coerceAtLeast(0f)
             HashChartMode.Session -> historyElapsedSec[from + i]
         }
 
@@ -2010,6 +2015,7 @@ class MainActivity : AppCompatActivity() {
         chartBinding.hashChartModeTitle.visibility = View.VISIBLE
         chartBinding.hashChartModeTitle.text = when (hashChartMode) {
             HashChartMode.TwoMinute -> getString(R.string.hash_chart_title_2min)
+            HashChartMode.TenMinute -> getString(R.string.hash_chart_title_10min)
             HashChartMode.Session -> getString(R.string.hash_chart_title_session)
         }
         chartBinding.hashChartModeTitle.setTextColor(chartTextColor)

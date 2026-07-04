@@ -172,8 +172,9 @@
 
     <!-- Dashboard stats -->
     <string name="hash_chart_title_2min">2 min</string>
+    <string name="hash_chart_title_10min">10 min</string>
     <string name="hash_chart_title_session">Session</string>
-    <string name="hash_chart_a11y_toggle_hint">Hash rate chart. Tap to switch between 2 minute and session history.</string>
+    <string name="hash_chart_a11y_toggle_hint">Hash rate chart. Tap to cycle between 2 minute, 10 minute, and session history.</string>
     <string name="best_difficulty_chart_title_lifetime">History</string>
     <string name="best_difficulty_chart_title_session">Session</string>
     <string name="best_difficulty_chart_legend_all">All time</string>
