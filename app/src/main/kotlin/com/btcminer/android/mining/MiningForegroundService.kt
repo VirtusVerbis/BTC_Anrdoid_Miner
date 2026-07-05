@@ -135,6 +135,8 @@ class MiningForegroundService : Service() {
     private var lastChartSnapshotSaveMs: Long = 0L
     @Volatile
     private var lastMiningTimeCheckpointSaveMs: Long = 0L
+    @Volatile
+    private var lastThermalReadMs: Long = 0L
     /** UI-only: hashrate history and notification. Heavy work runs on [sampleExecutor]; only startForeground on main. */
     private val sampleRunnable: Runnable = object : Runnable {
         override fun run() {
@@ -143,12 +145,12 @@ class MiningForegroundService : Service() {
                 sampleExecutor.execute {
                     val status = engine.getStatus()
                     if (status.state == MiningStatus.State.Mining) {
+                        val tempTenthsC = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                            ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
                         val startMs = miningStartTimeMillis
                         synchronized(hashrateHistoryLock) {
                             hashrateHistoryCpu.add(status.hashrateHs)
                             hashrateHistoryGpu.add(if (status.gpuAvailable) status.gpuHashrateHs else 0.0)
-                            val tempTenthsC = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                                ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
                             val tempC = if (tempTenthsC != 0) tempTenthsC / 10f else Float.NaN
                             val elapsedSec = if (startMs != null) {
                                 ((System.currentTimeMillis() - startMs).coerceAtLeast(0L) / 1000.0).toFloat()
@@ -158,6 +160,7 @@ class MiningForegroundService : Service() {
                             hashrateHistoryElapsedSec.add(elapsedSec)
                             batteryTempHistoryCelsius.add(tempC)
                         }
+                        maybeRefreshThermalUiState(tempTenthsC)
                         maybePersistRuntimeSnapshots(force = false)
                     }
                     val contentText = if (MiningConstraints.isBothWifiAndDataUnavailable(applicationContext) && status.connectionLost) getString(R.string.mining_reconnecting) else getString(R.string.mining_notification_text)
@@ -462,7 +465,18 @@ class MiningForegroundService : Service() {
 
     fun isBatteryThrottleActive(): Boolean = lastBatteryThrottleActive
     fun isHashrateThrottleActive(): Boolean = lastHashrateThrottleActive
+    fun getThermalUiState(): ThermalUiState? = DeviceTelemetryReader.getCachedUiState()
+
     fun getMiningStartTimeMillis(): Long? = miningStartTimeMillis
+
+    private fun maybeRefreshThermalUiState(tempTenthsC: Int) {
+        val now = System.currentTimeMillis()
+        if (now - lastThermalReadMs < THERMAL_READ_INTERVAL_MS) return
+        lastThermalReadMs = now
+        val batteryApiTempC = if (tempTenthsC != 0) tempTenthsC / 10.0 else null
+        DeviceTelemetryReader.buildUiState(batteryApiTempC)
+    }
+
 
     /** Current auto-tuning throttle sleep (ms). Only meaningful when auto-tuning is enabled in config. */
     fun getAutoTuningThrottleSleepMs(): Long = autoTuningThrottleSleepMs
@@ -599,6 +613,7 @@ class MiningForegroundService : Service() {
                 miningStartTimeMillis = System.currentTimeMillis()
                 lastChartSnapshotSaveMs = 0L
                 lastMiningTimeCheckpointSaveMs = 0L
+                lastThermalReadMs = 0L
                 recordShareSessionBaselines()
                 val c = configRepository.getConfig()
                 if (c.autoTuningByBatteryTemp) {
@@ -681,6 +696,7 @@ class MiningForegroundService : Service() {
                 miningStartTimeMillis = System.currentTimeMillis()
                 lastChartSnapshotSaveMs = 0L
                 lastMiningTimeCheckpointSaveMs = 0L
+                lastThermalReadMs = 0L
                 recordShareSessionBaselines()
                 val c = configRepository.getConfig()
                 if (c.autoTuningByBatteryTemp) {
@@ -1096,6 +1112,7 @@ class MiningForegroundService : Service() {
         const val CPU_UTILIZATION_ROLLING_WINDOW_SEC = 60
         private const val STATS_SAVE_INTERVAL_MS = 60_000L
         private const val CHART_SNAPSHOT_SAVE_INTERVAL_MS = 10_000L
+        private const val THERMAL_READ_INTERVAL_MS = 5_000L
         private const val MINING_TIME_CHECKPOINT_INTERVAL_MS = 10_000L
         /** ~1 dashboard sample/s; chunk session averages into ~10 min segments, then mean of chunk means. */
         private const val LIFETIME_SESSION_AVG_CHUNK_SAMPLES = 10 * 60

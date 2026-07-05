@@ -41,6 +41,7 @@ import com.btcminer.android.ui.digitalrain.DigitalRainRenderBackend
 import com.btcminer.android.ui.digitalrain.DigitalRainSettingsRepository
 import com.btcminer.android.config.MiningConfigRepository
 import com.btcminer.android.databinding.ActivityMainBinding
+import com.btcminer.android.mining.DeviceTelemetryReader
 import com.btcminer.android.mining.MiningConstraints
 import com.btcminer.android.mining.MiningForegroundService
 import com.btcminer.android.mining.BestDifficultyChartEvent
@@ -191,6 +192,7 @@ class MainActivity : AppCompatActivity() {
     private var page5Fragment: DashboardStatsPage5Fragment? = null
     private var dashboardTabMediator: TabLayoutMediator? = null
     private var chartHashrateFragment: ChartHashrateFragment? = null
+    private var chartThermalFragment: ChartThermalFragment? = null
     private var chartSharesDonutFragment: ChartSharesDonutFragment? = null
     private var chartBestDifficultyFragment: ChartBestDifficultyFragment? = null
     private var chartMandelbrotFragment: ChartMandelbrotFragment? = null
@@ -218,6 +220,7 @@ class MainActivity : AppCompatActivity() {
     /** Keeps donut hole label aligned with [PieChart] layout; removed when donut fragment view is destroyed. */
     private var donutChartLayoutListener: View.OnLayoutChangeListener? = null
     private var donutChartForLayoutListener: PieChart? = null
+    private var lastThermalDisplayFahrenheit: Boolean? = null
 
     private val dashboardFragmentCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(fm: FragmentManager, f: Fragment, v: View, savedInstanceState: Bundle?) {
@@ -230,6 +233,10 @@ class MainActivity : AppCompatActivity() {
                 is ChartHashrateFragment -> {
                     chartHashrateFragment = f
                     setupChart()
+                }
+                is ChartThermalFragment -> {
+                    chartThermalFragment = f
+                    updateThermalChartUi()
                 }
                 is ChartSharesDonutFragment -> {
                     chartSharesDonutFragment = f
@@ -257,6 +264,7 @@ class MainActivity : AppCompatActivity() {
                 is DashboardStatsPage4Fragment -> if (page4Fragment === f) page4Fragment = null
                 is DashboardStatsPage5Fragment -> if (page5Fragment === f) page5Fragment = null
                 is ChartHashrateFragment -> if (chartHashrateFragment === f) chartHashrateFragment = null
+                is ChartThermalFragment -> if (chartThermalFragment === f) chartThermalFragment = null
                 is ChartSharesDonutFragment -> if (chartSharesDonutFragment === f) {
                     donutChartLayoutListener?.let { l ->
                         donutChartForLayoutListener?.removeOnLayoutChangeListener(l)
@@ -727,6 +735,10 @@ class MainActivity : AppCompatActivity() {
             glViewPaused = false
         }
         applyDigitalRainSettings()
+        val useF = configRepository.getConfig().batteryTempFahrenheit
+        if (lastThermalDisplayFahrenheit != null && lastThermalDisplayFahrenheit != useF) {
+            updateThermalChartUi()
+        }
         // Check if Bitcoin address changed in Config and trigger immediate fetch
         val currentAddress = configRepository.getConfig().bitcoinAddress.trim()
         if (currentAddress != lastBitcoinAddress) {
@@ -1495,6 +1507,14 @@ class MainActivity : AppCompatActivity() {
         }
         refreshBestDifficultyChart()
         refreshMandelbrotIfNeeded()
+        updateThermalChartUi()
+    }
+
+    private fun updateThermalChartUi() {
+        val useF = configRepository.getConfig().batteryTempFahrenheit
+        lastThermalDisplayFahrenheit = useF
+        val state = miningService?.getThermalUiState() ?: DeviceTelemetryReader.getCachedUiState()
+        chartThermalFragment?.updateThermalChart(state, useF)
     }
 
     private fun renderPersistedChartsOrIdleFallback() {

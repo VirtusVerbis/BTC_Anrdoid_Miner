@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:orientation="vertical">
+
+    <com.btcminer.android.ui.thermal.ThermalTreemapView
+        android:id="@+id/thermal_treemap_view"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:contentDescription="@string/thermal_chart_a11y"
+        android:minHeight="48dp" />
+
+    <com.btcminer.android.ui.thermal.ThermalLegendView
+        android:id="@+id/thermal_legend_view"
+        android:layout_width="match_parent"
+        android:layout_height="14dp" />
+</LinearLayout>

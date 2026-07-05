@@ -20,6 +20,11 @@ object DeviceTelemetryReader {
     private var skinZoneId: Int? = null
     private var batteryZoneId: Int? = null
     private var cpuPolicyIds: List<Int> = emptyList()
+    private var candidateMetas: List<ThermalSensorMeta> = emptyList()
+    private var cachedUiState: ThermalUiState? = null
+    private var cachedLayout: ThermalTreemapLayout? = null
+    private var cachedLayoutSensorKeys: Set<String> = emptySet()
+    private var discoverTimestampMs: Long = 0L
     private var firstError: String? = null
 
     data class Snapshot(
@@ -48,7 +53,78 @@ object DeviceTelemetryReader {
         skinZoneId = null
         batteryZoneId = null
         cpuPolicyIds = emptyList()
+        candidateMetas = emptyList()
+        cachedUiState = null
+        cachedLayout = null
+        cachedLayoutSensorKeys = emptySet()
+        discoverTimestampMs = 0L
         firstError = null
+    }
+
+    fun getCachedUiState(): ThermalUiState? = cachedUiState
+
+    fun buildUiState(batteryApiTempC: Double?): ThermalUiState {
+        val now = System.currentTimeMillis()
+        if (discoverTimestampMs == 0L) {
+            discoverTimestampMs = now
+        }
+        val readings = collectAvailableReadings(batteryApiTempC)
+        val snap = readSnapshot()
+        val sensorKeys = readings.map { it.meta.type }.toSet()
+        val layout = if (readings.isEmpty()) {
+            cachedLayout = null
+            cachedLayoutSensorKeys = emptySet()
+            null
+        } else if (sensorKeys == cachedLayoutSensorKeys && cachedLayout != null) {
+            cachedLayout!!.copyWithUpdatedReadings(readings)
+        } else {
+            ThermalTreemapLayoutEngine.build(readings).also {
+                cachedLayout = it
+                cachedLayoutSensorKeys = sensorKeys
+            }
+        }
+        val state = ThermalUiState(
+            access = snap.access,
+            layout = layout,
+            readings = readings,
+            discoveredAtMs = discoverTimestampMs,
+            updatedAtMs = now,
+        )
+        cachedUiState = state
+        return state
+    }
+
+    private fun collectAvailableReadings(batteryApiTempC: Double?): List<ThermalSensorReading> {
+        val out = ArrayList<ThermalSensorReading>(candidateMetas.size + 1)
+        for (meta in candidateMetas) {
+            val zoneId = meta.zoneId ?: continue
+            val tempC = readZoneTempC(zoneId) ?: continue
+            out.add(ThermalSensorReading(meta, tempC))
+        }
+        if (batteryApiTempC != null) {
+            out.add(ThermalSensorReading(ThermalSensorClassification.batteryApiMeta(), batteryApiTempC))
+        }
+        return out
+    }
+
+    private fun ThermalTreemapLayout.copyWithUpdatedReadings(
+        readings: List<ThermalSensorReading>,
+    ): ThermalTreemapLayout {
+        val byType = readings.associateBy { it.meta.type }
+        fun updateCell(cell: ThermalCellRect): ThermalCellRect? {
+            val updated = byType[cell.meta.type] ?: return null
+            return cell.copy(reading = updated)
+        }
+        val newCells = cells.mapNotNull { updateCell(it) }
+        val newGroups = groups.map { group ->
+            group.copy(
+                cells = group.cells.mapNotNull { updateCell(it) },
+                subGroups = group.subGroups.map { sub ->
+                    sub.copy(cells = sub.cells.mapNotNull { updateCell(it) })
+                },
+            )
+        }
+        return copy(cells = newCells, groups = newGroups)
     }
 
     fun discoverZones() {
@@ -105,6 +181,21 @@ object DeviceTelemetryReader {
         cpussZoneIds = cpuss.sorted()
         cpuZoneIds = cpu.sorted()
         gpussZoneIds = gpuss.sorted()
+        candidateMetas = buildCandidateMetas(zoneDirs)
+        discoverTimestampMs = System.currentTimeMillis()
+    }
+
+    private fun buildCandidateMetas(
+        zoneDirs: List<File>,
+    ): List<ThermalSensorMeta> {
+        val metas = mutableListOf<ThermalSensorMeta>()
+        for (zoneDir in zoneDirs) {
+            val id = zoneDir.name.removePrefix("thermal_zone").toIntOrNull() ?: continue
+            val typePath = "$THERMAL_BASE/thermal_zone$id/type"
+            val type = readSysfsText(typePath) ?: continue
+            ThermalSensorClassification.classifyType(type, id)?.let { metas.add(it) }
+        }
+        return metas
     }
 
     private fun discoverCpuPolicies() {
