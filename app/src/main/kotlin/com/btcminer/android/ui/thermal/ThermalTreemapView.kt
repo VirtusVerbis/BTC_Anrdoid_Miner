@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -83,6 +85,12 @@ class ThermalTreemapView @JvmOverloads constructor(
     private val rect = RectF()
     private val textBounds = Rect()
 
+    private val flashHandler = Handler(Looper.getMainLooper())
+    private var flashPhaseActive = false
+    private var flashLoopRunning = false
+    private val flashWhiteRunnable = Runnable { onFlashWhitePhaseEnd() }
+    private val flashNormalRunnable = Runnable { onFlashNormalPhaseEnd() }
+
     var onCellTapped: ((ThermalCellRect) -> Unit)? = null
     var onBackgroundTapped: (() -> Unit)? = null
 
@@ -91,6 +99,12 @@ class ThermalTreemapView @JvmOverloads constructor(
         this.useFahrenheit = useFahrenheit
         requestLayout()
         invalidate()
+        ensureFlashLoopRunning()
+    }
+
+    override fun onDetachedFromWindow() {
+        stopFlashLoop()
+        super.onDetachedFromWindow()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -114,6 +128,7 @@ class ThermalTreemapView @JvmOverloads constructor(
         }
 
         computeTransform(layout)
+        ensureFlashLoopRunning()
 
         canvas.save()
         canvas.translate(drawOffsetX, drawOffsetY)
@@ -151,8 +166,13 @@ class ThermalTreemapView @JvmOverloads constructor(
     }
 
     private fun drawCell(canvas: Canvas, cell: ThermalCellRect) {
-        val color = ThermalColorScale.colorForGroup(cell.meta.group, cell.reading.tempC)
-        cellFillPaint.color = color
+        val inDanger = ThermalColorScale.isInDangerZone(cell.meta.group, cell.reading.tempC)
+        val flashWhite = inDanger && flashPhaseActive
+        cellFillPaint.color = if (flashWhite) {
+            Color.WHITE
+        } else {
+            ThermalColorScale.colorForGroup(cell.meta.group, cell.reading.tempC)
+        }
         rect.set(cell.left, cell.top, cell.right, cell.bottom)
         canvas.drawRect(rect, cellFillPaint)
         if (cell.meta.isVirtual) {
@@ -164,9 +184,61 @@ class ThermalTreemapView @JvmOverloads constructor(
         val cellW = cell.right - cell.left
         val cellH = cell.bottom - cell.top
         cellTextPaint.textSize = fitTextSize(cellTextPaint, label, cellW * 0.85f, cellH * 0.55f)
+        cellTextPaint.color = if (flashWhite) Color.BLACK else Color.WHITE
         val cx = (cell.left + cell.right) / 2f
         val cy = (cell.top + cell.bottom) / 2f - (cellTextPaint.descent() + cellTextPaint.ascent()) / 2f
         canvas.drawText(label, cx, cy, cellTextPaint)
+    }
+
+    private fun hasDangerCells(): Boolean {
+        val cells = uiState?.layout?.cells ?: return false
+        return cells.any { ThermalColorScale.isInDangerZone(it.meta.group, it.reading.tempC) }
+    }
+
+    private fun ensureFlashLoopRunning() {
+        if (!hasDangerCells()) {
+            stopFlashLoop()
+            return
+        }
+        if (flashLoopRunning) return
+        flashLoopRunning = true
+        startFlashWhitePhase()
+    }
+
+    private fun startFlashWhitePhase() {
+        flashPhaseActive = true
+        invalidate()
+        flashHandler.removeCallbacks(flashWhiteRunnable)
+        flashHandler.removeCallbacks(flashNormalRunnable)
+        flashHandler.postDelayed(flashWhiteRunnable, FLASH_WHITE_MS)
+    }
+
+    private fun onFlashWhitePhaseEnd() {
+        if (!flashLoopRunning) return
+        flashPhaseActive = false
+        invalidate()
+        flashHandler.postDelayed(flashNormalRunnable, FLASH_NORMAL_MS)
+    }
+
+    private fun onFlashNormalPhaseEnd() {
+        if (!flashLoopRunning) return
+        if (hasDangerCells()) {
+            startFlashWhitePhase()
+        } else {
+            stopFlashLoop()
+        }
+    }
+
+    private fun stopFlashLoop() {
+        flashLoopRunning = false
+        flashPhaseActive = false
+        flashHandler.removeCallbacks(flashWhiteRunnable)
+        flashHandler.removeCallbacks(flashNormalRunnable)
+    }
+
+    companion object {
+        private const val FLASH_WHITE_MS = 500L
+        private const val FLASH_NORMAL_MS = 2000L
     }
 
     private fun drawGroupHeader(canvas: Canvas, group: ThermalGroupLayout) {

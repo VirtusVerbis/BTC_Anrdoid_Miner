@@ -437,7 +437,11 @@ class MainActivity : AppCompatActivity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             miningService = (binder as? MiningForegroundService.LocalBinder)?.getService()
             lastDonutIdentifiedCounts = null
+            if (DeviceTelemetryReader.getCachedUiState() == null) {
+                DeviceTelemetryReader.restorePersistedState(statsRepository.loadThermalChartState())
+            }
             tryRestoreIdleFractalArt()
+            updateThermalChartUi()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -639,6 +643,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         configRepository = MiningConfigRepository(applicationContext)
+        DeviceTelemetryReader.restorePersistedState(statsRepository.loadThermalChartState())
 
         // Phase 1: verify native miner loads and responds
         Toast.makeText(this, "Native miner: ${NativeMiner.nativeVersion()}", Toast.LENGTH_SHORT).show()
@@ -1089,6 +1094,9 @@ class MainActivity : AppCompatActivity() {
     /** Clears fractal bitmaps and Mandelbrot session fields; used when starting mining and when service session changes. */
     private fun purgeFractalStateForNewMiningSession() {
         statsRepository.clearFractalChartState()
+        statsRepository.clearThermalChartState()
+        DeviceTelemetryReader.resetForSession()
+        updateThermalChartUi()
         recycleAllFractalBitmapMemory()
         mandelbrotSessionKey = null
         mandelbrotLastRenderedSessionBest = 0.0

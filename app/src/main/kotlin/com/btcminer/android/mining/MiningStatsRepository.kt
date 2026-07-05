@@ -44,6 +44,9 @@ data class PersistedFractalChartState(
  *
  * **Fractal chart** (idle restore): [saveFractalChartState] / [loadFractalChartState]; cleared by [clearFractalChartState],
  * [saveZeros], new mining session / Start Mining in UI.
+ *
+ * **Thermal treemap** (idle restore): [saveThermalChartState] / [loadThermalChartState]; cleared by [clearThermalChartState]
+ * and new mining session / Start Mining in UI only (not on stop).
  */
 class MiningStatsRepository(context: Context) {
 
@@ -390,6 +393,27 @@ class MiningStatsRepository(context: Context) {
         prefs.edit().remove(KEY_FRACTAL_CHART_STATE_JSON).apply()
     }
 
+    /** Persists latest thermal treemap readings for idle / process-death restore. */
+    fun saveThermalChartState(state: ThermalUiState) {
+        if (state.readings.isEmpty()) return
+        runCatching {
+            prefs.edit()
+                .putString(KEY_THERMAL_CHART_JSON, ThermalChartStateCodec.encode(state))
+                .apply()
+        }.onFailure { e ->
+            AppLog.e(LOG_TAG) { "saveThermalChartState failed: ${e.message}" }
+        }
+    }
+
+    fun loadThermalChartState(): PersistedThermalChartState? {
+        val raw = prefs.getString(KEY_THERMAL_CHART_JSON, null) ?: return null
+        return ThermalChartStateCodec.decode(raw)
+    }
+
+    fun clearThermalChartState() {
+        prefs.edit().remove(KEY_THERMAL_CHART_JSON).apply()
+    }
+
     /**
      * Writes zeros for the five persisted counters. Used only when user resets via Config.
      */
@@ -544,6 +568,7 @@ class MiningStatsRepository(context: Context) {
         private const val BEST_DIFFICULTY_EVENTS_MAX = 3000
         private const val KEY_FRACTAL_CHART_STATE_JSON = "fractal_chart_state_json"
         private const val FRACTAL_CHART_STATE_VERSION = 1
+        private const val KEY_THERMAL_CHART_JSON = "thermal_chart_json"
         private const val LOG_TAG = "MiningStatsRepository"
         private const val KEY_HEAT_STOP_SESSION_MS = "heat_stop_session_ms"
         private const val KEY_HEAT_STOP_TEMP_CELSIUS_BITS = "heat_stop_temp_c_bits"

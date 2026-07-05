@@ -63,6 +63,22 @@ object DeviceTelemetryReader {
 
     fun getCachedUiState(): ThermalUiState? = cachedUiState
 
+    fun restorePersistedState(persisted: PersistedThermalChartState?) {
+        if (persisted == null || persisted.readings.isEmpty()) return
+        if (cachedUiState != null) return
+        val layout = ThermalTreemapLayoutEngine.build(persisted.readings) ?: return
+        cachedLayout = layout
+        cachedLayoutSensorKeys = persisted.readings.map { it.meta.type }.toSet()
+        discoverTimestampMs = persisted.discoveredAtMs
+        cachedUiState = ThermalUiState(
+            access = persisted.access,
+            layout = layout,
+            readings = persisted.readings,
+            discoveredAtMs = persisted.discoveredAtMs,
+            updatedAtMs = persisted.updatedAtMs,
+        )
+    }
+
     fun buildUiState(batteryApiTempC: Double?): ThermalUiState {
         val now = System.currentTimeMillis()
         if (discoverTimestampMs == 0L) {

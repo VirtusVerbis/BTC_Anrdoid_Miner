@@ -1,7 +1,6 @@
 package com.btcminer.android.mining
 
-import kotlin.math.max
-import kotlin.math.min
+import com.btcminer.android.config.MiningConfig
 import kotlin.math.roundToInt
 
 object ThermalColorScale {
@@ -10,20 +9,36 @@ object ThermalColorScale {
         val size: Int get() = breakpointsC.size
     }
 
-    val UNIFIED_BAND = Band(doubleArrayOf(35.0, 45.0, 55.0, 65.0))
+    val UNIFIED_BAND = Band(doubleArrayOf(30.0, 50.0, 70.0, 90.0, 110.0))
     val CPU_BAND = Band(doubleArrayOf(35.0, 42.0, 48.0, 55.0))
     val GPU_BAND = Band(doubleArrayOf(35.0, 45.0, 55.0, 65.0))
     val BATTERY_BAND = Band(doubleArrayOf(25.0, 32.0, 38.0, 43.0))
+
+    private const val DANGER_COMPUTE_C = 80.0
+    private const val DANGER_SKIN_C = 45.0
 
     private val STOPS = intArrayOf(
         argb(255, 76, 175, 80),
         argb(255, 255, 235, 59),
         argb(255, 255, 152, 0),
         argb(255, 244, 67, 54),
+        argb(255, 183, 28, 28),
     )
 
     fun colorForGroup(group: ThermalSensorGroup, tempC: Double): Int =
         colorForBand(UNIFIED_BAND, tempC)
+
+    fun dangerThresholdC(group: ThermalSensorGroup): Double? = when (group) {
+        ThermalSensorGroup.CPU, ThermalSensorGroup.CPUSS, ThermalSensorGroup.GPUSS -> DANGER_COMPUTE_C
+        ThermalSensorGroup.BATTERY_SYSFS, ThermalSensorGroup.BATTERY_API ->
+            MiningConfig.BATTERY_TEMP_HARD_STOP_C.toDouble()
+        ThermalSensorGroup.SKIN -> DANGER_SKIN_C
+    }
+
+    fun isInDangerZone(group: ThermalSensorGroup, tempC: Double): Boolean {
+        val threshold = dangerThresholdC(group) ?: return false
+        return tempC >= threshold
+    }
 
     fun colorForBand(band: Band, tempC: Double): Int {
         val bp = band.breakpointsC

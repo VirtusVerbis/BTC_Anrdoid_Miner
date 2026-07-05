@@ -474,7 +474,10 @@ class MiningForegroundService : Service() {
         if (now - lastThermalReadMs < THERMAL_READ_INTERVAL_MS) return
         lastThermalReadMs = now
         val batteryApiTempC = if (tempTenthsC != 0) tempTenthsC / 10.0 else null
-        DeviceTelemetryReader.buildUiState(batteryApiTempC)
+        val state = DeviceTelemetryReader.buildUiState(batteryApiTempC)
+        if (state.readings.isNotEmpty()) {
+            statsRepository.saveThermalChartState(state)
+        }
     }
 
 
@@ -609,6 +612,7 @@ class MiningForegroundService : Service() {
             Handler(Looper.getMainLooper()).post {
                 statsRepository.clearHeatStopForNewSession()
                 statsRepository.clearChartSnapshot()
+                statsRepository.clearThermalChartState()
                 statsRepository.clearMiningTimeCheckpoint()
                 miningStartTimeMillis = System.currentTimeMillis()
                 lastChartSnapshotSaveMs = 0L
@@ -693,6 +697,7 @@ class MiningForegroundService : Service() {
                 }
                 statsRepository.clearMiningTimeCheckpoint()
                 statsRepository.clearChartSnapshot()
+                statsRepository.clearThermalChartState()
                 miningStartTimeMillis = System.currentTimeMillis()
                 lastChartSnapshotSaveMs = 0L
                 lastMiningTimeCheckpointSaveMs = 0L
