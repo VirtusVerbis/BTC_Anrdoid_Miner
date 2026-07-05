@@ -242,6 +242,15 @@ class MiningStatsRepository(context: Context) {
         donutGpuShares: Long,
         sessionStartMs: Long,
         savedAtMs: Long = System.currentTimeMillis(),
+        cpussAvgC: List<Float> = emptyList(),
+        cpuAvgC: List<Float> = emptyList(),
+        gpussAvgC: List<Float> = emptyList(),
+        gpuAvgC: List<Float> = emptyList(),
+        skinC: List<Float> = emptyList(),
+        telemetryBatteryAvgC: List<Float> = emptyList(),
+        cpuClkMhz: List<Float> = emptyList(),
+        gpuClkMhz: List<Float> = emptyList(),
+        avgWorkMs: List<Float> = emptyList(),
     ) {
         val n = minOf(cpu.size, gpu.size, elapsedSec.size, batteryTempC.size)
         if (n <= 0) return
@@ -251,6 +260,15 @@ class MiningStatsRepository(context: Context) {
             gpu = gpu.subList(0, n),
             elapsedSec = elapsedSec.subList(0, n),
             batteryTempC = batteryTempC.subList(0, n),
+            cpussAvgC = cpussAvgC.take(n),
+            cpuAvgC = cpuAvgC.take(n),
+            gpussAvgC = gpussAvgC.take(n),
+            gpuAvgC = gpuAvgC.take(n),
+            skinC = skinC.take(n),
+            telemetryBatteryAvgC = telemetryBatteryAvgC.take(n),
+            cpuClkMhz = cpuClkMhz.take(n),
+            gpuClkMhz = gpuClkMhz.take(n),
+            avgWorkMs = avgWorkMs.take(n),
         )
 
         runCatching {
@@ -269,6 +287,15 @@ class MiningStatsRepository(context: Context) {
                         if (it.isFinite()) put(it) else put(JSONObject.NULL)
                     }
                 })
+                putOptionalNaNFloatArray("cpussAvgC", bounded.cpussAvgC)
+                putOptionalNaNFloatArray("cpuAvgC", bounded.cpuAvgC)
+                putOptionalNaNFloatArray("gpussAvgC", bounded.gpussAvgC)
+                putOptionalNaNFloatArray("gpuAvgC", bounded.gpuAvgC)
+                putOptionalNaNFloatArray("skinC", bounded.skinC)
+                putOptionalNaNFloatArray("telemetryBatteryAvgC", bounded.telemetryBatteryAvgC)
+                putOptionalNaNFloatArray("cpuClkMhz", bounded.cpuClkMhz)
+                putOptionalNaNFloatArray("gpuClkMhz", bounded.gpuClkMhz)
+                putOptionalNaNFloatArray("avgWorkMs", bounded.avgWorkMs)
             }
 
             prefs.edit()
@@ -305,6 +332,15 @@ class MiningStatsRepository(context: Context) {
             gpu = gpu.subList(0, n),
             elapsedSec = elapsedSec.subList(0, n),
             batteryTempC = batteryTempC.subList(0, n),
+            cpussAvgC = json.optJSONArray("cpussAvgC")?.toOptionalFloatList(n) ?: emptyList(),
+            cpuAvgC = json.optJSONArray("cpuAvgC")?.toOptionalFloatList(n) ?: emptyList(),
+            gpussAvgC = json.optJSONArray("gpussAvgC")?.toOptionalFloatList(n) ?: emptyList(),
+            gpuAvgC = json.optJSONArray("gpuAvgC")?.toOptionalFloatList(n) ?: emptyList(),
+            skinC = json.optJSONArray("skinC")?.toOptionalFloatList(n) ?: emptyList(),
+            telemetryBatteryAvgC = json.optJSONArray("telemetryBatteryAvgC")?.toOptionalFloatList(n) ?: emptyList(),
+            cpuClkMhz = json.optJSONArray("cpuClkMhz")?.toOptionalFloatList(n) ?: emptyList(),
+            gpuClkMhz = json.optJSONArray("gpuClkMhz")?.toOptionalFloatList(n) ?: emptyList(),
+            avgWorkMs = json.optJSONArray("avgWorkMs")?.toOptionalFloatList(n) ?: emptyList(),
         )
     }
 
@@ -560,7 +596,7 @@ class MiningStatsRepository(context: Context) {
         private const val KEY_CHART_SNAPSHOT_JSON = "chart_snapshot_json"
         private const val KEY_CHART_SNAPSHOT_SAVED_AT_MS = "chart_snapshot_saved_at_ms"
         private const val KEY_CHART_SNAPSHOT_SESSION_START_MS = "chart_snapshot_session_start_ms"
-        private const val CHART_SNAPSHOT_VERSION = 1
+        private const val CHART_SNAPSHOT_VERSION = 2
         private const val CHART_SNAPSHOT_MAX_POINTS = 1_200
         private const val CHART_SNAPSHOT_STALE_MS = 24 * 60 * 60 * 1000L
         private const val KEY_BEST_DIFFICULTY_EVENTS_JSON = "best_difficulty_events_json"
@@ -580,6 +616,15 @@ class MiningStatsRepository(context: Context) {
         gpu: List<Double>,
         elapsedSec: List<Float>,
         batteryTempC: List<Float>,
+        cpussAvgC: List<Float> = emptyList(),
+        cpuAvgC: List<Float> = emptyList(),
+        gpussAvgC: List<Float> = emptyList(),
+        gpuAvgC: List<Float> = emptyList(),
+        skinC: List<Float> = emptyList(),
+        telemetryBatteryAvgC: List<Float> = emptyList(),
+        cpuClkMhz: List<Float> = emptyList(),
+        gpuClkMhz: List<Float> = emptyList(),
+        avgWorkMs: List<Float> = emptyList(),
     ): ChartSnapshotSeries {
         if (cpu.size <= CHART_SNAPSHOT_MAX_POINTS) {
             return ChartSnapshotSeries(
@@ -587,6 +632,15 @@ class MiningStatsRepository(context: Context) {
                 gpu = gpu.map { it.toFloat() },
                 elapsedSec = elapsedSec.toList(),
                 batteryTempC = batteryTempC.toList(),
+                cpussAvgC = cpussAvgC.toList(),
+                cpuAvgC = cpuAvgC.toList(),
+                gpussAvgC = gpussAvgC.toList(),
+                gpuAvgC = gpuAvgC.toList(),
+                skinC = skinC.toList(),
+                telemetryBatteryAvgC = telemetryBatteryAvgC.toList(),
+                cpuClkMhz = cpuClkMhz.toList(),
+                gpuClkMhz = gpuClkMhz.toList(),
+                avgWorkMs = avgWorkMs.toList(),
             )
         }
         val step = ceil(cpu.size.toDouble() / CHART_SNAPSHOT_MAX_POINTS.toDouble()).toInt().coerceAtLeast(1)
@@ -598,12 +652,47 @@ class MiningStatsRepository(context: Context) {
             i += step
         }
         if (keepIdx.lastOrNull() != last) keepIdx.add(last)
+        fun pick(list: List<Float>, idx: Int): Float = list.getOrElse(idx) { Float.NaN }
         return ChartSnapshotSeries(
             cpu = keepIdx.map { idx -> cpu[idx].toFloat() },
             gpu = keepIdx.map { idx -> gpu[idx].toFloat() },
             elapsedSec = keepIdx.map { idx -> elapsedSec[idx] },
             batteryTempC = keepIdx.map { idx -> batteryTempC[idx] },
+            cpussAvgC = keepIdx.map { idx -> pick(cpussAvgC, idx) },
+            cpuAvgC = keepIdx.map { idx -> pick(cpuAvgC, idx) },
+            gpussAvgC = keepIdx.map { idx -> pick(gpussAvgC, idx) },
+            gpuAvgC = keepIdx.map { idx -> pick(gpuAvgC, idx) },
+            skinC = keepIdx.map { idx -> pick(skinC, idx) },
+            telemetryBatteryAvgC = keepIdx.map { idx -> pick(telemetryBatteryAvgC, idx) },
+            cpuClkMhz = keepIdx.map { idx -> pick(cpuClkMhz, idx) },
+            gpuClkMhz = keepIdx.map { idx -> pick(gpuClkMhz, idx) },
+            avgWorkMs = keepIdx.map { idx -> pick(avgWorkMs, idx) },
         )
+    }
+
+    private fun JSONObject.putOptionalNaNFloatArray(key: String, values: List<Float>) {
+        put(key, JSONArray().apply {
+            values.forEach { v ->
+                if (v.isFinite()) put(v) else put(JSONObject.NULL)
+            }
+        })
+    }
+
+    private fun JSONArray.toOptionalFloatList(expectedSize: Int): List<Float> {
+        val out = ArrayList<Float>(expectedSize)
+        for (i in 0 until expectedSize) {
+            if (i >= length()) {
+                out.add(Float.NaN)
+                continue
+            }
+            if (isNull(i)) {
+                out.add(Float.NaN)
+                continue
+            }
+            val f = optDouble(i, Double.NaN).toFloat()
+            out.add(if (f.isFinite()) f else Float.NaN)
+        }
+        return out
     }
 
     private fun JSONArray.toFiniteFloatList(defaultValue: Float): List<Float> {
@@ -651,6 +740,15 @@ data class ChartSnapshot(
     val gpu: List<Float>,
     val elapsedSec: List<Float>,
     val batteryTempC: List<Float>,
+    val cpussAvgC: List<Float> = emptyList(),
+    val cpuAvgC: List<Float> = emptyList(),
+    val gpussAvgC: List<Float> = emptyList(),
+    val gpuAvgC: List<Float> = emptyList(),
+    val skinC: List<Float> = emptyList(),
+    val telemetryBatteryAvgC: List<Float> = emptyList(),
+    val cpuClkMhz: List<Float> = emptyList(),
+    val gpuClkMhz: List<Float> = emptyList(),
+    val avgWorkMs: List<Float> = emptyList(),
 )
 
 /** Single session-best improvement for best-difficulty scatter chart ([MiningStatsRepository.appendBestDifficultyEvent]). */
@@ -665,4 +763,13 @@ private data class ChartSnapshotSeries(
     val gpu: List<Float>,
     val elapsedSec: List<Float>,
     val batteryTempC: List<Float>,
+    val cpussAvgC: List<Float> = emptyList(),
+    val cpuAvgC: List<Float> = emptyList(),
+    val gpussAvgC: List<Float> = emptyList(),
+    val gpuAvgC: List<Float> = emptyList(),
+    val skinC: List<Float> = emptyList(),
+    val telemetryBatteryAvgC: List<Float> = emptyList(),
+    val cpuClkMhz: List<Float> = emptyList(),
+    val gpuClkMhz: List<Float> = emptyList(),
+    val avgWorkMs: List<Float> = emptyList(),
 )

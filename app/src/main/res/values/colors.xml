@@ -4,7 +4,15 @@
     <color name="white">#FFFFFFFF</color>
     <color name="ic_launcher_background">#FF1A1A2E</color>
     <color name="bitcoin_orange">#F7931A</color>
-    <color name="chart_axis_legend">#DE000000</color>
+    <color name="chart_telemetry_cpuss">#616161</color>
+    <color name="chart_telemetry_cpu">#BDBDBD</color>
+    <color name="chart_telemetry_gpuss">#1B5E20</color>
+    <color name="chart_telemetry_gpu">#00E676</color>
+    <color name="chart_telemetry_skin">#FF00FF</color>
+    <color name="chart_telemetry_batt">#00BCD4</color>
+    <color name="chart_telemetry_cpu_clk">#FFEB3B</color>
+    <color name="chart_telemetry_gpu_clk">#2196F3</color>
+    <color name="chart_telemetry_avg_work_ms">#7C4DFF</color>
     <color name="thermal_group_outline">#808080</color>
     <color name="throttle_secondary">#DE000000</color>
     <color name="auto_tune_decreasing">#5EB8E6</color>

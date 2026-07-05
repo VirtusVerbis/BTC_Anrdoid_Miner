@@ -110,6 +110,9 @@ class NativeMiningEngine(
     /** GPU chunk workMs samples since last Stats log tick (gpu-worker writes, miner thread drains). */
     private val gpuWorkMsSum = AtomicLong(0L)
     private val gpuWorkMsCount = AtomicLong(0L)
+    /** Chart-only workMs accumulators (1 Hz drain in [MiningForegroundService]). */
+    private val gpuChartWorkMsSum = AtomicLong(0L)
+    private val gpuChartWorkMsCount = AtomicLong(0L)
 
     /** Samples (timestampMs, cpuNonces, gpuNonces) for rolling-window hashrate. Cleared when mining loop starts. */
     private val hashrateSamples = Collections.synchronizedList(mutableListOf<Triple<Long, Long, Long>>())
@@ -357,6 +360,12 @@ class NativeMiningEngine(
 
     override fun getStatus(): MiningStatus = statusRef.get()
 
+    override fun drainChartAvgWorkMs(): Float {
+        val count = gpuChartWorkMsCount.getAndSet(0)
+        val sum = gpuChartWorkMsSum.getAndSet(0)
+        return avgWorkMsOrNaN(sum, count)
+    }
+
     override fun getCurrentStratumNbitsHex(): String? =
         clientRef.get()?.getCurrentJob()?.nbitsHex?.trim()?.takeIf { it.isNotEmpty() }
 
@@ -571,6 +580,8 @@ class NativeMiningEngine(
                     val workMs = System.currentTimeMillis() - t0
                     gpuWorkMsSum.addAndGet(workMs)
                     gpuWorkMsCount.incrementAndGet()
+                    gpuChartWorkMsSum.addAndGet(workMs)
+                    gpuChartWorkMsCount.incrementAndGet()
                     if (workMs >= 500L || scan.status != GpuNonceScanResult.MISS) {
                         AppLog.d(LOG_TAG) {
                             "GPU scan jobId=${job.jobId} submit=${String.format(Locale.US, "%08x", start.toInt())}-${String.format(Locale.US, "%08x", nonceEnd)} result=${pendingChunkStart?.let { String.format(Locale.US, "%08x", it.toInt()) } ?: "none"} mode=${gpuMode.name} localSize=$localSizeX hashesPerThread=$hashesPerThread status=${scan.status} nonce=${String.format(Locale.US, "%08x", (scan.nonceU32 and 0xFFFFFFFFL).toInt())} workMs=$workMs"
@@ -701,6 +712,8 @@ class NativeMiningEngine(
         gpuNoncesScanned.set(0)
         gpuWorkMsSum.set(0L)
         gpuWorkMsCount.set(0L)
+        gpuChartWorkMsSum.set(0L)
+        gpuChartWorkMsCount.set(0L)
         gpuUnavailable.set(false)
         synchronized(hashrateSamples) { hashrateSamples.clear() }
         DeviceTelemetryReader.resetForSession()

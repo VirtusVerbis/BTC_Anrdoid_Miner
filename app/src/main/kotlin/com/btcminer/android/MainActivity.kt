@@ -36,15 +36,21 @@ import androidx.lifecycle.lifecycleScope
 import com.btcminer.android.config.ConfigHubActivity
 import com.btcminer.android.config.GpuCapabilities
 import com.btcminer.android.config.MiningConfig
+import com.btcminer.android.ui.chart.TelemetryLeftYAxisRenderer
+import com.btcminer.android.ui.chart.dualScaleMaxLabelWidthDp
+import com.btcminer.android.ui.chart.formatDualScaleLabel
+import com.btcminer.android.ui.chart.mapMsAtMhzTick
 import com.btcminer.android.ui.digitalrain.DigitalRainPreferences
 import com.btcminer.android.ui.digitalrain.DigitalRainRenderBackend
 import com.btcminer.android.ui.digitalrain.DigitalRainSettingsRepository
 import com.btcminer.android.config.MiningConfigRepository
 import com.btcminer.android.databinding.ActivityMainBinding
 import com.btcminer.android.mining.DeviceTelemetryReader
+import com.btcminer.android.mining.hasFiniteTelemetryValues
 import com.btcminer.android.mining.MiningConstraints
 import com.btcminer.android.mining.MiningForegroundService
 import com.btcminer.android.mining.BestDifficultyChartEvent
+import com.btcminer.android.mining.ChartSnapshot
 import com.btcminer.android.mining.MiningStatsRepository
 import com.btcminer.android.mining.MiningStatus
 import com.btcminer.android.mining.NativeMiner
@@ -64,10 +70,12 @@ import com.github.mikephil.charting.listener.OnChartValueSelectedListener
 import com.github.mikephil.charting.listener.ChartTouchListener
 import com.github.mikephil.charting.listener.OnChartGestureListener
 import com.github.mikephil.charting.charts.PieChart
+import com.github.mikephil.charting.charts.LineChart
 import com.github.mikephil.charting.charts.ScatterChart
 import com.github.mikephil.charting.components.YAxis
 import com.github.mikephil.charting.components.Legend
 import com.github.mikephil.charting.components.LegendEntry
+import com.github.mikephil.charting.interfaces.datasets.ILineDataSet
 import com.btcminer.android.network.CertPins
 import com.btcminer.android.util.BitcoinAddressValidator
 import com.btcminer.android.util.FractalPlotKind
@@ -135,7 +143,12 @@ class MainActivity : AppCompatActivity() {
         private const val HASHRATE_CHART_TWO_MIN_SAMPLES = 120
         /** Rolling window size for the 10 min hash rate chart (10 min at 1 Hz). */
         private const val HASHRATE_CHART_TEN_MIN_SAMPLES = 600
+        /** Reserve bottom space so hash rate legend is not clipped (fraction of chart height). */
+        private const val HASH_RATE_CHART_LEGEND_HEIGHT_FRACTION = 0.025f
+        private const val HASH_RATE_CHART_BASE_BOTTOM_EXTRA_DP = 2f
+        private const val HASH_RATE_CHART_LEGEND_Y_OFFSET_DP = 3f
         private const val STATE_HASH_CHART_MODE = "hashChartMode"
+        private const val STATE_TELEMETRY_CHART_MODE = "telemetryChartMode"
         private const val STATE_BEST_DIFF_CHART_X_MODE = "bestDiffChartXMode"
 
         private const val BEST_DIFF_CHART_EPS_DIFF = 1e-18
@@ -159,6 +172,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var hashChartMode = HashChartMode.TwoMinute
+
+    private enum class TelemetryChartMode {
+        TwoMinute,
+        TenMinute,
+        Session,
+        ;
+
+        fun toggle(): TelemetryChartMode = when (this) {
+            TwoMinute -> TenMinute
+            TenMinute -> Session
+            Session -> TwoMinute
+        }
+    }
+
+    private var telemetryChartMode = TelemetryChartMode.TwoMinute
 
     private enum class BestDifficultyChartXMode {
         HistoricalLinear,
@@ -192,6 +220,7 @@ class MainActivity : AppCompatActivity() {
     private var page5Fragment: DashboardStatsPage5Fragment? = null
     private var dashboardTabMediator: TabLayoutMediator? = null
     private var chartHashrateFragment: ChartHashrateFragment? = null
+    private var chartTelemetryFragment: ChartTelemetryFragment? = null
     private var chartThermalFragment: ChartThermalFragment? = null
     private var chartSharesDonutFragment: ChartSharesDonutFragment? = null
     private var chartBestDifficultyFragment: ChartBestDifficultyFragment? = null
@@ -234,6 +263,10 @@ class MainActivity : AppCompatActivity() {
                     chartHashrateFragment = f
                     setupChart()
                 }
+                is ChartTelemetryFragment -> {
+                    chartTelemetryFragment = f
+                    setupTelemetryChart()
+                }
                 is ChartThermalFragment -> {
                     chartThermalFragment = f
                     updateThermalChartUi()
@@ -264,6 +297,7 @@ class MainActivity : AppCompatActivity() {
                 is DashboardStatsPage4Fragment -> if (page4Fragment === f) page4Fragment = null
                 is DashboardStatsPage5Fragment -> if (page5Fragment === f) page5Fragment = null
                 is ChartHashrateFragment -> if (chartHashrateFragment === f) chartHashrateFragment = null
+                is ChartTelemetryFragment -> if (chartTelemetryFragment === f) chartTelemetryFragment = null
                 is ChartThermalFragment -> if (chartThermalFragment === f) chartThermalFragment = null
                 is ChartSharesDonutFragment -> if (chartSharesDonutFragment === f) {
                     donutChartLayoutListener?.let { l ->
@@ -635,6 +669,10 @@ class MainActivity : AppCompatActivity() {
         savedInstanceState?.getString(STATE_HASH_CHART_MODE)?.let { saved ->
             hashChartMode = runCatching { HashChartMode.valueOf(saved) }.getOrDefault(HashChartMode.TwoMinute)
         }
+        savedInstanceState?.getString(STATE_TELEMETRY_CHART_MODE)?.let { saved ->
+            telemetryChartMode = runCatching { TelemetryChartMode.valueOf(saved) }
+                .getOrDefault(TelemetryChartMode.TwoMinute)
+        }
         savedInstanceState?.getString(STATE_BEST_DIFF_CHART_X_MODE)?.let { saved ->
             bestDifficultyChartXMode = when (saved) {
                 "LifetimeRelativeLog" -> BestDifficultyChartXMode.HistoricalLinear
@@ -709,6 +747,7 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_HASH_CHART_MODE, hashChartMode.name)
+        outState.putString(STATE_TELEMETRY_CHART_MODE, telemetryChartMode.name)
         outState.putString(STATE_BEST_DIFF_CHART_X_MODE, bestDifficultyChartXMode.name)
     }
 
@@ -743,6 +782,7 @@ class MainActivity : AppCompatActivity() {
         val useF = configRepository.getConfig().batteryTempFahrenheit
         if (lastThermalDisplayFahrenheit != null && lastThermalDisplayFahrenheit != useF) {
             updateThermalChartUi()
+            refreshTelemetryChartFromCurrentSource()
         }
         // Check if Bitcoin address changed in Config and trigger immediate fetch
         val currentAddress = configRepository.getConfig().bitcoinAddress.trim()
@@ -916,7 +956,15 @@ class MainActivity : AppCompatActivity() {
         chart.setPinchZoom(false)
         chart.isHighlightPerTapEnabled = false
         chart.isHighlightPerDragEnabled = false
-        chart.setExtraOffsets(8f, 8f, 8f, 24f)
+        chart.setMinOffset(8f)
+        applyHashRateChartOffsets(chart)
+        applyTelemetryChartLegend(chart, chartTextColor, legendYOffset = HASH_RATE_CHART_LEGEND_Y_OFFSET_DP)
+        if (chart.height <= 0) {
+            chart.post {
+                applyHashRateChartOffsets(chart)
+                chart.invalidate()
+            }
+        }
         chart.setOnChartGestureListener(object : OnChartGestureListener {
             override fun onChartGestureStart(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
             override fun onChartGestureEnd(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
@@ -932,6 +980,145 @@ class MainActivity : AppCompatActivity() {
             override fun onChartTranslate(me: MotionEvent?, dX: Float, dY: Float) {}
         })
         chart.contentDescription = getString(R.string.hash_chart_a11y_toggle_hint)
+    }
+
+    private fun setupTelemetryChart() {
+        val chartBinding = chartTelemetryFragment?.chartBinding ?: return
+        val chart = chartBinding.telemetryChart
+        val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
+        chart.description.isEnabled = false
+        chart.legend.isEnabled = false
+        chart.legend.setTextColor(chartTextColor)
+        chart.xAxis.setDrawLabels(true)
+        chart.xAxis.setTextColor(chartTextColor)
+        chart.xAxis.labelRotationAngle = -45f
+        chart.axisLeft.setDrawLabels(true)
+        chart.axisLeft.setTextColor(chartTextColor)
+        chart.axisLeft.valueFormatter = object : ValueFormatter() {
+            override fun getFormattedValue(value: Float): String =
+                String.format(Locale.US, "%.0f Mhz", value)
+        }
+        chart.setRendererLeftYAxis(
+            TelemetryLeftYAxisRenderer(
+                chart.viewPortHandler,
+                chart.axisLeft,
+                chart.getTransformer(YAxis.AxisDependency.LEFT),
+            ),
+        )
+        chart.axisRight.isEnabled = true
+        chart.axisRight.setDrawLabels(true)
+        chart.axisRight.setTextColor(chartTextColor)
+        chart.axisRight.valueFormatter = object : ValueFormatter() {
+            override fun getFormattedValue(value: Float): String {
+                val useF = configRepository.getConfig().batteryTempFahrenheit
+                val displayValue = if (useF) (value * 9f / 5f + 32f) else value
+                val unit = if (useF) "F" else "C"
+                return String.format(Locale.US, "%.1f%s", displayValue, unit)
+            }
+        }
+        chart.setTouchEnabled(true)
+        chart.isDragEnabled = false
+        chart.setScaleEnabled(false)
+        chart.setPinchZoom(false)
+        chart.isHighlightPerTapEnabled = false
+        chart.isHighlightPerDragEnabled = false
+        chart.setMinOffset(8f)
+        applyTelemetryChartOffsets(chart, dualScaleLeft = false)
+        applyTelemetryChartLegend(chart, chartTextColor)
+        chart.setOnChartGestureListener(object : OnChartGestureListener {
+            override fun onChartGestureStart(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
+            override fun onChartGestureEnd(me: MotionEvent?, lastPerformedGesture: ChartTouchListener.ChartGesture?) {}
+            override fun onChartLongPressed(me: MotionEvent?) {}
+            override fun onChartDoubleTapped(me: MotionEvent?) {}
+            override fun onChartSingleTapped(me: MotionEvent?) {
+                telemetryChartMode = telemetryChartMode.toggle()
+                refreshDashboardFromPoll()
+            }
+
+            override fun onChartFling(me1: MotionEvent?, me2: MotionEvent?, velocityX: Float, velocityY: Float) {}
+            override fun onChartScale(me: MotionEvent?, scaleX: Float, scaleY: Float) {}
+            override fun onChartTranslate(me: MotionEvent?, dX: Float, dY: Float) {}
+        })
+        chart.contentDescription = getString(R.string.telemetry_chart_a11y_toggle_hint)
+    }
+
+    private fun applyTelemetryChartOffsets(chart: LineChart, dualScaleLeft: Boolean) {
+        chart.setExtraOffsets(
+            if (dualScaleLeft) 14f else 12f,
+            8f,
+            8f,
+            4f,
+        )
+    }
+
+    private fun hashRateChartBottomExtraOffset(chart: LineChart): Float {
+        val heightDp = chart.height / resources.displayMetrics.density
+        val legendReserveDp = if (heightDp > 0f) {
+            heightDp * HASH_RATE_CHART_LEGEND_HEIGHT_FRACTION
+        } else {
+            5f
+        }
+        return HASH_RATE_CHART_BASE_BOTTOM_EXTRA_DP + legendReserveDp
+    }
+
+    private fun applyHashRateChartOffsets(chart: LineChart) {
+        chart.setExtraOffsets(
+            12f,
+            8f,
+            8f,
+            hashRateChartBottomExtraOffset(chart),
+        )
+    }
+
+    private fun telemetryLegendMaxSizePercent(chart: LineChart, entryCount: Int): Float {
+        if (entryCount <= 0) return 0.85f
+        val contentWidth = chart.viewPortHandler.contentWidth().coerceAtLeast(1f)
+        val entriesPerRow = (entryCount + 1) / 2
+        val density = resources.displayMetrics.density
+        val labelWidthDp = 6f + 4f + 8f * 0.55f * 7f
+        val neededWidthPx = entriesPerRow * labelWidthDp * density
+        return (neededWidthPx / contentWidth).coerceIn(0.78f, 0.95f)
+    }
+
+    private fun applyTelemetryChartLegend(
+        chart: LineChart,
+        chartTextColor: Int,
+        entryCount: Int = 0,
+        allowLayoutRetry: Boolean = true,
+        legendYOffset: Float = 0f,
+    ) {
+        chart.legend.verticalAlignment = Legend.LegendVerticalAlignment.BOTTOM
+        chart.legend.horizontalAlignment = Legend.LegendHorizontalAlignment.LEFT
+        chart.legend.orientation = Legend.LegendOrientation.HORIZONTAL
+        chart.legend.isWordWrapEnabled = true
+        chart.legend.textSize = 8f
+        chart.legend.formSize = 6f
+        chart.legend.yEntrySpace = 2f
+        chart.legend.xEntrySpace = 4f
+        chart.legend.yOffset = legendYOffset
+        chart.legend.form = Legend.LegendForm.SQUARE
+        chart.legend.setDrawInside(false)
+        chart.legend.setTextColor(chartTextColor)
+
+        val contentWidth = chart.viewPortHandler.contentWidth()
+        chart.legend.maxSizePercent = if (entryCount > 0 && contentWidth > 1f) {
+            telemetryLegendMaxSizePercent(chart, entryCount)
+        } else {
+            0.85f
+        }
+
+        if (allowLayoutRetry && entryCount > 0 && contentWidth <= 1f) {
+            chart.post {
+                applyTelemetryChartLegend(
+                    chart,
+                    chartTextColor,
+                    entryCount,
+                    allowLayoutRetry = false,
+                    legendYOffset = legendYOffset,
+                )
+                chart.invalidate()
+            }
+        }
     }
 
     private fun setupSharesDonutChart() {
@@ -1480,6 +1667,7 @@ class MainActivity : AppCompatActivity() {
                 val n = minOf(cpu.size, gpu.size, elapsed.size, batt.size)
                 if (n > 0) {
                     updateChart(cpu, gpu, elapsed, batt)
+                    updateTelemetryChartFromLive(service, elapsed)
                 } else {
                     renderPersistedChartsOrIdleFallback()
                 }
@@ -1518,6 +1706,63 @@ class MainActivity : AppCompatActivity() {
         updateThermalChartUi()
     }
 
+    private fun refreshTelemetryChartFromCurrentSource() {
+        val service = miningService
+        if (service != null && service.getStatus().state == MiningStatus.State.Mining) {
+            val elapsed = service.getHashrateHistoryElapsedSec()
+            if (elapsed.isNotEmpty()) {
+                updateTelemetryChartFromLive(service, elapsed)
+                return
+            }
+        }
+        val snapshot = statsRepository.getChartSnapshotOrNull()
+        if (snapshot != null) {
+            updateTelemetryChartFromSnapshot(snapshot)
+        } else {
+            clearTelemetryChartUi()
+        }
+    }
+
+    private fun updateTelemetryChartFromLive(service: MiningForegroundService, elapsed: List<Float>) {
+        updateTelemetryChart(
+            cpussAvgC = service.getTelemetryHistoryCpussAvgC(),
+            cpuAvgC = service.getTelemetryHistoryCpuAvgC(),
+            gpussAvgC = service.getTelemetryHistoryGpussAvgC(),
+            gpuAvgC = service.getTelemetryHistoryGpuAvgC(),
+            skinC = service.getTelemetryHistorySkinC(),
+            batteryAvgC = service.getTelemetryHistoryBatteryAvgC(),
+            cpuClkMhz = service.getTelemetryHistoryCpuClkMhz(),
+            gpuClkMhz = service.getTelemetryHistoryGpuClkMhz(),
+            avgWorkMs = service.getTelemetryHistoryAvgWorkMs(),
+            historyElapsedSec = elapsed,
+        )
+    }
+
+    private fun updateTelemetryChartFromSnapshot(snapshot: ChartSnapshot) {
+        updateTelemetryChart(
+            cpussAvgC = snapshot.cpussAvgC,
+            cpuAvgC = snapshot.cpuAvgC,
+            gpussAvgC = snapshot.gpussAvgC,
+            gpuAvgC = snapshot.gpuAvgC,
+            skinC = snapshot.skinC,
+            batteryAvgC = snapshot.telemetryBatteryAvgC,
+            cpuClkMhz = snapshot.cpuClkMhz,
+            gpuClkMhz = snapshot.gpuClkMhz,
+            avgWorkMs = snapshot.avgWorkMs,
+            historyElapsedSec = snapshot.elapsedSec,
+        )
+    }
+
+    private fun clearTelemetryChartUi() {
+        chartTelemetryFragment?.chartBinding?.let { c ->
+            c.telemetryChart.data = null
+            c.telemetryChart.legend.isEnabled = false
+            c.telemetryChartModeTitle.visibility = View.GONE
+            c.telemetryChartEmptyMessage.visibility = View.VISIBLE
+            c.telemetryChart.invalidate()
+        }
+    }
+
     private fun updateThermalChartUi() {
         val useF = configRepository.getConfig().batteryTempFahrenheit
         lastThermalDisplayFahrenheit = useF
@@ -1534,6 +1779,7 @@ class MainActivity : AppCompatActivity() {
                 historyElapsedSec = snapshot.elapsedSec,
                 batteryTempHistoryCelsius = snapshot.batteryTempC,
             )
+            updateTelemetryChartFromSnapshot(snapshot)
             val donut = snapshot.donutCpuShares to snapshot.donutGpuShares
             if (lastDonutIdentifiedCounts != donut) {
                 if (updateSharesDonutChart(snapshot.donutCpuShares, snapshot.donutGpuShares)) {
@@ -1552,6 +1798,7 @@ class MainActivity : AppCompatActivity() {
                 c.hashChartModeTitle.visibility = View.GONE
                 c.hashRateChart.invalidate()
             }
+            clearTelemetryChartUi()
         }
     }
 
@@ -2038,8 +2285,14 @@ class MainActivity : AppCompatActivity() {
         gpuSet.axisDependency = YAxis.AxisDependency.LEFT
 
         chart.data = LineData(cpuSet, gpuSet, avgSet, battSet)
+        applyHashRateChartOffsets(chart)
         chart.legend.isEnabled = true
-        chart.legend.setTextColor(chartTextColor)
+        applyTelemetryChartLegend(
+            chart,
+            chartTextColor,
+            entryCount = 4,
+            legendYOffset = HASH_RATE_CHART_LEGEND_Y_OFFSET_DP,
+        )
         chartBinding.hashChartModeTitle.visibility = View.VISIBLE
         chartBinding.hashChartModeTitle.text = when (hashChartMode) {
             HashChartMode.TwoMinute -> getString(R.string.hash_chart_title_2min)
@@ -2047,6 +2300,227 @@ class MainActivity : AppCompatActivity() {
             HashChartMode.Session -> getString(R.string.hash_chart_title_session)
         }
         chartBinding.hashChartModeTitle.setTextColor(chartTextColor)
+        chart.invalidate()
+    }
+
+    private fun updateTelemetryChart(
+        cpussAvgC: List<Float>,
+        cpuAvgC: List<Float>,
+        gpussAvgC: List<Float>,
+        gpuAvgC: List<Float>,
+        skinC: List<Float>,
+        batteryAvgC: List<Float>,
+        cpuClkMhz: List<Float>,
+        gpuClkMhz: List<Float>,
+        avgWorkMs: List<Float>,
+        historyElapsedSec: List<Float>,
+    ) {
+        val chartBinding = chartTelemetryFragment?.chartBinding ?: return
+        val chart = chartBinding.telemetryChart
+        val chartTextColor = ContextCompat.getColor(this, R.color.chart_axis_legend)
+        val nAll = historyElapsedSec.size
+        if (nAll == 0) {
+            clearTelemetryChartUi()
+            return
+        }
+
+        val from = when (telemetryChartMode) {
+            TelemetryChartMode.TwoMinute -> maxOf(0, nAll - HASHRATE_CHART_TWO_MIN_SAMPLES)
+            TelemetryChartMode.TenMinute -> maxOf(0, nAll - HASHRATE_CHART_TEN_MIN_SAMPLES)
+            TelemetryChartMode.Session -> 0
+        }
+
+        fun sliceOf(source: List<Float>): List<Float> =
+            (from until nAll).map { i -> source.getOrElse(i) { Float.NaN } }
+
+        val cpussSlice = sliceOf(cpussAvgC)
+        val cpuSlice = sliceOf(cpuAvgC)
+        val gpussSlice = sliceOf(gpussAvgC)
+        val gpuSlice = sliceOf(gpuAvgC)
+        val skinSlice = sliceOf(skinC)
+        val battSlice = sliceOf(batteryAvgC)
+        val cpuClkSlice = sliceOf(cpuClkMhz)
+        val gpuClkSlice = sliceOf(gpuClkMhz)
+        val avgWorkMsSlice = sliceOf(avgWorkMs)
+
+        val hasClocks = hasFiniteTelemetryValues(cpuClkSlice) || hasFiniteTelemetryValues(gpuClkSlice)
+        val hasAvgWorkMs = hasFiniteTelemetryValues(avgWorkMsSlice)
+        val avgWorkMsValues = avgWorkMsSlice.filter { it.isFinite() }
+        val msMin = avgWorkMsValues.minOrNull() ?: 0f
+        val msMax = avgWorkMsValues.maxOrNull() ?: 0f
+        val msRange = (msMax - msMin).coerceAtLeast(1e-3f)
+        val clockValues = (cpuClkSlice + gpuClkSlice).filter { it.isFinite() }
+        val mhzMin = clockValues.minOrNull() ?: 0f
+        val mhzMax = clockValues.maxOrNull() ?: 0f
+        val mhzRange = (mhzMax - mhzMin).coerceAtLeast(1e-3f)
+
+        fun mapMsToMhzPlot(ms: Float): Float =
+            mhzMin + (ms - msMin) / msRange * mhzRange
+
+        val sessionDurationSec = historyElapsedSec[nAll - 1]
+        val windowAxisOriginSec = historyElapsedSec[from]
+
+        chart.xAxis.valueFormatter = when (telemetryChartMode) {
+            TelemetryChartMode.TwoMinute, TelemetryChartMode.TenMinute -> object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String =
+                    formatAxisMmSs(value.toLong().coerceAtLeast(0))
+            }
+            TelemetryChartMode.Session -> object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String =
+                    if (sessionDurationSec >= 3600f) {
+                        formatElapsedChartAxisHoursMinutes(value)
+                    } else {
+                        formatElapsedChartAxisSeconds(value)
+                    }
+            }
+        }
+        chart.xAxis.isGranularityEnabled = false
+
+        val maxSize = nAll - from
+        fun xForIndex(i: Int): Float = when (telemetryChartMode) {
+            TelemetryChartMode.TwoMinute, TelemetryChartMode.TenMinute ->
+                (historyElapsedSec[from + i] - windowAxisOriginSec).coerceAtLeast(0f)
+            TelemetryChartMode.Session -> historyElapsedSec[from + i]
+        }
+
+        fun buildLineSet(
+            label: String,
+            slice: List<Float>,
+            color: Int,
+            axis: YAxis.AxisDependency,
+            yForValue: (Float) -> Float = { it },
+            configure: LineDataSet.() -> Unit = {},
+        ): LineDataSet? {
+            if (!hasFiniteTelemetryValues(slice)) return null
+            val entries = slice.mapIndexedNotNull { i, v ->
+                if (!v.isFinite()) return@mapIndexedNotNull null
+                Entry(xForIndex(i), yForValue(v))
+            }
+            if (entries.isEmpty()) return null
+            return LineDataSet(entries, label).apply {
+                setColor(color)
+                setCircleColor(color)
+                lineWidth = 2f
+                setDrawCircles(false)
+                setDrawValues(false)
+                axisDependency = axis
+                configure()
+            }
+        }
+
+        val tempSlices = listOf(
+            cpussSlice,
+            cpuSlice,
+            gpussSlice,
+            gpuSlice,
+            skinSlice,
+            battSlice,
+        )
+        val perSampleTempMeans = (0 until maxSize).map { i ->
+            val temps = tempSlices.mapNotNull { slice ->
+                slice[i].takeIf { it.isFinite() }
+            }
+            if (temps.isEmpty()) null else temps.average()
+        }
+
+        val datasets = ArrayList<LineDataSet>()
+        buildLineSet("CPUSS", cpussSlice, ContextCompat.getColor(this, R.color.chart_telemetry_cpuss), YAxis.AxisDependency.RIGHT)?.let { datasets.add(it) }
+        buildLineSet("CPU", cpuSlice, ContextCompat.getColor(this, R.color.chart_telemetry_cpu), YAxis.AxisDependency.RIGHT)?.let { datasets.add(it) }
+        buildLineSet("GPUSS", gpussSlice, ContextCompat.getColor(this, R.color.chart_telemetry_gpuss), YAxis.AxisDependency.RIGHT)?.let { datasets.add(it) }
+        buildLineSet("GPU", gpuSlice, ContextCompat.getColor(this, R.color.chart_telemetry_gpu), YAxis.AxisDependency.RIGHT)?.let { datasets.add(it) }
+        buildLineSet("SKIN", skinSlice, ContextCompat.getColor(this, R.color.chart_telemetry_skin), YAxis.AxisDependency.RIGHT)?.let { datasets.add(it) }
+        buildLineSet("BATT", battSlice, ContextCompat.getColor(this, R.color.chart_telemetry_batt), YAxis.AxisDependency.RIGHT)?.let { datasets.add(it) }
+
+        val finitePerSampleMeans = perSampleTempMeans.filterNotNull()
+        if (finitePerSampleMeans.isNotEmpty()) {
+            val avg = finitePerSampleMeans.average().toFloat()
+            val avgEntries = (0 until maxSize).map { i -> Entry(xForIndex(i), avg) }
+            datasets.add(
+                LineDataSet(avgEntries, "Avg").apply {
+                    setColor(ContextCompat.getColor(this@MainActivity, R.color.bitcoin_orange))
+                    setCircleColor(ContextCompat.getColor(this@MainActivity, R.color.bitcoin_orange))
+                    lineWidth = 2f
+                    setDrawCircles(false)
+                    setDrawValues(false)
+                    axisDependency = YAxis.AxisDependency.RIGHT
+                },
+            )
+        }
+
+        buildLineSet("CPU CLK", cpuClkSlice, ContextCompat.getColor(this, R.color.chart_telemetry_cpu_clk), YAxis.AxisDependency.LEFT)?.let { datasets.add(it) }
+        buildLineSet("GPU CLK", gpuClkSlice, ContextCompat.getColor(this, R.color.chart_telemetry_gpu_clk), YAxis.AxisDependency.LEFT)?.let { datasets.add(it) }
+
+        if (hasAvgWorkMs) {
+            val avgWorkMsColor = ContextCompat.getColor(this, R.color.chart_telemetry_avg_work_ms)
+            val yForAvgWorkMs: (Float) -> Float = if (hasClocks) ::mapMsToMhzPlot else { ms -> ms }
+            buildLineSet(
+                label = "avgWorkMs",
+                slice = avgWorkMsSlice,
+                color = avgWorkMsColor,
+                axis = YAxis.AxisDependency.LEFT,
+                yForValue = yForAvgWorkMs,
+            ) {
+                enableDashedLine(12f, 6f, 0f)
+            }?.let { datasets.add(it) }
+        }
+
+        if (datasets.isEmpty()) {
+            chart.data = null
+            chart.legend.isEnabled = false
+            chartBinding.telemetryChartModeTitle.visibility = View.GONE
+            chartBinding.telemetryChartEmptyMessage.visibility = View.VISIBLE
+            chart.invalidate()
+            return
+        }
+
+        val hasLeft = datasets.any { it.axisDependency == YAxis.AxisDependency.LEFT }
+        val hasRight = datasets.any { it.axisDependency == YAxis.AxisDependency.RIGHT }
+        chart.axisLeft.isEnabled = hasLeft
+        chart.axisRight.isEnabled = hasRight
+
+        chart.axisLeft.valueFormatter = when {
+            hasClocks && hasAvgWorkMs -> object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String {
+                    val msAtTick = mapMsAtMhzTick(value, mhzMin, mhzRange, msMin, msRange)
+                    return formatDualScaleLabel(value, msAtTick)
+                }
+            }
+            hasAvgWorkMs -> object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String =
+                    String.format(Locale.US, "%.0f Ms", value)
+            }
+            else -> object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String =
+                    String.format(Locale.US, "%.0f Mhz", value)
+            }
+        }
+        chart.axisLeft.maxWidth = if (hasClocks && hasAvgWorkMs) {
+            dualScaleMaxLabelWidthDp(mhzMax)
+        } else {
+            Float.POSITIVE_INFINITY
+        }
+        applyTelemetryChartOffsets(chart, hasClocks && hasAvgWorkMs)
+
+        chart.axisRight.valueFormatter = object : ValueFormatter() {
+            override fun getFormattedValue(value: Float): String {
+                val useF = configRepository.getConfig().batteryTempFahrenheit
+                val displayValue = if (useF) (value * 9f / 5f + 32f) else value
+                val unit = if (useF) "F" else "C"
+                return String.format(Locale.US, "%.1f%s", displayValue, unit)
+            }
+        }
+
+        chart.data = LineData(datasets as List<ILineDataSet>)
+        chart.legend.isEnabled = true
+        applyTelemetryChartLegend(chart, chartTextColor, datasets.size)
+        chartBinding.telemetryChartEmptyMessage.visibility = View.GONE
+        chartBinding.telemetryChartModeTitle.visibility = View.VISIBLE
+        chartBinding.telemetryChartModeTitle.text = when (telemetryChartMode) {
+            TelemetryChartMode.TwoMinute -> getString(R.string.telemetry_chart_title_2min)
+            TelemetryChartMode.TenMinute -> getString(R.string.telemetry_chart_title_10min)
+            TelemetryChartMode.Session -> getString(R.string.telemetry_chart_title_session)
+        }
+        chartBinding.telemetryChartModeTitle.setTextColor(chartTextColor)
         chart.invalidate()
     }
 

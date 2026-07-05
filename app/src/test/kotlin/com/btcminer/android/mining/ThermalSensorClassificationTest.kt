@@ -38,8 +38,14 @@ class ThermalSensorClassificationTest {
     }
 
     @Test
+    fun classifyType_gpuDistinctFromGpuss() {
+        val gpu = ThermalSensorClassification.classifyType("gpu-0-usr", 13)!!
+        assertEquals(ThermalSensorGroup.GPU, gpu.group)
+    }
+
+    @Test
     fun classifyType_unknownReturnsNull() {
-        assertNull(ThermalSensorClassification.classifyType("gpu-usr", 1))
+        assertNull(ThermalSensorClassification.classifyType("tsens_tz_sensor0", 1))
     }
 
     @Test

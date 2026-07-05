@@ -29,7 +29,7 @@ object ThermalColorScale {
         colorForBand(UNIFIED_BAND, tempC)
 
     fun dangerThresholdC(group: ThermalSensorGroup): Double? = when (group) {
-        ThermalSensorGroup.CPU, ThermalSensorGroup.CPUSS, ThermalSensorGroup.GPUSS -> DANGER_COMPUTE_C
+        ThermalSensorGroup.CPU, ThermalSensorGroup.CPUSS, ThermalSensorGroup.GPUSS, ThermalSensorGroup.GPU -> DANGER_COMPUTE_C
         ThermalSensorGroup.BATTERY_SYSFS, ThermalSensorGroup.BATTERY_API ->
             MiningConfig.BATTERY_TEMP_HARD_STOP_C.toDouble()
         ThermalSensorGroup.SKIN -> DANGER_SKIN_C

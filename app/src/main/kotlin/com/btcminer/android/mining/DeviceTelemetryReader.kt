@@ -17,6 +17,7 @@ object DeviceTelemetryReader {
     private var cpussZoneIds: List<Int> = emptyList()
     private var cpuZoneIds: List<Int> = emptyList()
     private var gpussZoneIds: List<Int> = emptyList()
+    private var gpuZoneIds: List<Int> = emptyList()
     private var skinZoneId: Int? = null
     private var batteryZoneId: Int? = null
     private var cpuPolicyIds: List<Int> = emptyList()
@@ -32,6 +33,7 @@ object DeviceTelemetryReader {
         val cpussTempsC: List<Double>,
         val cpuTempsC: List<Double>,
         val gpussTempsC: List<Double>,
+        val gpuTempsC: List<Double>,
         val skinC: Double?,
         val batterySysfsC: Double?,
         val cpuCurKhz: Long?,
@@ -50,6 +52,7 @@ object DeviceTelemetryReader {
         cpussZoneIds = emptyList()
         cpuZoneIds = emptyList()
         gpussZoneIds = emptyList()
+        gpuZoneIds = emptyList()
         skinZoneId = null
         batteryZoneId = null
         cpuPolicyIds = emptyList()
@@ -147,6 +150,7 @@ object DeviceTelemetryReader {
         cpussZoneIds = emptyList()
         cpuZoneIds = emptyList()
         gpussZoneIds = emptyList()
+        gpuZoneIds = emptyList()
         skinZoneId = null
         batteryZoneId = null
         cpuPolicyIds = emptyList()
@@ -166,6 +170,7 @@ object DeviceTelemetryReader {
         val cpuss = mutableListOf<Int>()
         val cpu = mutableListOf<Int>()
         val gpuss = mutableListOf<Int>()
+        val gpu = mutableListOf<Int>()
         val zoneDirs = thermalDir.listFiles()
             ?.filter { it.isDirectory && it.name.startsWith("thermal_zone") }
             ?.sortedBy { zoneDir ->
@@ -190,6 +195,7 @@ object DeviceTelemetryReader {
                 type.startsWith("cpuss") -> cpuss.add(id)
                 type.startsWith("cpu-") -> cpu.add(id)
                 type.startsWith("gpuss") -> gpuss.add(id)
+                type.startsWith("gpu-") -> gpu.add(id)
                 type == "skin-msm-therm" -> skinZoneId = id
                 type == "battery" -> batteryZoneId = id
             }
@@ -197,6 +203,7 @@ object DeviceTelemetryReader {
         cpussZoneIds = cpuss.sorted()
         cpuZoneIds = cpu.sorted()
         gpussZoneIds = gpuss.sorted()
+        gpuZoneIds = gpu.sorted()
         candidateMetas = buildCandidateMetas(zoneDirs)
         discoverTimestampMs = System.currentTimeMillis()
     }
@@ -236,6 +243,7 @@ object DeviceTelemetryReader {
         val cpussTemps = cpussZoneIds.mapNotNull { id -> readZoneTempC(id) }
         val cpuTemps = cpuZoneIds.mapNotNull { id -> readZoneTempC(id) }
         val gpussTemps = gpussZoneIds.mapNotNull { id -> readZoneTempC(id) }
+        val gpuTemps = gpuZoneIds.mapNotNull { id -> readZoneTempC(id) }
         val skinC = skinZoneId?.let { readZoneTempC(it) }
         val batteryC = batteryZoneId?.let { readZoneTempC(it) }
         val (cpuCurKhz, cpuMaxKhz) = readCpuClockKhz()
@@ -243,9 +251,9 @@ object DeviceTelemetryReader {
         val gpuMaxHz = readSysfsLong(KGSL_MAX_FREQ)
 
         val anyThermalRead = cpussTemps.isNotEmpty() || cpuTemps.isNotEmpty() ||
-            gpussTemps.isNotEmpty() || skinC != null || batteryC != null
+            gpussTemps.isNotEmpty() || gpuTemps.isNotEmpty() || skinC != null || batteryC != null
         val anyClockRead = cpuCurKhz != null || cpuMaxKhz != null || gpuCurHz != null || gpuMaxHz != null
-        val noZonesDiscovered = gpussZoneIds.isEmpty() && cpussZoneIds.isEmpty() &&
+        val noZonesDiscovered = gpussZoneIds.isEmpty() && gpuZoneIds.isEmpty() && cpussZoneIds.isEmpty() &&
             cpuZoneIds.isEmpty() && skinZoneId == null && batteryZoneId == null && cpuPolicyIds.isEmpty()
         val access = when {
             gpussZoneIds.isNotEmpty() && gpussTemps.isNotEmpty() -> SysfsAccess.OK
@@ -259,6 +267,7 @@ object DeviceTelemetryReader {
             cpussTemps,
             cpuTemps,
             gpussTemps,
+            gpuTemps,
             skinC,
             batteryC,
             cpuCurKhz,

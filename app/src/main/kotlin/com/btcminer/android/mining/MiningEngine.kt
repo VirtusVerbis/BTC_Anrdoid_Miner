@@ -43,6 +43,9 @@ interface MiningEngine {
 
     /** Session/lifetime counters split by identify source (CPU, GPU). */
     fun getIdentifiedSharesBySource(): Pair<Long, Long> = 0L to 0L
+
+    /** Average GPU chunk workMs since last chart sample drain; NaN when none. */
+    fun drainChartAvgWorkMs(): Float = Float.NaN
 }
 
 data class MiningStatus(

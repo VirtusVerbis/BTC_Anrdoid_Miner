@@ -131,6 +131,15 @@ class MiningForegroundService : Service() {
     private val hashrateHistoryElapsedSec = mutableListOf<Float>()
     /** Per-sample battery temperature in Celsius (aligned with CPU/GPU/elapsed entries). */
     private val batteryTempHistoryCelsius = mutableListOf<Float>()
+    private val telemetryHistoryCpussAvgC = mutableListOf<Float>()
+    private val telemetryHistoryCpuAvgC = mutableListOf<Float>()
+    private val telemetryHistoryGpussAvgC = mutableListOf<Float>()
+    private val telemetryHistoryGpuAvgC = mutableListOf<Float>()
+    private val telemetryHistorySkinC = mutableListOf<Float>()
+    private val telemetryHistoryBatteryAvgC = mutableListOf<Float>()
+    private val telemetryHistoryCpuClkMhz = mutableListOf<Float>()
+    private val telemetryHistoryGpuClkMhz = mutableListOf<Float>()
+    private val telemetryHistoryAvgWorkMs = mutableListOf<Float>()
     @Volatile
     private var lastChartSnapshotSaveMs: Long = 0L
     @Volatile
@@ -159,6 +168,20 @@ class MiningForegroundService : Service() {
                             }
                             hashrateHistoryElapsedSec.add(elapsedSec)
                             batteryTempHistoryCelsius.add(tempC)
+                            val batteryApiTempC = if (tempTenthsC != 0) tempTenthsC / 10.0 else null
+                            val telemetrySample = TelemetryChartSample.aggregateForChart(
+                                DeviceTelemetryReader.readSnapshot(),
+                                batteryApiTempC,
+                            )
+                            telemetryHistoryCpussAvgC.add(telemetrySample.cpussAvgC)
+                            telemetryHistoryCpuAvgC.add(telemetrySample.cpuAvgC)
+                            telemetryHistoryGpussAvgC.add(telemetrySample.gpussAvgC)
+                            telemetryHistoryGpuAvgC.add(telemetrySample.gpuAvgC)
+                            telemetryHistorySkinC.add(telemetrySample.skinC)
+                            telemetryHistoryBatteryAvgC.add(telemetrySample.batteryAvgC)
+                            telemetryHistoryCpuClkMhz.add(telemetrySample.cpuClkMhz)
+                            telemetryHistoryGpuClkMhz.add(telemetrySample.gpuClkMhz)
+                            telemetryHistoryAvgWorkMs.add(engine.drainChartAvgWorkMs())
                         }
                         maybeRefreshThermalUiState(tempTenthsC)
                         maybePersistRuntimeSnapshots(force = false)
@@ -463,6 +486,16 @@ class MiningForegroundService : Service() {
     fun getHashrateHistoryElapsedSec(): List<Float> = synchronized(hashrateHistoryLock) { hashrateHistoryElapsedSec.toList() }
     fun getBatteryTempHistoryCelsius(): List<Float> = synchronized(hashrateHistoryLock) { batteryTempHistoryCelsius.toList() }
 
+    fun getTelemetryHistoryCpussAvgC(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistoryCpussAvgC.toList() }
+    fun getTelemetryHistoryCpuAvgC(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistoryCpuAvgC.toList() }
+    fun getTelemetryHistoryGpussAvgC(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistoryGpussAvgC.toList() }
+    fun getTelemetryHistoryGpuAvgC(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistoryGpuAvgC.toList() }
+    fun getTelemetryHistorySkinC(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistorySkinC.toList() }
+    fun getTelemetryHistoryBatteryAvgC(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistoryBatteryAvgC.toList() }
+    fun getTelemetryHistoryCpuClkMhz(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistoryCpuClkMhz.toList() }
+    fun getTelemetryHistoryGpuClkMhz(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistoryGpuClkMhz.toList() }
+    fun getTelemetryHistoryAvgWorkMs(): List<Float> = synchronized(hashrateHistoryLock) { telemetryHistoryAvgWorkMs.toList() }
+
     fun isBatteryThrottleActive(): Boolean = lastBatteryThrottleActive
     fun isHashrateThrottleActive(): Boolean = lastHashrateThrottleActive
     fun getThermalUiState(): ThermalUiState? = DeviceTelemetryReader.getCachedUiState()
@@ -667,6 +700,7 @@ class MiningForegroundService : Service() {
             hashrateHistoryGpu.clear()
             hashrateHistoryElapsedSec.clear()
             batteryTempHistoryCelsius.clear()
+            clearTelemetryHistoryLocked()
         }
         unregisterConstraintReceiver()
         cancelAlarm()
@@ -918,11 +952,29 @@ class MiningForegroundService : Service() {
             val gpuHist: List<Double>
             val elapsedHist: List<Float>
             val battHist: List<Float>
+            val cpussHist: List<Float>
+            val cpuAvgHist: List<Float>
+            val gpussHist: List<Float>
+            val gpuAvgHist: List<Float>
+            val skinHist: List<Float>
+            val telemetryBattHist: List<Float>
+            val cpuClkHist: List<Float>
+            val gpuClkHist: List<Float>
+            val avgWorkMsHist: List<Float>
             synchronized(hashrateHistoryLock) {
                 cpuHist = hashrateHistoryCpu.toList()
                 gpuHist = hashrateHistoryGpu.toList()
                 elapsedHist = hashrateHistoryElapsedSec.toList()
                 battHist = batteryTempHistoryCelsius.toList()
+                cpussHist = telemetryHistoryCpussAvgC.toList()
+                cpuAvgHist = telemetryHistoryCpuAvgC.toList()
+                gpussHist = telemetryHistoryGpussAvgC.toList()
+                gpuAvgHist = telemetryHistoryGpuAvgC.toList()
+                skinHist = telemetryHistorySkinC.toList()
+                telemetryBattHist = telemetryHistoryBatteryAvgC.toList()
+                cpuClkHist = telemetryHistoryCpuClkMhz.toList()
+                gpuClkHist = telemetryHistoryGpuClkMhz.toList()
+                avgWorkMsHist = telemetryHistoryAvgWorkMs.toList()
             }
             if (cpuHist.isNotEmpty() && gpuHist.isNotEmpty() && elapsedHist.isNotEmpty() && battHist.isNotEmpty()) {
                 val src = getSessionIdentifiedShareSourceCounts()
@@ -935,6 +987,15 @@ class MiningForegroundService : Service() {
                     donutGpuShares = src.second,
                     sessionStartMs = start,
                     savedAtMs = now,
+                    cpussAvgC = cpussHist,
+                    cpuAvgC = cpuAvgHist,
+                    gpussAvgC = gpussHist,
+                    gpuAvgC = gpuAvgHist,
+                    skinC = skinHist,
+                    telemetryBatteryAvgC = telemetryBattHist,
+                    cpuClkMhz = cpuClkHist,
+                    gpuClkMhz = gpuClkHist,
+                    avgWorkMs = avgWorkMsHist,
                 )
                 lastChartSnapshotSaveMs = now
             }
@@ -954,9 +1015,22 @@ class MiningForegroundService : Service() {
             hashrateHistoryGpu.clear()
             hashrateHistoryElapsedSec.clear()
             batteryTempHistoryCelsius.clear()
+            clearTelemetryHistoryLocked()
         }
         unregisterConstraintReceiver()
         engine.stop()
+    }
+
+    private fun clearTelemetryHistoryLocked() {
+        telemetryHistoryCpussAvgC.clear()
+        telemetryHistoryCpuAvgC.clear()
+        telemetryHistoryGpussAvgC.clear()
+        telemetryHistoryGpuAvgC.clear()
+        telemetryHistorySkinC.clear()
+        telemetryHistoryBatteryAvgC.clear()
+        telemetryHistoryCpuClkMhz.clear()
+        telemetryHistoryGpuClkMhz.clear()
+        telemetryHistoryAvgWorkMs.clear()
     }
 
     private fun shutdownSessionDueToBatteryOverheat(tempAtStopC: Float) {

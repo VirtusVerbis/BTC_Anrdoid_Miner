@@ -13,6 +13,7 @@ object ThermalSensorClassification {
             type.startsWith("cpuss") -> ThermalSensorGroup.CPUSS
             type.startsWith("cpu-") -> ThermalSensorGroup.CPU
             type.startsWith("gpuss") -> ThermalSensorGroup.GPUSS
+            type.startsWith("gpu-") -> ThermalSensorGroup.GPU
             type == "skin-msm-therm" -> ThermalSensorGroup.SKIN
             type == "battery" -> ThermalSensorGroup.BATTERY_SYSFS
             else -> return null
@@ -58,6 +59,7 @@ object ThermalSensorClassification {
             ThermalSensorGroup.BATTERY_API -> "batt-api"
             ThermalSensorGroup.CPUSS -> trailingIndex(type, "cpuss") ?: type
             ThermalSensorGroup.GPUSS -> trailingIndex(type, "gpuss") ?: type
+            ThermalSensorGroup.GPU -> trailingIndex(type, "gpu") ?: type
             ThermalSensorGroup.CPU -> abbreviateCpuExtra(type)
         }
         return if (isVirtual) "V:$base" else base
@@ -80,6 +82,7 @@ enum class ThermalSensorGroup {
     CPUSS,
     CPU,
     GPUSS,
+    GPU,
     SKIN,
     BATTERY_SYSFS,
     BATTERY_API,
