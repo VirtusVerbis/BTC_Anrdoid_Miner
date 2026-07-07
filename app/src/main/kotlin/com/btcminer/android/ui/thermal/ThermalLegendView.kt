@@ -42,10 +42,14 @@ class ThermalLegendView @JvmOverloads constructor(
     }
     private val barRect = RectF()
 
-    private val band = ThermalColorScale.UNIFIED_BAND
+    private var band = ThermalColorScale.UNIFIED_BAND
+    private var titleText: String = ""
 
-    private val title: String
-        get() = "Temp (${ThermalTempFormat.unitSuffix(useFahrenheit)})"
+    fun setLegendBand(band: ThermalColorScale.Band, title: String) {
+        this.band = band
+        this.titleText = title
+        invalidate()
+    }
 
     fun setUseFahrenheit(useFahrenheit: Boolean) {
         if (this.useFahrenheit == useFahrenheit) return
@@ -78,7 +82,7 @@ class ThermalLegendView @JvmOverloads constructor(
         val barBottom = barTop + 9f * density
         barRect.set(barLeft, barTop, barRight, barBottom)
 
-        canvas.drawText(title, 2f, barBottom - 2f, labelPaint)
+        canvas.drawText(titleText, 2f, barBottom - 2f, labelPaint)
 
         val colors = ThermalColorScale.legendGradientColors(band)
         barPaint.shader = LinearGradient(

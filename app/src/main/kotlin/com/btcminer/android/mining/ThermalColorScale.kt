@@ -25,8 +25,16 @@ object ThermalColorScale {
         argb(255, 183, 28, 28),
     )
 
+    fun bandForGroup(group: ThermalSensorGroup): Band = when (group) {
+        ThermalSensorGroup.BATTERY_SYSFS,
+        ThermalSensorGroup.BATTERY_API,
+        ThermalSensorGroup.SKIN,
+        -> BATTERY_BAND
+        else -> UNIFIED_BAND
+    }
+
     fun colorForGroup(group: ThermalSensorGroup, tempC: Double): Int =
-        colorForBand(UNIFIED_BAND, tempC)
+        colorForBand(bandForGroup(group), tempC)
 
     fun dangerThresholdC(group: ThermalSensorGroup): Double? = when (group) {
         ThermalSensorGroup.CPU, ThermalSensorGroup.CPUSS, ThermalSensorGroup.GPUSS, ThermalSensorGroup.GPU -> DANGER_COMPUTE_C

@@ -203,6 +203,7 @@
     <string name="thermal_legend_cpu">Temp</string>
     <string name="thermal_legend_gpu">GPU</string>
     <string name="thermal_legend_batt">BATT</string>
+    <string name="thermal_legend_batt_skin">BATT/Skin</string>
     <string name="thermal_tooltip_zone">Zone %1$d</string>
     <string name="shares_donut_cpu_label">CPU</string>
     <string name="shares_donut_gpu_label">GPU</string>

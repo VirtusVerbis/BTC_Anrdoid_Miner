@@ -27,9 +27,42 @@ class ThermalColorScaleTest {
     }
 
     @Test
-    fun colorForGroup_usesUnifiedBand() {
+    fun bandForGroup_batteryVsCompute() {
+        assertEquals(ThermalColorScale.BATTERY_BAND, ThermalColorScale.bandForGroup(ThermalSensorGroup.BATTERY_API))
+        assertEquals(ThermalColorScale.BATTERY_BAND, ThermalColorScale.bandForGroup(ThermalSensorGroup.BATTERY_SYSFS))
+        assertEquals(ThermalColorScale.BATTERY_BAND, ThermalColorScale.bandForGroup(ThermalSensorGroup.SKIN))
+        assertEquals(ThermalColorScale.UNIFIED_BAND, ThermalColorScale.bandForGroup(ThermalSensorGroup.CPU))
+        assertEquals(ThermalColorScale.UNIFIED_BAND, ThermalColorScale.bandForGroup(ThermalSensorGroup.GPUSS))
+    }
+
+    @Test
+    fun colorForGroup_batteryUsesBatteryBand() {
         val c = ThermalColorScale.colorForGroup(ThermalSensorGroup.BATTERY_API, 43.0)
-        assertEquals(ThermalColorScale.colorForBand(ThermalColorScale.UNIFIED_BAND, 43.0), c)
+        assertEquals(ThermalColorScale.colorForBand(ThermalColorScale.BATTERY_BAND, 43.0), c)
+        assertEquals(
+            ThermalColorScale.colorForBand(ThermalColorScale.UNIFIED_BAND, 43.0),
+            ThermalColorScale.colorForGroup(ThermalSensorGroup.CPU, 43.0),
+        )
+        assertNotEquals(
+            ThermalColorScale.colorForBand(ThermalColorScale.UNIFIED_BAND, 43.0),
+            c,
+        )
+    }
+
+    @Test
+    fun colorForGroup_skinUsesBatteryBand() {
+        val c = ThermalColorScale.colorForGroup(ThermalSensorGroup.SKIN, 40.0)
+        assertEquals(ThermalColorScale.colorForBand(ThermalColorScale.BATTERY_BAND, 40.0), c)
+        assertNotEquals(
+            ThermalColorScale.colorForBand(ThermalColorScale.UNIFIED_BAND, 40.0),
+            c,
+        )
+    }
+
+    @Test
+    fun colorForGroup_computeUsesUnifiedBand() {
+        val c = ThermalColorScale.colorForGroup(ThermalSensorGroup.CPUSS, 55.0)
+        assertEquals(ThermalColorScale.colorForBand(ThermalColorScale.UNIFIED_BAND, 55.0), c)
     }
 
     @Test
