@@ -17,10 +17,10 @@
     <com.btcminer.android.ui.thermal.ThermalLegendView
         android:id="@+id/thermal_legend_view"
         android:layout_width="match_parent"
-        android:layout_height="14dp" />
+        android:layout_height="11.5dp" />
 
     <com.btcminer.android.ui.thermal.ThermalLegendView
         android:id="@+id/thermal_battery_legend_view"
         android:layout_width="match_parent"
-        android:layout_height="14dp" />
+        android:layout_height="11.5dp" />
 </LinearLayout>
